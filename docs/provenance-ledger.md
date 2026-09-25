@@ -61,6 +61,8 @@ source input to the normal CC64 build.
 | D-035 | One declarator per AST node, chained through `next`, spliced whole into statement lists | a single node per declaration statement silently dropped later declarators, which then lost their frame slot and were emitted as external references |
 | D-036 | Output files are created once and written once from a fully built in-memory image; there is no temporary-file rename step | the pinned target dispatches no `rename` (56h) or `delete` (41h) service, so the temporary protocol could never run on target; a truncated write stays detectable through the CC64O and MZ64 checksums |
 | D-037 | `cc64_create` and `cc64_lseek` join the emitted service thunks, using the target's RAX result and CF error convention | the compiler must open and seek real files, and both services are already listed in the pinned ABI table; the file-descriptor result register is read back from the target source rather than assumed from classic DOS |
+| D-038 | A variadic function spills the six integer argument registers into a save area in its own frame, and `va_arg` steps eight bytes per slot | an eight-byte slot stride is required to read whole registers and to keep the walk independent of the argument type; a `sizeof`-based stride silently misreads every `int` variadic argument |
+| D-039 | Only the end of a whole preprocessing run emits an end-of-file token | the lexer ends every source, so copying an included file's end token into the output truncated `-E` and `--dump-tokens` at the first include |
 
 ## Review rule
 

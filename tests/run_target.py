@@ -105,7 +105,8 @@ def compile_and_link(work: pathlib.Path, source_text: str, name: str,
     obj = work / f"{name}.cc64o"
     image = work / (f"{name}.mz" if image_format == "mz64" else f"{name}.com")
     source.write_text(source_text, encoding="utf-8")
-    run([str(ROOT / "cc64"), "-c", str(source), "-o", str(obj)], ROOT)
+    run([str(ROOT / "cc64"), "-I", str(ROOT / "include/target"),
+         "-I", str(ROOT / "include/cc64"), "-c", str(source), "-o", str(obj)], ROOT)
     command = [str(ROOT / "cc64"), "--link"]
     if image_format == "mz64":
         command += ["--format", "mz64"]
@@ -160,6 +161,41 @@ SEEK_PROGRAM = (
 )
 
 
+VARARG_PROGRAM = (
+    "#include <stdarg.h>\n"
+    "int cc64_write(int, const void *, unsigned long);\n"
+    "static int sum(int count, ...) {\n"
+    "  va_list args;\n"
+    "  va_start(args, count);\n"
+    "  int total = 0;\n"
+    "  int index;\n"
+    "  for (index = 0; index < count; ++index) total += va_arg(args, int);\n"
+    "  va_end(args);\n"
+    "  return total;\n"
+    "}\n"
+    "static int named(int first, const char *second, int third, ...) {\n"
+    "  va_list args;\n"
+    "  va_start(args, third);\n"
+    "  int extra = va_arg(args, int);\n"
+    "  long more = va_arg(args, long);\n"
+    "  va_end(args);\n"
+    "  return first + (int)second[0] + third + extra + (int)more;\n"
+    "}\n"
+    "int main(void) {\n"
+    "  int total = sum(4, 1, 2, 3, 4);\n"
+    "  int mixed = named(1, \"A\", 2, 30, 40L);\n"
+    "  cc64_write(1, \"s=\", 2);\n"
+    "  if (total == 10) cc64_write(1, \"10\", 2); else cc64_write(1, \"??\", 2);\n"
+    "  cc64_write(1, \" n=\", 3);\n"
+    "  if (mixed == 138) cc64_write(1, \"138\", 3); else cc64_write(1, \"???\", 3);\n"
+    "  cc64_write(1, \"\\n\", 1);\n"
+    "  if (total != 10) return 1;\n"
+    "  if (mixed != 138) return 2;\n"
+    "  return 9;\n"
+    "}\n"
+)
+
+
 def main() -> int:
     qemu = shutil.which("qemu-system-x86_64")
     if qemu is None or not TARGET.is_dir():
@@ -181,7 +217,7 @@ def main() -> int:
             ("C64X", "void cc64_exit(int); int main(void){cc64_exit(9); return 3;}", "raw", 9, None),
             ("C64O", "int cc64_open(const char *); int cc64_close(int); int main(void){int h=cc64_open(\"HELLO.TXT\"); if(h>=0) cc64_close(h); return h>=0?7:1;}", "raw", 7, None),
             ("C64U", "int cc64_putc(int); int main(void){cc64_putc(65); return 7;}", "raw", 7, "A"),
-            ("C64V", "int cc64_write(int,const void*,unsigned long); int main(void){cc64_write(1,\"W\",1); return 8;}", "raw", 8, "W"),
+            ("C64T", "int cc64_write(int,const void*,unsigned long); int main(void){cc64_write(1,\"W\",1); return 8;}", "raw", 8, "W"),
             ("C64M", "void *cc64_alloc(unsigned long); void cc64_free(void*); int main(void){char *p=cc64_alloc(16); if(!p)return 1; p[0]=7; int v=p[0]; cc64_free(p); return v;}", "raw", 7, None),
             ("C64F", "int cc64_open(const char*); int cc64_read(int,void*,unsigned long); int cc64_close(int); int main(void){char b[4]; int h=cc64_open(\"HELLO.TXT\"); if(h<0)return 1; cc64_read(h,b,4); cc64_close(h); return b[0]==72?7:2;}", "raw", 7, None),
             ("C64B", "int zero_global; int main(void){zero_global=9; return zero_global;}", "raw", 9, None),
@@ -189,7 +225,7 @@ def main() -> int:
             ("C64G", "int main(int argc, char **argv){return argc;}", "raw", 1, None),
             ("C64W", FILE_WRITE_PROGRAM, "raw", 7, None),
             ("C64K", SEEK_PROGRAM, "raw", 7, None),
-        ]
+            ("C64V", VARARG_PROGRAM, "raw", 9, "s=10 n=138"),        ]
         for name, source, image_format, expected, expected_text in cases:
             disk = work / f"{name}.img"
             image = compile_and_link(work, source, name, image_format)

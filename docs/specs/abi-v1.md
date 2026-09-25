@@ -35,6 +35,20 @@ usual callee-saved rule.
 does not yet define aggregate parameter passing by value; aggregates are
 deferred until their representation is pinned.
 
+## Variadic calls
+
+A call to a function declared with `...` sets `AL` to the number of vector
+registers that carry arguments, after the integer argument registers are
+loaded and before the `CALL`. A variadic function spills the six integer
+argument registers into a 48-byte register save area in its own frame.
+
+`va_start` returns the first slot after the function's named integer
+parameters. `va_arg` reads one whole eight-byte slot and advances eight bytes,
+narrowing the value to the requested type; the slot stride is fixed by this
+contract and is not `sizeof` of the argument type. Floating variadic
+arguments are not part of this ABI revision and are diagnosed by the target
+library rather than silently misread.
+
 ## Basic types
 
 | C spelling | Size | Alignment | Representation |

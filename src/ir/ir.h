@@ -38,7 +38,8 @@ typedef enum IrOp {
     IR_JUMP,
     IR_BRANCH,
     IR_LABEL,
-    IR_RETURN
+    IR_RETURN,
+    IR_VA_START
 } IrOp;
 
 typedef enum CompareOperator {
@@ -89,6 +90,9 @@ typedef struct IrFunction {
     Symbol *symbol;
     IrInst *body;
     size_t frame_size;
+    /* Frame offset of the variadic integer register save area. Zero when the
+       function is not variadic; negative once offsets are converted. */
+    int64_t va_area_offset;
     struct IrFunction *next;
 } IrFunction;
 

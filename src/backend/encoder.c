@@ -26,6 +26,7 @@ typedef struct Encoder {
     size_t code_size;
     size_t code_capacity;
     size_t function_offset;
+    IrFunction *function;
     size_t stack_depth;
     LabelSlot *labels;
     size_t label_count;
@@ -412,6 +413,29 @@ static void encode_call(Encoder *encoder, IrInst *inst)
         return;
     }
     bool direct = inst->a != NULL && inst->a->op == IR_ADDR && inst->a->symbol != NULL;
+    /* __cc64_va_start is a compiler builtin: it yields the first unnamed
+       integer argument slot of the enclosing variadic function. */
+    if (direct && argument_count == 0U && inst->a->symbol != NULL &&
+        inst->a->symbol->name != NULL &&
+        strcmp(inst->a->symbol->name, "__cc64_va_start") == 0) {
+        IrFunction *current = encoder->function;
+        if (current == NULL || !current->symbol->type->variadic ||
+            current->va_area_offset == 0) {
+            encoder_error(encoder, 4021U, &inst->location,
+                          "va_start used outside a variadic function");
+            return;
+        }
+        unsigned named = 0U;
+        for (Symbol *parameter = current->symbol->type->parameters;
+             parameter != NULL; parameter = parameter->next) {
+            if (!is_float_type(parameter->type) && named < 6U) ++named;
+        }
+        emit_rex(encoder, true, 0U, 5U);
+        emit8(encoder, 0x8dU);
+        emit_mem_reg(encoder, 5U, 0U,
+                     current->va_area_offset + (int64_t)named * 8);
+        return;
+    }
     bool adjust = ((encoder->stack_depth + stack_argument_count) & 1U) != 0U;
     if (adjust) {
         emit8(encoder, 0x48U); emit8(encoder, 0x83U); emit8(encoder, 0xecU); emit8(encoder, 8U);
@@ -459,6 +483,14 @@ static void encode_call(Encoder *encoder, IrInst *inst)
         (void)call_argument_location(inst->args, arg, &reg, &fp);
         if (fp) emit_restore_xmm(encoder, reg, type_size(arg->type));
         else { emit_pop(encoder, argument_registers[reg]); if (encoder->stack_depth != 0U) --encoder->stack_depth; }
+    }
+    /* The calling convention requires AL to report how many vector registers
+       carry arguments. It is set after the argument registers are loaded and
+       before the call, because AL shares RAX with the result. Version 1
+       passes no floating variadic arguments. */
+    if (direct && inst->a->symbol != NULL && inst->a->symbol->type != NULL &&
+        inst->a->symbol->type->variadic) {
+        emit8(encoder, 0x31U); emit8(encoder, 0xc0U);
     }
     if (direct) {
         emit8(encoder, 0xe8U);
@@ -1156,6 +1188,15 @@ static void emit_prologue(Encoder *encoder, IrFunction *function)
             ++integer_index;
         }
     }
+    /* A variadic function also spills the whole integer argument register set
+       so that va_start can walk the unnamed arguments. Floating arguments are
+       not part of the version 1 variadic contract. */
+    if (function->symbol->type->variadic && function->va_area_offset != 0) {
+        for (unsigned i = 0U; i < 6U; ++i) {
+            emit_store_mem(encoder, argument_registers[i], 5U,
+                           function->va_area_offset + (int64_t)i * 8, 8U);
+        }
+    }
 }
 
 static bool prepare_symbols(Encoder *encoder, IrProgram *program)
@@ -1565,6 +1606,7 @@ static bool encode_function(Encoder *encoder, IrFunction *function)
     encoder->stack_depth = 0U;
     encoder->label_count = 0U; encoder->fixup_count = 0U;
     encoder->function_offset = encoder->text->size;
+    encoder->function = function;
     emit_prologue(encoder, function);
     for (IrInst *inst = function->body; inst != NULL; inst = inst->next) encode_statement(encoder, inst);
     if (!encoder->failed) {

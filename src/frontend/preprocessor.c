@@ -1079,6 +1079,11 @@ static bool process_source(Preprocessor *pp, const Source *source,
     pp->line_delta = 0U;
     while (position < raw.count && good) {
         const Token *token = &raw.items[position];
+        /* The lexer marks the end of every source. Only the end of the whole
+           run is emitted, so an included file cannot truncate the output. */
+        if (token->kind == TOKEN_EOF) {
+            break;
+        }
         if (token->kind == TOKEN_NEWLINE) {
             if (is_active(conditions, condition_count) &&
                 pp->options.preserve_newlines) {

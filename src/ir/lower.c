@@ -247,6 +247,15 @@ static void assign_frame(LowerContext *context, Symbol *function, AstNode *body)
     }
     /* Locals were assigned positive offsets; convert them after collection. */
     convert_local_offsets(body);
+    /* A variadic function needs a register save area for the unnamed
+       arguments. It is reserved after every local so that its offset is
+       known before the frame is finalized. */
+    size_t va_area = 0U;
+    if (function->type->variadic) {
+        frame = align_up(frame, 8U);
+        frame += 48U;
+        va_area = frame;
+    }
     /* The walk above is intentionally bounded; reject deeper frame nesting. */
     if (frame > SIZE_MAX - 15U) {
         context->failed = true;
@@ -260,6 +269,7 @@ static void assign_frame(LowerContext *context, Symbol *function, AstNode *body)
     }
     function_ir->symbol = function;
     function_ir->frame_size = frame;
+    function_ir->va_area_offset = va_area == 0U ? 0 : -(int64_t)va_area;
     function_ir->next = NULL;
     if (context->program->functions == NULL) {
         context->program->functions = function_ir;
