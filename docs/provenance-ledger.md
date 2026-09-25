@@ -56,6 +56,8 @@ source input to the normal CC64 build.
 | D-030 | Bochs validation uses the pinned target bochsrc template, a term display, and a dedicated serial PTY | exercises the target's real serial-input shell path without importing emulator or OS implementation code |
 | D-031 | Target compilation uses a dedicated standard-header shadow directory | keeps target translation units free of accidental host libc headers while preserving the compiler's source spellings |
 | D-032 | Production translation units are probed individually with the target header profile before linking | makes self-host coverage and the first failing construct explicit and deterministic |
+| D-033 | Relocations are applied to the flattened image payload, after per-kind section buffers are merged at their final offsets | the per-kind buffers are scratch; writing a final-layout offset into them corrupts unrelated memory, and BSS is zero-filled by the image buffer rather than copied |
+| D-034 | Every non-BSS data object is aligned to at least eight bytes | keeps the pinned MZ64 contract that a relocated pointer's represented value is eight-byte aligned, so the loader needs one aligned store per fixup |
 
 ## Review rule
 

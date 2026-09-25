@@ -1297,7 +1297,7 @@ static bool write_constant_initializer(Encoder *encoder, AstNode *value,
             for (size_t byte = 0U; byte < size; ++byte) bytes[base + byte] = 0U;
             (void)object_symbol_index(encoder, target);
             if (!object_add_relocation(encoder->builder, encoder->data,
-                                       relocation_origin + base,
+                                       relocation_origin,
                                        target, CC64O_REL_DATA64, 0, 8U)) {
                 return false;
             }
@@ -1354,8 +1354,12 @@ static bool append_global_data(Encoder *encoder, IrProgram *program)
         if (symbol == NULL || symbol->initializer == NULL) continue;
         size_t size = type_size(symbol->type);
         if (size == 0U) size = 1U;
-        size_t offset = encoder_align_up(encoder->data->size,
-                                          type_alignment(symbol->type));
+        /* Data objects are aligned to at least eight bytes. A data pointer in
+           the image must name an eight-byte-aligned object so that the loader
+           can satisfy the MZ64 alignment contract with a single aligned store. */
+        size_t alignment = type_alignment(symbol->type);
+        if (alignment < 8U) alignment = 8U;
+        size_t offset = encoder_align_up(encoder->data->size, alignment);
         if (offset == SIZE_MAX) return false;
         unsigned char *bytes = calloc(size, 1U);
         if (bytes == NULL) return false;

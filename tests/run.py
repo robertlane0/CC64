@@ -111,6 +111,18 @@ def main() -> int:
         run([str(ROOT / "cc64"), "--link", str(runtime_a_object),
              str(runtime_b_object), "-o", str(directory / "runtime.com")])
 
+        table_source = directory / "table.c"
+        table_object = directory / "table.cc64o"
+        table_source.write_text(
+            "static const char *const names[] = {\"alpha\", \"beta\", \"gamma\"};\n"
+            "int main(void) { return names[2][0] == 'g' ? 7 : 1; }\n",
+            encoding="utf-8",
+        )
+        run([str(ROOT / "cc64"), "-c", str(table_source), "-o", str(table_object)])
+        run(["python3", str(ROOT / "tools/inspect_object.py"), str(table_object)])
+        run([str(ROOT / "cc64"), "--link", "--format", "mz64", str(table_object),
+             "-o", str(directory / "table.mz")])
+
         bad = directory / "bad.c"
         bad_output = directory / "bad.i"
         bad.write_text('"unterminated\n', encoding="utf-8")

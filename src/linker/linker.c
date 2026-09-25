@@ -620,7 +620,8 @@ static bool append_image_relocation(ImageRelocation **items, size_t *count,
 }
 
 static bool apply_relocations(LinkObject *objects, size_t object_count,
-                              OutputSection outputs[4], GlobalSymbol *globals,
+                              OutputSection outputs[4], unsigned char *payload,
+                              size_t payload_size, GlobalSymbol *globals,
                               size_t global_count, ImageFormat format,
                               ImageRelocation **image_relocations,
                               size_t *image_relocation_count,
@@ -655,13 +656,18 @@ static bool apply_relocations(LinkObject *objects, size_t object_count,
                 }
                 size_t section_position = section->output_offset +
                                          (size_t)reloc->offset;
-                if (section_position > output->size ||
-                    reloc->width > output->size - section_position) {
+                if (output->output_offset > SIZE_MAX - section_position) {
                     link_error(diagnostics, 5023U, NULL,
                                "relocation is outside output section");
                     return false;
                 }
                 size_t position = output->output_offset + section_position;
+                if (position > payload_size ||
+                    reloc->width > payload_size - position) {
+                    link_error(diagnostics, 5023U, NULL,
+                               "relocation is outside output section");
+                    return false;
+                }
                 if (reloc->type == CC64O_REL_DATA64) {
                     if (format == IMAGE_RAW_COM) {
                         link_error(diagnostics, 5022U, NULL,
@@ -683,7 +689,7 @@ static bool apply_relocations(LinkObject *objects, size_t object_count,
                                    "data relocation is out of range");
                         return false;
                     }
-                    write_u64(output->data + position, 0U);
+                    write_u64(payload + position, 0U);
                     continue;
                 }
                 if (reloc->type == CC64O_REL_ABS32 ||
@@ -706,7 +712,7 @@ static bool apply_relocations(LinkObject *objects, size_t object_count,
                                    "PC-relative relocation overflow");
                         return false;
                     }
-                    write_u32(output->data + position, (uint32_t)(int32_t)result);
+                    write_u32(payload + position, (uint32_t)(int32_t)result);
                 } else if (reloc->type == CC64O_REL_SECTION32) {
                     int64_t result = 0;
                     if (!checked_add_signed(symbol->original_value, reloc->addend,
@@ -715,7 +721,7 @@ static bool apply_relocations(LinkObject *objects, size_t object_count,
                                    "section relocation overflow");
                         return false;
                     }
-                    write_u32(output->data + position, (uint32_t)result);
+                    write_u32(payload + position, (uint32_t)result);
                 }
             }
         }
@@ -723,21 +729,55 @@ static bool apply_relocations(LinkObject *objects, size_t object_count,
     return true;
 }
 
+static bool image_extents(const OutputSection outputs[4], size_t *payload_size,
+                          size_t *memory_size)
+{
+    size_t payload = 0U;
+    size_t memory = 0U;
+    for (size_t i = 0U; i < 4U; ++i) {
+        if (outputs[i].output_offset > SIZE_MAX - outputs[i].size) return false;
+        size_t end = outputs[i].output_offset + outputs[i].size;
+        if (i != 3U && end > payload) payload = end;
+        if (end > memory) memory = end;
+    }
+    *payload_size = payload;
+    *memory_size = memory;
+    return true;
+}
+
+/* The per-kind output buffers are concatenated into one payload image before
+   relocations are applied, so every relocation writes into the final layout
+   rather than into a per-section scratch buffer. */
+static bool flatten_outputs(const OutputSection outputs[4], size_t payload_size,
+                            unsigned char **payload)
+{
+    *payload = NULL;
+    if (payload_size == 0U) return true;
+    unsigned char *image = cc64_xmalloc(payload_size);
+    memset(image, 0, payload_size);
+    for (size_t i = 0U; i < 4U; ++i) {
+        if (i == 3U) continue;
+        if (outputs[i].size == 0U || outputs[i].data == NULL) continue;
+        if (outputs[i].output_offset > payload_size - outputs[i].size) {
+            free(image);
+            return false;
+        }
+        memcpy(image + outputs[i].output_offset, outputs[i].data, outputs[i].size);
+    }
+    *payload = image;
+    return true;
+}
+
 static bool write_linked_image(const OutputSection outputs[4],
+                               const unsigned char *payload, size_t payload_size,
+                               size_t memory_size,
                                ImageFormat format,
                                const ImageRelocation *image_relocations,
                                size_t image_relocation_count,
                                const char *output,
                                DiagnosticSink *diagnostics)
 {
-    size_t payload_size = 0U;
-    size_t memory_size = 0U;
-    for (size_t i = 0U; i < 4U; ++i) {
-        if (outputs[i].output_offset > SIZE_MAX - outputs[i].size) return false;
-        size_t end = outputs[i].output_offset + outputs[i].size;
-        if (i != 3U && end > payload_size) payload_size = end;
-        if (end > memory_size) memory_size = end;
-    }
+    if (!image_extents(outputs, &payload_size, &memory_size)) return false;
     const size_t image_limit = 16U * 1024U * 1024U;
     if (memory_size > image_limit || payload_size > UINT32_MAX ||
         outputs[0].output_offset >= payload_size) {
@@ -755,10 +795,8 @@ static bool write_linked_image(const OutputSection outputs[4],
     unsigned char *image = calloc(file_size == 0U ? 1U : file_size, 1U);
     if (image == NULL) return false;
     if (format == IMAGE_RAW_COM) {
-        for (size_t i = 0U; i < 4U; ++i) {
-            if (outputs[i].size != 0U && outputs[i].data != NULL) {
-                memcpy(image + outputs[i].output_offset, outputs[i].data, outputs[i].size);
-            }
+        if (payload != NULL && payload_size != 0U) {
+            memcpy(image, payload, payload_size);
         }
     } else {
         memcpy(image, "MZ64", 4U);
@@ -772,11 +810,8 @@ static bool write_linked_image(const OutputSection outputs[4],
         }
         write_u32(image + 28U, (uint32_t)(48U + payload_size));
         write_u64(image + 32U, (uint64_t)memory_size);
-        for (size_t i = 0U; i < 3U; ++i) {
-            if (outputs[i].size != 0U && outputs[i].data != NULL) {
-                memcpy(image + 48U + outputs[i].output_offset,
-                       outputs[i].data, outputs[i].size);
-            }
+        if (payload != NULL && payload_size != 0U) {
+            memcpy(image + 48U, payload, payload_size);
         }
         for (size_t i = 0U; i < image_relocation_count; ++i) {
             unsigned char *entry = image + 48U + payload_size + i * 16U;
@@ -896,9 +931,17 @@ bool link_objects(Arena *arena, const char *const *objects, size_t object_count,
                                  &global_count, &global_capacity, diagnostics)) {
         good = false;
     }
-    if (good && !apply_relocations(loaded, object_count, outputs, globals,
-                                   global_count, format, &image_relocations,
-                                   &image_relocation_count,
+    unsigned char *payload = NULL;
+    size_t payload_size = 0U;
+    size_t memory_size = 0U;
+    if (good && (!image_extents(outputs, &payload_size, &memory_size) ||
+                 !flatten_outputs(outputs, payload_size, &payload))) {
+        link_error(diagnostics, 5034U, output, "linked image exceeds target limits");
+        good = false;
+    }
+    if (good && !apply_relocations(loaded, object_count, outputs, payload,
+                                   payload_size, globals, global_count, format,
+                                   &image_relocations, &image_relocation_count,
                                    &image_relocation_capacity, diagnostics)) {
         good = false;
     }
@@ -911,19 +954,24 @@ bool link_objects(Arena *arena, const char *const *objects, size_t object_count,
             size_t field = outputs[0].output_offset + 59U;
             int64_t displacement = (int64_t)main_symbol->address -
                                    (int64_t)(field + 4U);
-            if (displacement < INT32_MIN || displacement > INT32_MAX) {
+            if (field > payload_size || 4U > payload_size - field) {
+                link_error(diagnostics, 5028U, output, "entry trampoline overflow");
+                good = false;
+            } else if (displacement < INT32_MIN || displacement > INT32_MAX) {
                 link_error(diagnostics, 5028U, output,
                            "entry trampoline overflow");
                 good = false;
             } else {
-                write_u32(outputs[0].data + field, (uint32_t)(int32_t)displacement);
+                write_u32(payload + field, (uint32_t)(int32_t)displacement);
             }
         }
     }
-    if (good && !write_linked_image(outputs, format, image_relocations,
+    if (good && !write_linked_image(outputs, payload, payload_size, memory_size,
+                                    format, image_relocations,
                                     image_relocation_count, output, diagnostics)) {
         good = false;
     }
+    free(payload);
     for (size_t i = 0U; i < loaded_count; ++i) free_link_object(&loaded[i]);
     for (size_t i = 0U; i < global_count; ++i) free((void *)globals[i].name);
     free(globals);
