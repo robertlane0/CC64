@@ -145,6 +145,22 @@ static bool parse_options(int argc, char **argv, Options *options,
                                 "option '-I' requires a directory");
                 return false;
             }
+        } else if (strncmp(arg, "-I", 2U) == 0 && arg[2] != '\0') {
+            /* The attached -Idirectory form is also accepted. */
+            if (!add_option_value(options->include_paths,
+                                  &options->include_path_count, 64U, arg + 2)) {
+                diagnostic_emit(sink, 2U, DIAG_DRIVER, NULL, 0U, 0U,
+                                "option '-I' requires a directory");
+                return false;
+            }
+        } else if (strncmp(arg, "-D", 2U) == 0 && arg[2] != '\0') {
+            /* The attached -DNAME=VALUE form is also accepted. */
+            if (!add_option_value(options->predefines,
+                                  &options->predefine_count, 64U, arg + 2)) {
+                diagnostic_emit(sink, 3U, DIAG_DRIVER, NULL, 0U, 0U,
+                                "option '-D' requires a definition");
+                return false;
+            }
         } else if (strcmp(arg, "-D") == 0) {
             if (!take_value(argc, argv, &i, &value) ||
                 !add_option_value(options->predefines,

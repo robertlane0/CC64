@@ -1315,6 +1315,16 @@ static bool write_constant_initializer(Encoder *encoder, AstNode *value,
     }
     if (value == NULL || type == NULL) return true;
     if (value->kind == NODE_INITIALIZER && type->kind == TYPE_ARRAY) {
+        /* A string literal may initialize a character array without braces. */
+        AstNode *element = value->a;
+        if (element != NULL && element->next == NULL &&
+            element->kind == NODE_STRING && type->base != NULL &&
+            type_size(type->base) == 1U && base <= limit) {
+            size_t copy = element->text_length;
+            if (copy > limit - base) copy = limit - base;
+            if (copy != 0U) memcpy(bytes + base, element->text, copy);
+            return true;
+        }
         size_t element_size = type_size(type->base);
         size_t index = 0U;
         for (AstNode *item = value->a; item != NULL; item = item->next, ++index) {

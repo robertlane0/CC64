@@ -1,4 +1,5 @@
 #include "semantic/semantic.h"
+#include "frontend/numeric.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -228,22 +229,98 @@ static bool is_integer_constant_token(const Token *token)
     return token != NULL && token->kind == TOKEN_NUMBER;
 }
 
+/* Evaluates an integer constant expression over a parsed tree. Array bounds,
+   case labels, and enumerators all need the same arithmetic, and accepting a
+   bare literal only would reject ordinary spellings such as [4 * 2 + 1] or a
+   size computed from a macro. A value the evaluator cannot prove constant is
+   rejected rather than folded. */
+static bool const_eval(AstNode *node, uint64_t *result)
+{
+    if (node == NULL) return false;
+    if (node->kind == NODE_INTEGER || node->kind == NODE_SIZEOF) {
+        *result = node->unsigned_integer;
+        return true;
+    }
+    if (node->kind == NODE_CAST) return const_eval(node->a, result);
+    if (node->kind == NODE_IDENTIFIER && node->symbol != NULL &&
+        node->symbol->class == SYMBOL_ENUM_CONSTANT) {
+        *result = (uint64_t)node->symbol->enum_value;
+        return true;
+    }
+    if (node->kind == NODE_UNARY) {
+        uint64_t operand = 0UL;
+        if (!const_eval(node->a, &operand)) return false;
+        switch (node->unary) {
+        case UNARY_PLUS: *result = operand; return true;
+        case UNARY_MINUS: *result = 0UL - operand; return true;
+        case UNARY_BITWISE_NOT: *result = ~operand; return true;
+        case UNARY_LOGICAL_NOT: *result = operand == 0UL ? 1UL : 0UL; return true;
+        default: return false;
+        }
+    }
+    if (node->kind == NODE_CONDITIONAL) {
+        uint64_t condition = 0UL;
+        if (!const_eval(node->a, &condition)) return false;
+        return const_eval(condition != 0UL ? node->b : node->c, result);
+    }
+    if (node->kind != NODE_BINARY) return false;
+    uint64_t left = 0UL;
+    uint64_t right = 0UL;
+    if (!const_eval(node->a, &left) || !const_eval(node->b, &right)) return false;
+    bool is_signed = node->type == NULL || type_is_signed(node->type);
+    switch (node->binary) {
+    case BINARY_ADD: *result = left + right; return true;
+    case BINARY_SUBTRACT: *result = left - right; return true;
+    case BINARY_MULTIPLY: *result = left * right; return true;
+    case BINARY_DIVIDE:
+        if (right == 0UL) return false;
+        *result = is_signed ? (uint64_t)((int64_t)left / (int64_t)right)
+                            : left / right;
+        return true;
+    case BINARY_REMAINDER:
+        if (right == 0UL) return false;
+        *result = is_signed ? (uint64_t)((int64_t)left % (int64_t)right)
+                            : left % right;
+        return true;
+    case BINARY_LEFT_SHIFT: *result = left << (right & 63UL); return true;
+    case BINARY_RIGHT_SHIFT:
+        *result = is_signed ? (uint64_t)((int64_t)left >> (right & 63UL))
+                            : left >> (right & 63UL);
+        return true;
+    case BINARY_BITWISE_AND: *result = left & right; return true;
+    case BINARY_BITWISE_OR: *result = left | right; return true;
+    case BINARY_BITWISE_XOR: *result = left ^ right; return true;
+    case BINARY_LOGICAL_AND: *result = left != 0UL && right != 0UL ? 1UL : 0UL; return true;
+    case BINARY_LOGICAL_OR: *result = left != 0UL || right != 0UL ? 1UL : 0UL; return true;
+    case BINARY_LESS: *result = left < right ? 1UL : 0UL; return true;
+    case BINARY_LESS_EQUAL: *result = left <= right ? 1UL : 0UL; return true;
+    case BINARY_GREATER: *result = left > right ? 1UL : 0UL; return true;
+    case BINARY_GREATER_EQUAL: *result = left >= right ? 1UL : 0UL; return true;
+    case BINARY_EQUAL: *result = left == right ? 1UL : 0UL; return true;
+    case BINARY_NOT_EQUAL: *result = left != right ? 1UL : 0UL; return true;
+    default: return false;
+    }
+}
+
 static bool parse_constant_size(Parser *parser, size_t *value)
 {
-    const Token *start = peek(parser);
-    if (!is_integer_constant_token(start)) {
-        semantic_error(parser, 2010U, start, "array size must be an integer constant");
+    AstNode *node = parse_conditional(parser);
+    uint64_t raw = 0UL;
+    if (node == NULL) {
+        semantic_error(parser, 2010U, peek(parser),
+                       "array size must be an integer constant expression");
         return false;
     }
-    char *end = NULL;
-    errno = 0;
-    unsigned long long raw = strtoull(start->text, &end, 0);
-    if (errno == ERANGE || end == start->text || *end != '\0' || raw > SIZE_MAX) {
-        semantic_error(parser, 2011U, start, "invalid array size");
+    if (!const_eval(node, &raw)) {
+        semantic_error(parser, 2010U, NULL,
+                       "array size must be an integer constant expression");
+        return false;
+    }
+    if (raw > (uint64_t)SIZE_MAX) {
+        semantic_error(parser, 2011U, NULL, "invalid array size");
         return false;
     }
     *value = (size_t)raw;
-    ++parser->position;
     return true;
 }
 
@@ -1031,12 +1108,33 @@ static AstNode *parse_number(Parser *parser, const Token *token)
     if (floating) {
         bool float_suffix = text[strlen(text) - 1U] == 'f' ||
                             text[strlen(text) - 1U] == 'F';
-        char *number_end = NULL;
-        double value = float_suffix ? (double)strtof(text, &number_end)
-                                    : strtod(text, &number_end);
-        end = number_end;
-        if (errno == ERANGE || end == text ||
-            (*end != '\0' && !(float_suffix && (*end == 'f' || *end == 'F')))) {
+        /* The conversion is project code so that a self-hosted build and the
+           bootstrap build produce identical constants. */
+        size_t length = strlen(text);
+        char digits[64];
+        if (length >= sizeof(digits)) {
+            semantic_error(parser, 2070U, token, "invalid floating constant");
+            digits[0] = '\0';
+        } else {
+            size_t out = 0U;
+            for (size_t i = 0U; i < length; ++i) {
+                char byte = text[i];
+                if (float_suffix && (byte == 'f' || byte == 'F')) break;
+                digits[out] = byte;
+                ++out;
+            }
+            digits[out] = '\0';
+        }
+        uint64_t bits = 0UL;
+        double value = 0.0;
+        if (cc64_decimal_to_double(digits, &bits)) {
+            if (float_suffix) {
+                uint32_t single = cc64_double_to_float(bits);
+                memcpy(&value, &single, sizeof(single));
+            } else {
+                memcpy(&value, &bits, sizeof(bits));
+            }
+        } else {
             semantic_error(parser, 2070U, token, "invalid floating constant");
             value = 0.0;
         }

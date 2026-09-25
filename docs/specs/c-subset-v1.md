@@ -24,6 +24,28 @@ subscripting, `if`, `else`, `while`, `do`, `for`, `switch`, `case`, `default`,
 represented in the typed AST. Integer promotions and usual arithmetic
 conversions are explicit in the type system.
 
+## Integer constant expressions
+
+Array bounds, enumerator values, case labels, and the operands of the
+preprocessor's `#if` are integer constant expressions. The front end evaluates
+them with a project evaluator over integer literals, character constants,
+enumeration constants, `sizeof`, casts, unary operators, binary operators, and
+the conditional operator. A value that cannot be proven constant is rejected
+with a diagnostic rather than folded.
+
+## Floating constants
+
+A decimal floating constant is converted by project code, never by a library
+routine, so that a bootstrap build and a self-hosted build convert the same
+text to the same bits. The conversion forms the significand exactly, applies
+the decimal exponent in a 128-bit intermediate, and rounds once to the nearest
+binary64 value with ties to even; an `f` suffix narrows the result to binary32
+with the same rounding rule. The supported range is at most 19 significant
+decimal digits, a decimal exponent between -27 and 19, and a result in the
+normal binary64 range. A constant outside that range is diagnosed as an
+invalid floating constant instead of being rounded approximately.
+Hexadecimal floating constants are not part of this subset.
+
 ## Explicitly deferred diagnostics
 
 The following produce stable semantic diagnostics in version 1: variable
@@ -31,9 +53,11 @@ length arrays, bit-fields, `_Atomic`, `_Alignas`, generic selection, complex
 and imaginary types, `long double`, thread-local storage, compound literals,
 anonymous aggregates, flexible aggregate members, and dynamic libraries.
 Aggregate assignment and basic binary32/binary64 arithmetic are implemented
-for the version 1 integer ABI. Full floating-point conversions, variadic
-formatting, and aggregate-by-value parameter passing remain deferred and are
-diagnosed or kept outside the first target gate.
+for the version 1 integer ABI. Variadic calls are implemented for integer and
+pointer arguments, as recorded in the ABI document. Full floating-point
+conversions, floating variadic arguments, and aggregate-by-value parameter
+passing remain deferred and are diagnosed or kept outside the first target
+gate.
 
 A construct outside this document is not accepted by silently extending the
 grammar. It must receive a diagnostic before code generation.

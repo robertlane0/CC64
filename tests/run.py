@@ -123,6 +123,66 @@ def main() -> int:
         run([str(ROOT / "cc64"), "--link", "--format", "mz64", str(table_object),
              "-o", str(directory / "table.mz")])
 
+        arrow_source = directory / "arrow.c"
+        arrow_object = directory / "arrow.cc64o"
+        arrow_source.write_text(
+            "struct S { char buffer[8]; int value; };\n"
+            "int main(void) {\n"
+            "  struct S item;\n"
+            "  item.value = 65;\n"
+            "  item.buffer[0] = 'z';\n"
+            "  struct S *p = &item;\n"
+            "  const char *first = p->buffer;\n"
+            "  if (first[0] != 'z') return 1;\n"
+            "  if (first != p->buffer) return 2;\n"
+            "  if (p->value != 65) return 3;\n"
+            "  return 9;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        run([str(ROOT / "cc64"), "-c", str(arrow_source), "-o", str(arrow_object)])
+        run([str(ROOT / "cc64"), "--link", str(arrow_object),
+             "-o", str(directory / "arrow.com")])
+
+        global_text = directory / "global-text.c"
+        global_object = directory / "global-text.cc64o"
+        global_text.write_text(
+            "char message[] = \"hello\";\n"
+            "char sized[6] = \"hello\";\n"
+            "int main(void) { return message[4] == 'o' && sized[5] == '\\0' ? 9 : 1; }\n",
+            encoding="utf-8",
+        )
+        run([str(ROOT / "cc64"), "-c", str(global_text), "-o", str(global_object)])
+        run([str(ROOT / "cc64"), "--link", str(global_object),
+             "-o", str(directory / "global-text.com")])
+
+        constant_source = directory / "constant-size.c"
+        constant_object = directory / "constant-size.cc64o"
+        constant_source.write_text(
+            "#define N 4\n"
+            "int main(void) {\n"
+            "  int a[N];\n"
+            "  int b[2 + 1];\n"
+            "  int c[sizeof(long)];\n"
+            "  a[3] = 1; b[2] = 2; c[7] = 3;\n"
+            "  return a[3] + b[2] + c[7];\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        run([str(ROOT / "cc64"), "-c", str(constant_source), "-o", str(constant_object)])
+        run([str(ROOT / "cc64"), "--link", str(constant_object),
+             "-o", str(directory / "constant-size.com")])
+
+        attached = directory / "attached.c"
+        attached.write_text("#include \"attached.h\"\nint main(void) { return VALUE; }\n",
+                            encoding="utf-8")
+        (directory / "attached.h").write_text("#define VALUE 0\n", encoding="utf-8")
+        attached_object = directory / "attached.cc64o"
+        run([str(ROOT / "cc64"), "-I" + str(directory), "-c", str(attached),
+             "-o", str(attached_object)])
+        run([str(ROOT / "cc64"), "-D", "EXTRA=1", "-c", str(attached),
+             "-o", str(directory / "attached2.cc64o")])
+
         multi_source = directory / "multi.c"
         multi_object = directory / "multi.cc64o"
         multi_source.write_text(

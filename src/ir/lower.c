@@ -419,6 +419,12 @@ static IrInst *lower_expr(LowerContext *context, AstNode *node)
         return inst;
     }
     case NODE_MEMBER: {
+        /* An array or function member decays to its address, exactly as a
+           bare identifier of that type does. */
+        if (node->type != NULL &&
+            (node->type->kind == TYPE_ARRAY || node->type->kind == TYPE_FUNCTION)) {
+            return lower_address(context, node);
+        }
         IrInst *address = lower_address(context, node);
         IrInst *inst = ir_new(context, IR_LOAD, node->type, node);
         if (inst != NULL) inst->a = address;
