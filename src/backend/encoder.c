@@ -106,8 +106,7 @@ static void emit_mem_reg(Encoder *encoder, unsigned base, unsigned reg,
 
 static void emit_mem_rip(Encoder *encoder, unsigned reg)
 {
-    emit8(encoder, (unsigned char)(reg << 3));
-    emit8(encoder, 5U);
+    emit8(encoder, (unsigned char)(((reg & 7U) << 3) | 5U));
 }
 
 static void emit_mov_reg_reg(Encoder *encoder, unsigned dst, unsigned src)
@@ -377,7 +376,7 @@ static void encode_load(Encoder *encoder, IrInst *inst)
     size_t width = inst->width == 0U ? 8U : inst->width;
     if (inst->a == NULL && inst->symbol != NULL) {
         if (symbol_is_local(inst->symbol)) {
-            emit_load_mem(encoder, 0U, 5U, -(int64_t)inst->symbol->offset, width,
+            emit_load_mem(encoder, 0U, 5U, (int64_t)inst->symbol->offset, width,
                           inst->is_signed);
         } else {
             if (width == 1U || width == 2U) {
@@ -445,7 +444,7 @@ static void encode_addr(Encoder *encoder, IrInst *inst)
         if (symbol_is_local(inst->symbol)) {
             emit_rex(encoder, true, 0U, 5U);
             emit8(encoder, 0x8dU);
-            emit_mem_reg(encoder, 5U, 0U, -(int64_t)inst->symbol->offset);
+            emit_mem_reg(encoder, 5U, 0U, (int64_t)inst->symbol->offset);
         } else {
             emit_rip_reference(encoder, 0x8dU, 0U, inst->symbol);
         }
@@ -621,7 +620,7 @@ static void emit_prologue(Encoder *encoder, IrFunction *function)
          parameter = parameter->next, ++index) {
         if (index >= 6U) break;
         unsigned reg = argument_registers[index];
-        emit_store_mem(encoder, reg, 5U, -(int64_t)parameter->offset, 8U);
+        emit_store_mem(encoder, reg, 5U, (int64_t)parameter->offset, 8U);
     }
 }
 
@@ -665,6 +664,7 @@ static bool append_global_data(Encoder *encoder, IrProgram *program)
         if (bytes == NULL) return false;
         AstNode *initializer = symbol->initializer;
         AstNode *value = initializer->kind == NODE_INITIALIZER ? initializer->a : initializer;
+        while (value != NULL && value->kind == NODE_CAST) value = value->a;
         if (value != NULL && value->kind == NODE_INTEGER) {
             uint64_t raw = value->unsigned_integer;
             for (size_t byte = 0U; byte < size && byte < 8U; ++byte) bytes[byte] = (unsigned char)(raw >> (byte * 8U));

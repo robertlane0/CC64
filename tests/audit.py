@@ -45,7 +45,7 @@ def main() -> int:
             errors.append(f"generated or binary file tracked: {name}")
         if path.is_symlink():
             errors.append(f"symlink tracked: {name}")
-        if path.suffix.lower() not in {".md", ".c", ".h", ".py", ""} and name != "Makefile":
+        if path.suffix.lower() not in {".md", ".c", ".h", ".py", ".s", ""} and name != "Makefile":
             errors.append(f"unexpected tracked source type: {name}")
 
     ledger = (ROOT / "docs/provenance-ledger.md").read_text(encoding="utf-8")

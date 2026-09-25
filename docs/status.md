@@ -12,7 +12,7 @@ CC64-generated-image result.
 | M1 lexer and preprocessor | complete | phase-aware lexer, comments/splices, literals, keywords, object/function/variadic macros, hidesets, conditionals, includes, line/EOF handling, predefined macros, bounded expansion, and frontend/driver tests |
 | M2 parser, types, semantics | complete | typed AST, C17-subset declarations/declarators, scopes/linkage, structs/unions/enums, expressions/statements, conversions, initializers, and deferred-feature diagnostics with positive/negative tests |
 | M3 IR and x86-64 backend | complete | typed linear IR, stack-temporary lowering, x86-64 encoder, frame/call model, CC64O writer, relocations, independent object inspector, deterministic object tests |
-| M4 linker, loader image, runtime | not started | — |
+| M4 linker, loader image, runtime | complete | independent CC64O validation, section/symbol merge, PC-relative relocation checks, deterministic raw `.COM`, target entry/exit trampoline, freestanding target headers, and QEMU compiler-produced-image run returning exit 7 |
 | M5 language and MS-DOS64 compatibility | not started | — |
 | M6 `MZ64`, diagnostics, hardening | not started | — |
 | M7 self-hosting | not started | — |

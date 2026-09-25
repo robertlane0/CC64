@@ -11,7 +11,7 @@ DEPS = $(OBJECTS:.o=.d)
 TEST_SOURCES = $(shell find tests/unit -name '*.c' -print | sort 2>/dev/null)
 TEST_OBJECTS = $(TEST_SOURCES:%.c=build/%.o)
 
-.PHONY: all clean check test test-unit audit install-tools
+.PHONY: all clean check test test-unit test-target audit install-tools
 all: cc64
 
 cc64: $(OBJECTS)
@@ -41,6 +41,9 @@ test-unit: build/cc64-unit build/cc64-frontend build/cc64-semantic
 
 test: test-unit
 	@python3 tests/run.py
+
+test-target:
+	@python3 tests/run_target.py
 
 audit:
 	@python3 tests/audit.py

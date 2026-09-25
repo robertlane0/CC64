@@ -408,7 +408,8 @@ bool link_objects(Arena *arena, const char *const *objects, size_t object_count,
         /* Reserve the target entry trampoline in the text section. */
         static const unsigned char entry_stub[] = {
             0x31U, 0xffU, 0x31U, 0xf6U, 0xe8U, 0U, 0U, 0U, 0U,
-            0xb8U, 0x4cU, 0U, 0U, 0U, 0xcdU, 0x21U, 0xc3U
+            0x89U, 0xc1U, 0xb8U, 0U, 0x4cU, 0U, 0U, 0x88U,
+            0xc8U, 0xcdU, 0x21U, 0xc3U
         };
         if (!output_append(&outputs[0], entry_stub, sizeof(entry_stub))) good = false;
         for (size_t o = 0U; o < object_count && good; ++o) {

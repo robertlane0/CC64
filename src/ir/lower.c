@@ -415,8 +415,6 @@ static void lower_statement(LowerContext *context, AstNode *node,
             IrInst *value = lower_expr(context, node->a->a);
             IrInst *store = ir_new(context, IR_STORE, node->symbol->type, node);
             if (store != NULL) { store->a = address; store->b = value; }
-            ir_append(head, tail, address);
-            ir_append(head, tail, value);
             ir_append(head, tail, store);
         }
         break;
@@ -493,7 +491,7 @@ static void lower_statement(LowerContext *context, AstNode *node,
     }
     case NODE_BREAK: { IrInst *inst = ir_new(context, IR_JUMP, NULL, node); if (inst != NULL) inst->id = context->break_label; ir_append(head, tail, inst); break; }
     case NODE_CONTINUE: { IrInst *inst = ir_new(context, IR_JUMP, NULL, node); if (inst != NULL) inst->id = context->continue_label; ir_append(head, tail, inst); break; }
-    case NODE_RETURN: { IrInst *value = lower_expr(context, node->a); IrInst *inst = ir_new(context, IR_RETURN, context->function == NULL ? NULL : context->function->type->return_type, node); if (inst != NULL) inst->a = value; ir_append(head, tail, value); ir_append(head, tail, inst); break; }
+    case NODE_RETURN: { IrInst *value = lower_expr(context, node->a); IrInst *inst = ir_new(context, IR_RETURN, context->function == NULL ? NULL : context->function->type->return_type, node); if (inst != NULL) inst->a = value; ir_append(head, tail, inst); break; }
     case NODE_LABEL: { LabelEntry *entry = find_label(context, node->text, true); IrInst *inst = ir_new(context, IR_LABEL, NULL, node); if (inst != NULL) inst->id = entry->id; ir_append(head, tail, inst); break; }
     case NODE_GOTO: { LabelEntry *entry = find_label(context, node->text, true); IrInst *inst = ir_new(context, IR_JUMP, NULL, node); if (inst != NULL) inst->id = entry->id; ir_append(head, tail, inst); break; }
     default: {

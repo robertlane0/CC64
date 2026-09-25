@@ -35,6 +35,7 @@ source input to the normal CC64 build.
 | D-009 | Failed preprocessing never publishes its temporary output | diagnostics cannot be mistaken for a successful translation |
 | D-010 | Typed AST nodes carry explicit C types and source locations | later lowering cannot depend on parser token layout |
 | D-011 | `-O0` uses balanced stack temporaries and explicit frame slots | makes ABI and call behavior inspectable before optimization |
+| D-012 | Linker emits a target-owned entry/exit trampoline for raw COM | keeps startup independent of host CRT while preserving `main`'s return byte |
 
 ## Review rule
 
