@@ -1,6 +1,10 @@
 #include "cc64.h"
 #include "frontend/frontend.h"
 #include "semantic/semantic.h"
+#include "ir/ir.h"
+#include "backend/encoder.h"
+#include "backend/object.h"
+#include "linker/linker.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,6 +12,7 @@
 
 typedef enum Action {
     ACTION_COMPILE,
+    ACTION_LINK,
     ACTION_PREPROCESS,
     ACTION_DUMP_TOKENS,
     ACTION_DUMP_AST,
@@ -18,7 +23,10 @@ typedef enum Action {
 typedef struct Options {
     Action action;
     const char *input;
+    const char **inputs;
+    size_t input_count;
     const char *output;
+    bool output_set;
     const char *target;
     const char **include_paths;
     size_t include_path_count;
@@ -26,6 +34,7 @@ typedef struct Options {
     size_t predefine_count;
     bool line_markers;
     bool preserve_newlines;
+    ImageFormat format;
 } Options;
 
 static void usage(FILE *stream)
@@ -33,6 +42,8 @@ static void usage(FILE *stream)
     fprintf(stream,
             "usage: cc64 [options] input.c\n"
             "  -c             compile and emit CC64O\n"
+            "  --link         link CC64O objects\n"
+            "  --format NAME  raw COM (default) or mz64\n"
             "  -E             preprocess only\n"
             "  -D NAME[=TEXT] define a macro\n"
             "  -I DIR         add an include directory\n"
@@ -69,6 +80,7 @@ static void free_options(Options *options)
 {
     free(options->include_paths);
     free(options->predefines);
+    free(options->inputs);
 }
 
 static bool parse_options(int argc, char **argv, Options *options,
@@ -76,8 +88,12 @@ static bool parse_options(int argc, char **argv, Options *options,
 {
     options->action = ACTION_COMPILE;
     options->input = NULL;
+    options->inputs = cc64_xmalloc(64U * sizeof(*options->inputs));
+    options->input_count = 0U;
     options->output = "a.o";
+    options->output_set = false;
     options->target = CC64_TARGET;
+    options->format = IMAGE_RAW_COM;
     options->include_paths = cc64_xmalloc(64U * sizeof(*options->include_paths));
     options->include_path_count = 0U;
     options->predefines = cc64_xmalloc(64U * sizeof(*options->predefines));
@@ -89,6 +105,21 @@ static bool parse_options(int argc, char **argv, Options *options,
         const char *value = NULL;
         if (strcmp(arg, "-c") == 0) {
             options->action = ACTION_COMPILE;
+        } else if (strcmp(arg, "--link") == 0) {
+            options->action = ACTION_LINK;
+        } else if (strcmp(arg, "--format") == 0) {
+            if (!take_value(argc, argv, &i, &value)) {
+                diagnostic_emit(sink, 8U, DIAG_DRIVER, NULL, 0U, 0U,
+                                "option '--format' requires a name");
+                return false;
+            }
+            if (strcmp(value, "com") == 0 || strcmp(value, "raw") == 0) options->format = IMAGE_RAW_COM;
+            else if (strcmp(value, "mz64") == 0) options->format = IMAGE_MZ64;
+            else {
+                diagnostic_emit(sink, 9U, DIAG_DRIVER, NULL, 0U, 0U,
+                                "unsupported image format");
+                return false;
+            }
         } else if (strcmp(arg, "-E") == 0) {
             options->action = ACTION_PREPROCESS;
         } else if (strcmp(arg, "--dump-tokens") == 0) {
@@ -105,6 +136,7 @@ static bool parse_options(int argc, char **argv, Options *options,
                                 "option '-o' requires a path");
                 return false;
             }
+            options->output_set = true;
         } else if (strcmp(arg, "-I") == 0 || strcmp(arg, "--include-dir") == 0) {
             if (!take_value(argc, argv, &i, &value) ||
                 !add_option_value(options->include_paths,
@@ -136,19 +168,23 @@ static bool parse_options(int argc, char **argv, Options *options,
             (void)snprintf(message, sizeof(message), "unknown option '%s'", arg);
             diagnostic_emit(sink, 5U, DIAG_DRIVER, NULL, 0U, 0U, message);
             return false;
-        } else if (options->input == NULL) {
-            options->input = arg;
+        } else if (options->input_count < 64U) {
+            options->inputs[options->input_count++] = arg;
+            options->input = options->inputs[0];
         } else {
             diagnostic_emit(sink, 6U, DIAG_DRIVER, NULL, 0U, 0U,
-                            "only one input file is supported");
+                            "too many input files");
             return false;
         }
     }
-    if ((options->action == ACTION_COMPILE || options->action == ACTION_PREPROCESS ||
-         options->action == ACTION_DUMP_TOKENS || options->action == ACTION_DUMP_AST) &&
-        options->input == NULL) {
+    if ((options->action == ACTION_COMPILE || options->action == ACTION_LINK ||
+         options->action == ACTION_PREPROCESS || options->action == ACTION_DUMP_TOKENS ||
+         options->action == ACTION_DUMP_AST) && options->input == NULL) {
         diagnostic_emit(sink, 7U, DIAG_DRIVER, NULL, 0U, 0U, "missing input file");
         return false;
+    }
+    if (options->action == ACTION_LINK && !options->output_set) {
+        options->output = "a.com";
     }
     return true;
 }
@@ -246,6 +282,18 @@ int cc64_main(int argc, char **argv)
         free_options(&options);
         return 0;
     }
+    if (options.action == ACTION_LINK) {
+        Arena *arena = arena_create(256U * 1024U * 1024U);
+        bool good = link_objects(arena, (const char *const *)options.inputs,
+                                 options.input_count, options.output,
+                                 options.format, &sink);
+        print_diagnostics(&sink);
+        size_t errors = sink.count;
+        diagnostic_sink_destroy(&sink);
+        free_options(&options);
+        arena_destroy(arena);
+        return good && errors == 0U ? 0 : 1;
+    }
     if (strcmp(options.target, CC64_TARGET) != 0) {
         diagnostic_emit(&sink, 12U, DIAG_DRIVER, NULL, 0U, 0U,
                         "unsupported target contract");
@@ -281,6 +329,7 @@ int cc64_main(int argc, char **argv)
         good = false;
     }
     TranslationUnit unit = {0};
+    IrProgram program = {0};
     if (good && (options.action == ACTION_COMPILE ||
                  options.action == ACTION_DUMP_AST)) {
         size_t parse_before = sink.count;
@@ -297,14 +346,22 @@ int cc64_main(int argc, char **argv)
         } else if (options.action == ACTION_DUMP_AST) {
             good = print_ast(&unit);
         } else {
-            diagnostic_emit(&sink, 1001U, DIAG_BACKEND, source, 1U, 1U,
-                            "code generation is not available in this milestone");
-            good = false;
+            size_t lower_before = sink.count;
+            good = lower_translation_unit(arena, &unit, &sink, &program);
+            if (sink.count != lower_before) good = false;
+            if (good) {
+                ObjectBuilder builder;
+                object_builder_init(&builder, arena);
+                good = encode_ir_program(arena, &program, &builder, &sink) &&
+                       object_write_cc64o(&builder, options.output, &sink);
+                object_builder_destroy(&builder);
+            }
         }
     }
     print_diagnostics(&sink);
     size_t errors = sink.count;
     token_list_free(&tokens);
+    ir_program_free(&program);
     translation_unit_free(&unit);
     diagnostic_sink_destroy(&sink);
     free_options(&options);

@@ -94,6 +94,7 @@ struct Symbol {
     bool defined;
     bool is_parameter;
     size_t offset;
+    bool has_frame_offset;
     int64_t enum_value;
     AstNode *initializer;
     Symbol *next;

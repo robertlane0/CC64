@@ -34,6 +34,7 @@ source input to the normal CC64 build.
 | D-008 | Preprocessing uses explicit hidesets and bounded expansion depth | prevents recursive macro runaway while retaining blue-painted tokens |
 | D-009 | Failed preprocessing never publishes its temporary output | diagnostics cannot be mistaken for a successful translation |
 | D-010 | Typed AST nodes carry explicit C types and source locations | later lowering cannot depend on parser token layout |
+| D-011 | `-O0` uses balanced stack temporaries and explicit frame slots | makes ABI and call behavior inspectable before optimization |
 
 ## Review rule
 
