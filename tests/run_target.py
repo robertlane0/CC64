@@ -196,6 +196,22 @@ VARARG_PROGRAM = (
 )
 
 
+# The pinned target shell starts a program with an empty command tail, so the
+# observable startup contract here is an empty, null-terminated argument vector.
+# A non-empty tail is exercised by the linker startup unit test on the host side.
+ARGUMENT_PROGRAM = (
+    "int cc64_write(int, const void *, unsigned long);\n"
+    "int main(int argc, char **argv) {\n"
+    "  cc64_write(1, \"argc=\", 5);\n"
+    "  if (argc != 0) return 1;\n"
+    "  cc64_write(1, (const char *)\"0\", 1);\n"
+    "  if (argv[0] != 0) return 2;\n"
+    "  cc64_write(1, \" a0=null\\n\", 8);\n"
+    "  return 9;\n"
+    "}\n"
+)
+
+
 def main() -> int:
     qemu = shutil.which("qemu-system-x86_64")
     if qemu is None or not TARGET.is_dir():
@@ -222,11 +238,14 @@ def main() -> int:
             ("C64F", "int cc64_open(const char*); int cc64_read(int,void*,unsigned long); int cc64_close(int); int main(void){char b[4]; int h=cc64_open(\"HELLO.TXT\"); if(h<0)return 1; cc64_read(h,b,4); cc64_close(h); return b[0]==72?7:2;}", "raw", 7, None),
             ("C64B", "int zero_global; int main(void){zero_global=9; return zero_global;}", "raw", 9, None),
             ("C64Z", "int zero_global; int main(void){zero_global=9; return zero_global;}", "mz64", 9, None),
-            ("C64G", "int main(int argc, char **argv){return argc;}", "raw", 1, None),
+            ("C64G", "int main(int argc, char **argv){return argc;}", "raw", 0, None),
+            ("C64H", ARGUMENT_PROGRAM, "raw", 9, "argc=0 a0=null"),
             ("C64W", FILE_WRITE_PROGRAM, "raw", 7, None),
             ("C64K", SEEK_PROGRAM, "raw", 7, None),
             ("C64V", VARARG_PROGRAM, "raw", 9, "s=10 n=138"),        ]
-        for name, source, image_format, expected, expected_text in cases:
+        for entry in cases:
+            name, source, image_format, expected, expected_text = entry[:5]
+            command = entry[5] if len(entry) > 5 else name
             disk = work / f"{name}.img"
             image = compile_and_link(work, source, name, image_format)
             shutil.copy2(TARGET / "build/dos64-lean.img", disk)
@@ -234,7 +253,7 @@ def main() -> int:
             run(["python3", str(ROOT / "tests/embed_fat12.py"), str(disk),
                  str(image), name], ROOT)
             check_volume(disk, f"{name} embedded")
-            text = execute(qemu, disk, name, name, expected)
+            text = execute(qemu, disk, name, command, expected)
             check_volume(disk, f"{name} after QEMU")
             if f"Exit {expected}" not in text:
                 raise SystemExit(f"{name}: target did not return {expected}")

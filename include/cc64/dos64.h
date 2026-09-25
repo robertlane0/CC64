@@ -14,6 +14,7 @@ typedef int cc64_fd;
 #define CC64_SEEK_END 2
 
 void cc64_exit(int code);
+void cc64_start(unsigned long prefix);
 int cc64_putc(int character);
 int cc64_write(int handle, const void *data, size_t size);
 int cc64_read(int handle, void *data, size_t size);

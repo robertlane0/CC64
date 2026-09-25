@@ -66,8 +66,13 @@ def main() -> int:
     args = parser.parse_args()
     image = bytearray(args.image.read_bytes())
     payload = args.program.read_bytes()
-    if len(payload) > 0x10000:
-        raise ValueError("test program exceeds reserved raw COM budget")
+    # A raw COM test program is small, but a self-hosted compiler image is an
+    # MZ64 payload of a few hundred kilobytes. The volume holds 2880 clusters;
+    # the budget below keeps a malformed or oversized input from filling it, and
+    # the allocator still fails loudly when the volume is genuinely full.
+    payload_budget = 768 * 1024
+    if len(payload) > payload_budget:
+        raise ValueError("test program exceeds the reserved volume budget")
     directory = ROOT_LBA * SECTOR
     encoded = name83(args.name)
     entry = None

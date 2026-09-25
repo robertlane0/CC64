@@ -27,6 +27,7 @@ typedef struct Encoder {
     size_t code_capacity;
     size_t function_offset;
     IrFunction *function;
+    Symbol *main_symbol;
     size_t stack_depth;
     LabelSlot *labels;
     size_t label_count;
@@ -112,6 +113,16 @@ static void emit_mem_reg(Encoder *encoder, unsigned base, unsigned reg,
 static void emit_mem_rip(Encoder *encoder, unsigned reg)
 {
     emit8(encoder, (unsigned char)(((reg & 7U) << 3) | 5U));
+}
+
+/* LEA reg, [base + displacement]. emit_mem_reg only writes the addressing
+   bytes, so the REX prefix and opcode are emitted here. */
+static void emit_lea_mem(Encoder *encoder, unsigned base, unsigned reg,
+                         int64_t displacement)
+{
+    emit_rex(encoder, true, reg, base);
+    emit8(encoder, 0x8dU);
+    emit_mem_reg(encoder, base, reg, displacement);
 }
 
 static void emit_mov_reg_reg(Encoder *encoder, unsigned dst, unsigned src)
@@ -1463,7 +1474,8 @@ typedef enum RuntimeFunction {
     RUNTIME_CREATE,
     RUNTIME_LSEEK,
     RUNTIME_CLOSE,
-    RUNTIME_EXIT
+    RUNTIME_EXIT,
+    RUNTIME_START
 } RuntimeFunction;
 
 static bool runtime_function_info(const char *name, RuntimeFunction *function)
@@ -1479,8 +1491,130 @@ static bool runtime_function_info(const char *name, RuntimeFunction *function)
     else if (strcmp(name, "cc64_lseek") == 0) *function = RUNTIME_LSEEK;
     else if (strcmp(name, "cc64_close") == 0) *function = RUNTIME_CLOSE;
     else if (strcmp(name, "cc64_exit") == 0) *function = RUNTIME_EXIT;
+    else if (strcmp(name, "cc64_start") == 0) *function = RUNTIME_START;
     else return false;
     return true;
+}
+
+/* The target startup routine. The linker trampoline hands over the process
+   prefix; this body copies the command tail into its frame, terminates it,
+   splits it on spaces and tabs, and calls main with the resulting argument
+   vector. Version 1 has no environment block, so the third argument is null.
+   The routine is emitted into every image so that an entry path always works
+   without a separate runtime object.
+ *
+ * Register use follows the call-clobbered set only: RAX holds the tail length,
+ * RDX the argument vector base, RSI the tail buffer, RCX the copy count, R11
+ * the cursor, R8 the argument count, and R10 the process prefix. */
+#define CC64_START_ARGUMENTS 16
+#define CC64_START_TAIL 144
+/* Frame layout below the frame pointer: the command tail copy occupies the
+   upper part and the argument vector the lower part, so neither can overwrite
+   the other or the saved frame pointer. */
+#define CC64_START_TAIL_AT (-0xa0)
+#define CC64_START_VECTOR_AT (-0x100)
+#define CC64_START_FRAME 0x140
+#define CC64_START_SKIP_LENGTH 1U
+#define CC64_START_SKIP_SPACE 2U
+#define CC64_START_RECORD 3U
+#define CC64_START_SCAN 4U
+#define CC64_START_SPLIT 5U
+#define CC64_START_DONE 6U
+
+static void emit_startup_body(Encoder *encoder, Symbol *main_symbol)
+{
+    /* The frame holds the argument vector at the bottom and the command tail
+       copy above it. Register use stays inside the call-clobbered set: RAX the
+       tail length, RDX the vector base, RSI the tail copy, RCX the copy count,
+       R11 the cursor, R8 the argument count, and R10 the process prefix. */
+    emit_push(encoder, 5U);
+    emit_mov_reg_reg(encoder, 5U, 4U);
+    emit8(encoder, 0xfcU);                             /* cld */
+    emit8(encoder, 0x48U); emit8(encoder, 0x81U); emit8(encoder, 0xecU);
+    emit32(encoder, CC64_START_FRAME);                 /* sub rsp, frame */
+    emit_mov_reg_reg(encoder, 10U, 7U);                /* mov r10, psp */
+    /* The tail length is a single byte in the process prefix, so it must be
+       read as a byte rather than as a word or quadword. */
+    emit8(encoder, 0x41U); emit8(encoder, 0x0fU); emit8(encoder, 0xb6U);
+    emit8(encoder, 0x82U); emit32(encoder, 0xa0U);      /* movzx eax, byte */
+    emit8(encoder, 0x48U); emit8(encoder, 0x3dU);
+    emit32(encoder, CC64_START_TAIL - 1U);             /* cmp rax, limit */
+    emit_conditional_jump(encoder, 6U, CC64_START_SKIP_LENGTH);
+    emit_mov_reg_imm(encoder, 0U, CC64_START_TAIL - 1U, 8U);
+    define_label(encoder, CC64_START_SKIP_LENGTH);
+    /* Copy the command tail into the frame and terminate it. */
+    emit_lea_mem(encoder, 5U, 6U, CC64_START_TAIL_AT);   /* lea rsi */
+    emit_lea_mem(encoder, 10U, 7U, 0xa1U);             /* lea rdi */
+    emit_mov_reg_reg(encoder, 1U, 0U);                 /* mov rcx, rax */
+    emit8(encoder, 0xf3U); emit8(encoder, 0xa4U);       /* rep movsb */
+    emit8(encoder, 0xc6U); emit8(encoder, 0x04U);
+    emit8(encoder, 0x06U); emit8(encoder, 0x00U);       /* byte [rsi+rax] = 0 */
+    emit_lea_mem(encoder, 5U, 2U, CC64_START_VECTOR_AT);  /* lea rdx */
+    emit8(encoder, 0x45U); emit8(encoder, 0x31U); emit8(encoder, 0xc0U);
+    emit_lea_mem(encoder, 5U, 11U, CC64_START_TAIL_AT);   /* lea r11 */
+    /* Split the copy in place. The terminating NUL ends the scan, so no
+       length is tracked and no read can pass the end of the buffer. */
+    define_label(encoder, CC64_START_SKIP_SPACE);
+    emit8(encoder, 0x41U); emit8(encoder, 0x80U); emit8(encoder, 0x3bU);
+    emit8(encoder, 0x00U);                              /* cmp byte [r11], 0 */
+    emit_conditional_jump(encoder, 4U, CC64_START_DONE);
+    emit8(encoder, 0x41U); emit8(encoder, 0x80U); emit8(encoder, 0x3bU);
+    emit8(encoder, 0x20U);                              /* cmp byte [r11], ' ' */
+    emit_conditional_jump(encoder, 5U, CC64_START_RECORD);
+    emit8(encoder, 0x41U); emit8(encoder, 0x80U); emit8(encoder, 0x3bU);
+    emit8(encoder, 0x09U);                              /* cmp byte [r11], tab */
+    emit_conditional_jump(encoder, 5U, CC64_START_RECORD);
+    emit8(encoder, 0x49U); emit8(encoder, 0xffU); emit8(encoder, 0xc3U);
+    emit_jump(encoder, CC64_START_SKIP_SPACE);
+    define_label(encoder, CC64_START_RECORD);
+    emit8(encoder, 0x4eU); emit8(encoder, 0x89U); emit8(encoder, 0x1cU);
+    emit8(encoder, 0xc2U);                             /* mov [rdx+r8*8], r11 */
+    emit8(encoder, 0x41U); emit8(encoder, 0x83U); emit8(encoder, 0xf8U);
+    emit8(encoder, (unsigned char)CC64_START_ARGUMENTS);
+    emit_conditional_jump(encoder, 7U, CC64_START_DONE);
+    emit8(encoder, 0x41U); emit8(encoder, 0xffU); emit8(encoder, 0xc0U);
+    define_label(encoder, CC64_START_SCAN);
+    emit8(encoder, 0x41U); emit8(encoder, 0x80U); emit8(encoder, 0x3bU);
+    emit8(encoder, 0x00U);
+    emit_conditional_jump(encoder, 4U, CC64_START_DONE);
+    emit8(encoder, 0x41U); emit8(encoder, 0x80U); emit8(encoder, 0x3bU);
+    emit8(encoder, 0x20U);
+    emit_conditional_jump(encoder, 4U, CC64_START_SPLIT);
+    emit8(encoder, 0x41U); emit8(encoder, 0x80U); emit8(encoder, 0x3bU);
+    emit8(encoder, 0x09U);
+    emit_conditional_jump(encoder, 4U, CC64_START_SPLIT);
+    emit8(encoder, 0x49U); emit8(encoder, 0xffU); emit8(encoder, 0xc3U);
+    emit_jump(encoder, CC64_START_SCAN);
+    define_label(encoder, CC64_START_SPLIT);
+    emit8(encoder, 0x41U); emit8(encoder, 0xc6U); emit8(encoder, 0x03U);
+    emit8(encoder, 0x00U);                              /* byte [r11] = 0 */
+    emit8(encoder, 0x49U); emit8(encoder, 0xffU); emit8(encoder, 0xc3U);
+    emit_jump(encoder, CC64_START_SKIP_SPACE);
+    define_label(encoder, CC64_START_DONE);
+    /* C7 takes no register operand, so the reg field stays zero and only the
+       B extension for the r8 index is set. */
+    emit8(encoder, 0x4aU); emit8(encoder, 0xc7U); emit8(encoder, 0x04U);
+    emit8(encoder, 0xc2U); emit32(encoder, 0U);         /* mov [rdx+r8*8], 0 */
+    emit8(encoder, 0x4cU); emit8(encoder, 0x89U); emit8(encoder, 0xc7U);
+    emit8(encoder, 0x48U); emit8(encoder, 0x89U); emit8(encoder, 0xd6U);
+    emit8(encoder, 0x31U); emit8(encoder, 0xd2U);
+    emit8(encoder, 0xe8U);                             /* call main */
+    size_t field = encoder->code_size;
+    emit32(encoder, 0U);
+    (void)object_symbol_index(encoder, main_symbol);
+    if (!object_add_relocation(encoder->builder, encoder->text,
+                               encoder->function_offset + field, main_symbol,
+                               CC64O_REL_PC32, 0, 4U)) {
+        encoder_error(encoder, 4020U, NULL, "cannot record startup relocation");
+    }
+    emit_mov_reg_reg(encoder, 1U, 0U);
+    emit8(encoder, 0x48U); emit8(encoder, 0x89U); emit8(encoder, 0xecU);
+    emit8(encoder, 0x5dU);
+    emit_mov_reg_imm(encoder, 0U, 0x4c00U, 4U);
+    emit_mov_reg8_reg(encoder, 0U, 1U);
+    emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
+    emit8(encoder, 0xc3U);
+    (void)resolve_labels(encoder);
 }
 
 static void emit_runtime_body(Encoder *encoder, RuntimeFunction function)
@@ -1564,6 +1698,8 @@ static void emit_runtime_body(Encoder *encoder, RuntimeFunction function)
         emit8(encoder, 0xb4U); emit8(encoder, 0x4cU);
         emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
         break;
+    case RUNTIME_START:
+        return;
     }
     emit8(encoder, 0xc3U);
 }
@@ -1573,7 +1709,7 @@ static bool append_runtime_functions(Encoder *encoder)
     static const char *const names[] = {
         "cc64_putc", "cc64_write", "cc64_read", "cc64_alloc",
         "cc64_free", "cc64_open", "cc64_create", "cc64_lseek",
-        "cc64_close", "cc64_exit"
+        "cc64_close", "cc64_exit", "cc64_start"
     };
     for (size_t i = 0U; i < sizeof(names) / sizeof(names[0]); ++i) {
         size_t symbol_index = UINT32_MAX;
@@ -1583,8 +1719,16 @@ static bool append_runtime_functions(Encoder *encoder)
                 break;
             }
         }
-        if (symbol_index == UINT32_MAX ||
-            encoder->builder->symbols[symbol_index].section_index != UINT32_MAX) continue;
+        if (symbol_index == UINT32_MAX) {
+            /* The startup routine belongs to every image that defines main, so
+               it is emitted even when no source names it. */
+            if (strcmp(names[i], "cc64_start") != 0) continue;
+            if (encoder->main_symbol == NULL) continue;
+            if (!object_add_symbol(encoder->builder, names[i], 0U, UINT32_MAX,
+                                   1U, 2U, 0U, true)) return false;
+            symbol_index = encoder->builder->symbol_count - 1U;
+        }
+        if (encoder->builder->symbols[symbol_index].section_index != UINT32_MAX) continue;
         RuntimeFunction function = RUNTIME_EXIT;
         (void)runtime_function_info(names[i], &function);
         Encoder runtime = {0};
@@ -1593,7 +1737,12 @@ static bool append_runtime_functions(Encoder *encoder)
         runtime.builder = encoder->builder;
         runtime.text = encoder->text;
         runtime.function_offset = encoder->text->size;
-        emit_runtime_body(&runtime, function);
+        if (function == RUNTIME_START) {
+            if (encoder->main_symbol == NULL) continue;
+            emit_startup_body(&runtime, encoder->main_symbol);
+        } else {
+            emit_runtime_body(&runtime, function);
+        }
         if (runtime.failed ||
             !object_append_data(encoder->builder, encoder->text, runtime.code,
                                 runtime.code_size)) {
@@ -1650,6 +1799,13 @@ bool encode_ir_program(Arena *arena, IrProgram *program, ObjectBuilder *builder,
     encoder.text = &builder->sections[0];
     encoder.data = &builder->sections[1];
     encoder.bss = &builder->sections[2];
+    for (IrFunction *entry = program->functions; entry != NULL; entry = entry->next) {
+        if (entry->symbol != NULL && entry->symbol->name != NULL &&
+            strcmp(entry->symbol->name, "main") == 0) {
+            encoder.main_symbol = entry->symbol;
+            break;
+        }
+    }
     if (!prepare_symbols(&encoder, program) || !append_global_data(&encoder, program)) return false;
     for (IrFunction *function = program->functions; function != NULL; function = function->next) {
         if (!encode_function(&encoder, function)) return false;

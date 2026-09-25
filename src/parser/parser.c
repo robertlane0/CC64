@@ -890,6 +890,14 @@ static bool type_is_lvalue(AstNode *node)
     return false;
 }
 
+/* An array or function operand converts to a pointer, so a cast of a string
+   literal or a function name to a pointer type is a scalar conversion. */
+static bool type_decays_to_pointer(const Type *type)
+{
+    return type_is_scalar(type) ||
+           (type != NULL && (type->kind == TYPE_ARRAY || type->kind == TYPE_FUNCTION));
+}
+
 static AstNode *make_cast(Parser *parser, Type *type, AstNode *value,
                           const Token *token)
 {
@@ -899,7 +907,7 @@ static AstNode *make_cast(Parser *parser, Type *type, AstNode *value,
         if (node != NULL) node->a = value;
         return node;
     }
-    if (!type_is_scalar(type) || !type_is_scalar(value->type)) {
+    if (!type_is_scalar(type) || !type_decays_to_pointer(value->type)) {
         semantic_error(parser, 2040U, token, "invalid scalar conversion");
         return value;
     }

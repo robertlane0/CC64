@@ -74,3 +74,8 @@ that requires studying unrelated source is rejected and redesigned from its
 specification. `tests/audit.py` checks tracked source, forbidden artifact
 patterns, provenance records, and clean milestone documentation. Release
 review also records tool versions and performs a clean deterministic rebuild.
+| D-043 | The target startup routine is emitted into every image that defines `main`, and the link trampoline calls it | the old trampoline passed a pointer to the process prefix where `argv[0]` belonged, so no target program could read its own name or arguments; a required startup symbol makes the entry path part of the object contract |
+| D-044 | The startup copies the command tail into its own frame, terminates it, and splits it in place on spaces and tabs; the length field is read as a byte | the prefix stores a one-byte length, so reading a quadword would copy unrelated prefix bytes; scanning to the terminating NUL removes any bound on the tokenizer loop |
+| D-045 | Every hand-encoded startup instruction is checked against the assembler byte for byte | four separate encodings in the first draft were wrong or invalid (`C7 /1`, a reversed 8-bit move, a spurious REX bit), and an invalid opcode silently hung the target |
+| D-046 | Section alignment padding is applied to the output buffer before the section payload is appended | the previous order appended the padding after the offset had already been aligned, doubling every gap and leaving sections at unaligned offsets that broke eight-byte data relocations |
+

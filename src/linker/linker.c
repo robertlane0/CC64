@@ -37,6 +37,12 @@ typedef struct LinkSymbol {
     bool defined;
 } LinkSymbol;
 
+/* Byte offset of the call displacement in the entry trampoline below. The stub
+   starts with a four-byte stack adjustment, saves the process prefix, clears
+   the loader-owned slot, moves the prefix into the first argument register,
+   and calls the target startup routine. */
+#define CC64_ENTRY_CALL_FIELD 18U
+
 typedef struct ObjectRange {
     size_t offset;
     size_t length;
@@ -476,24 +482,21 @@ static bool output_append_zeros(OutputSection *section, size_t size)
     return good;
 }
 
-static bool output_pad_to(OutputSection *section, size_t old_size)
+static bool output_align_to(OutputSection *section, size_t alignment)
 {
-    if (section->size <= old_size) return true;
-    size_t padding = section->size - old_size;
-    unsigned char *bytes = calloc(padding, 1U);
-    if (bytes == NULL) return false;
-    bool good = output_append(section, bytes, padding);
-    free(bytes);
-    return good;
+    if (alignment <= 1U) return true;
+    size_t mask = alignment - 1U;
+    size_t target = (section->size + mask) & ~mask;
+    if (target < section->size) return false;
+    return output_append_zeros(section, target - section->size);
 }
 
-static bool align_output(OutputSection *section, size_t alignment, size_t *offset)
+static bool align_output(size_t alignment, size_t *offset)
 {
     if (alignment == 0U) alignment = 1U;
     size_t mask = alignment - 1U;
     if (*offset > SIZE_MAX - mask) return false;
     *offset = (*offset + mask) & ~mask;
-    section->output_offset = *offset;
     return true;
 }
 
@@ -867,31 +870,30 @@ bool link_objects(Arena *arena, const char *const *objects, size_t object_count,
         ++loaded_count;
     }
     if (good) {
+        /* The trampoline hands the process prefix to the target startup
+           routine, which builds the argument vector and calls main. The call
+           displacement is the only patched word; CC64_ENTRY_CALL_FIELD names
+           its offset so the patch and the bytes cannot drift apart. */
         static const unsigned char entry_stub[] = {
             0x48U, 0x83U, 0xecU, 0x28U,
             0x48U, 0x89U, 0x3cU, 0x24U,
             0x48U, 0xc7U, 0x44U, 0x24U, 0x10U, 0U, 0U, 0U, 0U,
-            0x49U, 0x89U, 0xfaU,
-            0x41U, 0x8bU, 0x82U, 0xa0U, 0U, 0U, 0U,
-            0x85U, 0xc0U, 0x0fU, 0x95U, 0xc0U,
-            0x0fU, 0xb6U, 0xc8U, 0x83U, 0xc1U, 0x01U,
-            0x49U, 0x8dU, 0x82U, 0xa1U, 0U, 0U, 0U,
-            0x48U, 0x89U, 0x44U, 0x24U, 0x08U,
-            0x48U, 0x89U, 0xcfU, 0x48U, 0x89U, 0xe6U, 0x31U, 0xd2U,
             0xe8U, 0U, 0U, 0U, 0U,
             0x89U, 0xc1U, 0x48U, 0x83U, 0xc4U, 0x28U,
             0xb8U, 0U, 0x4cU, 0U, 0U, 0x88U,
             0xc8U, 0xcdU, 0x21U, 0xc3U
         };
-        if (!output_append(&outputs[0], entry_stub, sizeof(entry_stub))) good = false;
+        if (entry_stub[CC64_ENTRY_CALL_FIELD - 1U] != 0xe8U) {
+            link_error(diagnostics, 5042U, output, "entry trampoline is malformed");
+            good = false;
+        } else if (!output_append(&outputs[0], entry_stub, sizeof(entry_stub))) {
+            good = false;
+        }
         for (size_t o = 0U; o < object_count && good; ++o) {
             for (size_t s = 0U; s < loaded[o].section_count; ++s) {
                 LinkSection *section = &loaded[o].sections[s];
                 unsigned output_kind = section->kind;
-                size_t old_size = outputs[output_kind].size;
-                if (!align_output(&outputs[output_kind], section->alignment,
-                                   &outputs[output_kind].size) ||
-                    !output_pad_to(&outputs[output_kind], old_size)) {
+                if (!output_align_to(&outputs[output_kind], section->alignment)) {
                     good = false;
                     break;
                 }
@@ -913,7 +915,7 @@ bool link_objects(Arena *arena, const char *const *objects, size_t object_count,
     if (good) {
         size_t base = 0U;
         for (size_t i = 0U; i < 4U; ++i) {
-            if (!align_output(&outputs[i], outputs[i].alignment, &base)) {
+            if (!align_output(outputs[i].alignment, &base)) {
                 good = false;
                 break;
             }
@@ -942,12 +944,17 @@ bool link_objects(Arena *arena, const char *const *objects, size_t object_count,
     }
     if (good) {
         GlobalSymbol *main_symbol = find_global(globals, global_count, "main");
+        GlobalSymbol *start_symbol = find_global(globals, global_count, "cc64_start");
         if (main_symbol == NULL || !main_symbol->defined) {
             link_error(diagnostics, 5027U, output, "undefined main symbol");
             good = false;
+        } else if (start_symbol == NULL || !start_symbol->defined) {
+            link_error(diagnostics, 5042U, output,
+                       "undefined target startup symbol");
+            good = false;
         } else {
-            size_t field = outputs[0].output_offset + 59U;
-            int64_t displacement = (int64_t)main_symbol->address -
+            size_t field = outputs[0].output_offset + CC64_ENTRY_CALL_FIELD;
+            int64_t displacement = (int64_t)start_symbol->address -
                                    (int64_t)(field + 4U);
             if (field > payload_size || 4U > payload_size - field) {
                 link_error(diagnostics, 5028U, output, "entry trampoline overflow");
