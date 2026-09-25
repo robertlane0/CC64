@@ -123,6 +123,26 @@ def main() -> int:
         run([str(ROOT / "cc64"), "--link", "--format", "mz64", str(table_object),
              "-o", str(directory / "table.mz")])
 
+        multi_source = directory / "multi.c"
+        multi_object = directory / "multi.cc64o"
+        multi_source.write_text(
+            "int pick(int a) { unsigned long left = 0UL, right = 0UL;\n"
+            "  unsigned long *p = &right; *p = (unsigned long)a; return (int)left + (int)right; }\n"
+            "int main(void) { return pick(5); }\n",
+            encoding="utf-8",
+        )
+        run([str(ROOT / "cc64"), "-c", str(multi_source), "-o", str(multi_object)])
+        run([str(ROOT / "cc64"), "--link", str(multi_object),
+             "-o", str(directory / "multi.com")])
+        unresolved = subprocess.run(
+            ["python3", str(ROOT / "tools/missing_symbols.py"), str(multi_object)],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+        )
+        if unresolved.returncode != 0:
+            raise SystemExit(
+                "multi-declarator declaration produced an external reference:\n"
+                + unresolved.stdout)
+
         bad = directory / "bad.c"
         bad_output = directory / "bad.i"
         bad.write_text('"unterminated\n', encoding="utf-8")

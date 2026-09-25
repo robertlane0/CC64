@@ -649,7 +649,10 @@ static bool apply_relocations(LinkObject *objects, size_t object_count,
                 if (symbol->binding == 1U) {
                     GlobalSymbol *global = find_global(globals, global_count, symbol->name);
                     if (global == NULL || !global->defined) {
-                        link_error(diagnostics, 5021U, NULL, "unresolved symbol");
+                        char text[256];
+                        (void)snprintf(text, sizeof(text),
+                                       "unresolved symbol '%s'", symbol->name);
+                        link_error(diagnostics, 5021U, NULL, text);
                         return false;
                     }
                     value = global->address;

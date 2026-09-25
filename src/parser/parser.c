@@ -1590,6 +1590,10 @@ static AstNode *parse_compound(Parser *parser)
         if (tail == NULL) compound->a = statement;
         else tail->next = statement;
         tail = statement;
+        /* A declaration statement may carry a chain of nodes, one per
+           declarator. Splice the whole chain so that every declarator keeps
+           its initializer and its frame slot. */
+        while (tail->next != NULL) tail = tail->next;
     }
     (void)expect(parser, "}");
     parser->scope = old_scope;

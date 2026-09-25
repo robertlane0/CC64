@@ -606,6 +606,8 @@ static LabelEntry *find_label(LowerContext *context, const char *name, bool crea
     return entry;
 }
 
+static void lower_statement(LowerContext *context, AstNode *node,
+                            IrInst **head, IrInst **tail);
 static void lower_statement_list(LowerContext *context, AstNode *node,
                                  IrInst **head, IrInst **tail);
 
@@ -869,8 +871,8 @@ static void lower_local_initializer(LowerContext *context, Symbol *symbol,
     lower_init_at(context, symbol, type, 0U, initializer, head, tail);
 }
 
-static void lower_statement(LowerContext *context, AstNode *node,
-                            IrInst **head, IrInst **tail)
+static void lower_one_statement(LowerContext *context, AstNode *node,
+                                IrInst **head, IrInst **tail)
 {
     if (node == NULL) return;
     switch (node->kind) {
@@ -1040,10 +1042,20 @@ static void lower_statement(LowerContext *context, AstNode *node,
     }
 }
 
+/* A declaration statement carries one node per declarator, chained through
+   next. Walk the whole chain so that no declarator is silently dropped. */
+static void lower_statement(LowerContext *context, AstNode *node,
+                            IrInst **head, IrInst **tail)
+{
+    for (; node != NULL; node = node->next) {
+        lower_one_statement(context, node, head, tail);
+    }
+}
+
 static void lower_statement_list(LowerContext *context, AstNode *node,
                                  IrInst **head, IrInst **tail)
 {
-    for (; node != NULL; node = node->next) lower_statement(context, node, head, tail);
+    lower_statement(context, node, head, tail);
 }
 
 bool lower_translation_unit(Arena *arena, const TranslationUnit *unit,

@@ -58,6 +58,7 @@ source input to the normal CC64 build.
 | D-032 | Production translation units are probed individually with the target header profile before linking | makes self-host coverage and the first failing construct explicit and deterministic |
 | D-033 | Relocations are applied to the flattened image payload, after per-kind section buffers are merged at their final offsets | the per-kind buffers are scratch; writing a final-layout offset into them corrupts unrelated memory, and BSS is zero-filled by the image buffer rather than copied |
 | D-034 | Every non-BSS data object is aligned to at least eight bytes | keeps the pinned MZ64 contract that a relocated pointer's represented value is eight-byte aligned, so the loader needs one aligned store per fixup |
+| D-035 | One declarator per AST node, chained through `next`, spliced whole into statement lists | a single node per declaration statement silently dropped later declarators, which then lost their frame slot and were emitted as external references |
 
 ## Review rule
 
