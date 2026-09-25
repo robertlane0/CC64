@@ -1,4 +1,5 @@
 #include "cc64.h"
+#include "frontend/frontend.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,6 +8,7 @@
 typedef enum Action {
     ACTION_COMPILE,
     ACTION_PREPROCESS,
+    ACTION_DUMP_TOKENS,
     ACTION_VERSION,
     ACTION_HELP
 } Action;
@@ -16,6 +18,12 @@ typedef struct Options {
     const char *input;
     const char *output;
     const char *target;
+    const char **include_paths;
+    size_t include_path_count;
+    const char **predefines;
+    size_t predefine_count;
+    bool line_markers;
+    bool preserve_newlines;
 } Options;
 
 static void usage(FILE *stream)
@@ -24,7 +32,11 @@ static void usage(FILE *stream)
             "usage: cc64 [options] input.c\n"
             "  -c             compile and emit CC64O\n"
             "  -E             preprocess only\n"
+            "  -D NAME[=TEXT] define a macro\n"
+            "  -I DIR         add an include directory\n"
             "  -o FILE        output path\n"
+            "  -P             omit line markers\n"
+            "  --dump-tokens  print the final token stream\n"
             "  --target NAME  target contract (default: " CC64_TARGET ")\n"
             "  --version      print version\n"
             "  --help         print help\n");
@@ -40,6 +52,22 @@ static bool take_value(int argc, char **argv, int *index, const char **value)
     return true;
 }
 
+static bool add_option_value(const char **values, size_t *count, size_t capacity,
+                             const char *value)
+{
+    if (*count == capacity) {
+        return false;
+    }
+    values[(*count)++] = value;
+    return true;
+}
+
+static void free_options(Options *options)
+{
+    free(options->include_paths);
+    free(options->predefines);
+}
+
 static bool parse_options(int argc, char **argv, Options *options,
                           DiagnosticSink *sink)
 {
@@ -47,21 +75,50 @@ static bool parse_options(int argc, char **argv, Options *options,
     options->input = NULL;
     options->output = "a.o";
     options->target = CC64_TARGET;
+    options->include_paths = cc64_xmalloc(64U * sizeof(*options->include_paths));
+    options->include_path_count = 0U;
+    options->predefines = cc64_xmalloc(64U * sizeof(*options->predefines));
+    options->predefine_count = 0U;
+    options->line_markers = false;
+    options->preserve_newlines = true;
     for (int i = 1; i < argc; ++i) {
         const char *arg = argv[i];
+        const char *value = NULL;
         if (strcmp(arg, "-c") == 0) {
             options->action = ACTION_COMPILE;
         } else if (strcmp(arg, "-E") == 0) {
             options->action = ACTION_PREPROCESS;
+        } else if (strcmp(arg, "--dump-tokens") == 0) {
+            options->action = ACTION_DUMP_TOKENS;
+        } else if (strcmp(arg, "-P") == 0) {
+            options->line_markers = false;
+        } else if (strcmp(arg, "--line-markers") == 0) {
+            options->line_markers = true;
         } else if (strcmp(arg, "-o") == 0) {
             if (!take_value(argc, argv, &i, &options->output)) {
                 diagnostic_emit(sink, 1U, DIAG_DRIVER, NULL, 0U, 0U,
                                 "option '-o' requires a path");
                 return false;
             }
+        } else if (strcmp(arg, "-I") == 0 || strcmp(arg, "--include-dir") == 0) {
+            if (!take_value(argc, argv, &i, &value) ||
+                !add_option_value(options->include_paths,
+                                  &options->include_path_count, 64U, value)) {
+                diagnostic_emit(sink, 2U, DIAG_DRIVER, NULL, 0U, 0U,
+                                "option '-I' requires a directory");
+                return false;
+            }
+        } else if (strcmp(arg, "-D") == 0) {
+            if (!take_value(argc, argv, &i, &value) ||
+                !add_option_value(options->predefines,
+                                  &options->predefine_count, 64U, value)) {
+                diagnostic_emit(sink, 3U, DIAG_DRIVER, NULL, 0U, 0U,
+                                "option '-D' requires a macro definition");
+                return false;
+            }
         } else if (strcmp(arg, "--target") == 0) {
             if (!take_value(argc, argv, &i, &options->target)) {
-                diagnostic_emit(sink, 2U, DIAG_DRIVER, NULL, 0U, 0U,
+                diagnostic_emit(sink, 4U, DIAG_DRIVER, NULL, 0U, 0U,
                                 "option '--target' requires a name");
                 return false;
             }
@@ -71,23 +128,70 @@ static bool parse_options(int argc, char **argv, Options *options,
             options->action = ACTION_HELP;
         } else if (arg[0] == '-') {
             char message[160];
-            snprintf(message, sizeof(message), "unknown option '%s'", arg);
-            diagnostic_emit(sink, 3U, DIAG_DRIVER, NULL, 0U, 0U, message);
+            (void)snprintf(message, sizeof(message), "unknown option '%s'", arg);
+            diagnostic_emit(sink, 5U, DIAG_DRIVER, NULL, 0U, 0U, message);
             return false;
         } else if (options->input == NULL) {
             options->input = arg;
         } else {
-            diagnostic_emit(sink, 4U, DIAG_DRIVER, NULL, 0U, 0U,
+            diagnostic_emit(sink, 6U, DIAG_DRIVER, NULL, 0U, 0U,
                             "only one input file is supported");
             return false;
         }
     }
-    if ((options->action == ACTION_COMPILE || options->action == ACTION_PREPROCESS) &&
-        options->input == NULL) {
-        diagnostic_emit(sink, 5U, DIAG_DRIVER, NULL, 0U, 0U, "missing input file");
+    if ((options->action == ACTION_COMPILE || options->action == ACTION_PREPROCESS ||
+         options->action == ACTION_DUMP_TOKENS) && options->input == NULL) {
+        diagnostic_emit(sink, 7U, DIAG_DRIVER, NULL, 0U, 0U, "missing input file");
         return false;
     }
     return true;
+}
+
+static void print_diagnostics(const DiagnosticSink *sink)
+{
+    for (size_t i = 0U; i < sink->count; ++i) {
+        diagnostic_print(&sink->items[i], stderr);
+    }
+}
+
+static bool write_preprocessed(const Options *options, const TokenList *tokens)
+{
+    if (options->output == NULL || strcmp(options->output, "-") == 0) {
+        return write_token_list(stdout, tokens, options->line_markers);
+    }
+    size_t length = strlen(options->output) + 5U;
+    char *temporary = cc64_xmalloc(length);
+    (void)snprintf(temporary, length, "%s.tmp", options->output);
+    FILE *stream = fopen(temporary, "wb");
+    if (stream == NULL) {
+        free(temporary);
+        return false;
+    }
+    bool good = write_token_list(stream, tokens, options->line_markers);
+    if (fclose(stream) != 0) {
+        good = false;
+    }
+    if (good && rename(temporary, options->output) != 0) {
+        good = false;
+    }
+    if (!good) {
+        (void)remove(temporary);
+    }
+    free(temporary);
+    return good;
+}
+
+static bool print_tokens(const TokenList *tokens)
+{
+    for (size_t i = 0U; i < tokens->count; ++i) {
+        const Token *token = &tokens->items[i];
+        if (token->kind == TOKEN_EOF) {
+            break;
+        }
+        printf("%zu:%zu:%s:%s\n", token->line, token->column,
+               token_kind_name(token->kind), token->text);
+    }
+    return !ferror(stdout);
 }
 
 int cc64_main(int argc, char **argv)
@@ -96,52 +200,75 @@ int cc64_main(int argc, char **argv)
     sink.limit = 100U;
     Options options;
     if (!parse_options(argc, argv, &options, &sink)) {
-        for (size_t i = 0U; i < sink.count; ++i) {
-            diagnostic_print(&sink.items[i], stderr);
-        }
-        free(sink.items);
+        print_diagnostics(&sink);
+        diagnostic_sink_destroy(&sink);
+        free_options(&options);
         return 1;
     }
     if (options.action == ACTION_VERSION) {
         printf("cc64 %s target=%s\n", CC64_VERSION, options.target);
-        free(sink.items);
+        diagnostic_sink_destroy(&sink);
+        free_options(&options);
         return 0;
     }
     if (options.action == ACTION_HELP) {
         usage(stdout);
-        free(sink.items);
+        diagnostic_sink_destroy(&sink);
+        free_options(&options);
         return 0;
+    }
+    if (strcmp(options.target, CC64_TARGET) != 0) {
+        diagnostic_emit(&sink, 12U, DIAG_DRIVER, NULL, 0U, 0U,
+                        "unsupported target contract");
+        print_diagnostics(&sink);
+        diagnostic_sink_destroy(&sink);
+        free_options(&options);
+        return 1;
     }
 
     Arena *arena = arena_create(256U * 1024U * 1024U);
     SourceManager *manager = source_manager_create(arena);
-    if (manager == NULL) {
-        diagnostic_emit(&sink, 10U, DIAG_DRIVER, NULL, 0U, 0U,
-                        "source manager allocation failed");
-        for (size_t i = 0U; i < sink.count; ++i) {
-            diagnostic_print(&sink.items[i], stderr);
-        }
-        free(sink.items);
-        arena_destroy(arena);
-        return 2;
-    }
-    Source *source = source_manager_load(manager, options.input);
+    Source *source = manager == NULL ? NULL : source_manager_load(manager, options.input);
     if (source == NULL) {
         diagnostic_emit(&sink, 11U, DIAG_DRIVER, NULL, 0U, 0U,
                         "cannot read input file");
-    } else if (options.target != NULL && strcmp(options.target, CC64_TARGET) != 0) {
-        diagnostic_emit(&sink, 12U, DIAG_DRIVER, source, 1U, 1U,
-                        "unsupported target contract");
-    } else {
-        printf("cc64: loaded %s (%zu bytes)\n", source->path, source->length);
+        print_diagnostics(&sink);
+        diagnostic_sink_destroy(&sink);
+        free_options(&options);
+        arena_destroy(arena);
+        return 1;
     }
-    for (size_t i = 0U; i < sink.count; ++i) {
-        diagnostic_print(&sink.items[i], stderr);
+
+    PreprocessorOptions pp_options = {
+        options.include_paths, options.include_path_count,
+        options.predefines, options.predefine_count, options.preserve_newlines
+    };
+    TokenList tokens;
+    token_list_init(&tokens);
+    size_t diagnostics_before = sink.count;
+    bool good = preprocess_source(arena, manager, &sink, source, &pp_options,
+                                  &tokens);
+    if (good && sink.count != diagnostics_before) {
+        good = false;
     }
+    if (good) {
+        if (options.action == ACTION_DUMP_TOKENS) {
+            good = print_tokens(&tokens);
+        } else if (options.action == ACTION_PREPROCESS) {
+            good = write_preprocessed(&options, &tokens);
+        } else {
+            diagnostic_emit(&sink, 1001U, DIAG_BACKEND, source, 1U, 1U,
+                            "code generation is not available in this milestone");
+            good = false;
+        }
+    }
+    print_diagnostics(&sink);
     size_t errors = sink.count;
-    free(sink.items);
+    token_list_free(&tokens);
+    diagnostic_sink_destroy(&sink);
+    free_options(&options);
     arena_destroy(arena);
-    return errors == 0U ? 0 : 1;
+    return good && errors == 0U ? 0 : 1;
 }
 
 int main(int argc, char **argv)

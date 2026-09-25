@@ -9,8 +9,9 @@ Code and data use signed 32-bit RIP-relative displacement. A target image must
 fit below `0x80000000`; the initial compiler limit is 16 MiB.
 
 There is no red zone. Interrupt and exception paths share the process stack.
-`RSP+0` is 16-byte aligned on function entry and `RSP+8` is the return address.
-A leaf must restore `RSP` before returning.
+At a call instruction, `RSP` is 16-byte aligned. Consequently, on function
+entry `RSP % 16 == 8`; the return address is at `[RSP]` and the first stack
+argument is at `[RSP+8]`. A leaf must restore `RSP` before returning.
 
 ## Calling convention
 
@@ -43,8 +44,10 @@ deferred until their representation is pinned.
 | `unsigned char` | 1 | 1 | modulo 256 |
 | `short` | 2 | 2 | two's complement |
 | `unsigned short` | 2 | 2 | modulo 65536 |
-| `int`, `long`, pointer | 4 | 4 | two's complement or modulo 2^32 |
-| `unsigned int`, `unsigned long` | 4 | 4 | modulo 2^32 |
+| `int` | 4 | 4 | two's complement |
+| `unsigned int` | 4 | 4 | modulo 2^32 |
+| `long`, pointer | 8 | 8 | two's complement / linear address |
+| `unsigned long` | 8 | 8 | modulo 2^64 |
 | `long long` | 8 | 8 | two's complement |
 | `unsigned long long` | 8 | 8 | modulo 2^64 |
 | `float` | 4 | 4 | IEC 60559 binary32, round-to-nearest |
@@ -66,11 +69,16 @@ it. At entry:
 - callee-saved state is unspecified; the startup code establishes it.
 - no C runtime is implicitly linked.
 
-The freestanding startup routine obtains the command tail from the target PSP,
-constructs NUL-terminated `argv`, an empty `envp` unless the target supplies
-validated environment pairs, aligns the application stack, and calls
-`main(argc, argv)`. It passes the `int` return to the target exit boundary.
-A bare `RET` from a raw image returns to the loader trampoline.
+The freestanding startup routine obtains the command tail from the target PSP:
+the byte at `PSP+0xa0` is the tail length and bytes at `PSP+0xa1` are the tail,
+with no terminating NUL required by the loader. It tokenizes on ASCII spaces
+and tabs, accepts at most 128 arguments, constructs NUL-terminated `argv`, and
+passes an empty `envp` unless the target supplies validated environment pairs.
+`argv[0]` is the image name supplied by the loader. The application receives
+at least 64 KiB of loader-owned stack below its entry stack top; the startup
+routine aligns that stack before calling `main`. It passes the `int` return to
+the target exit boundary. A bare `RET` from a raw image returns to the loader
+trampoline.
 
 ## Target services
 

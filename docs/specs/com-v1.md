@@ -12,10 +12,14 @@ link order. Each section is aligned as required, and the linker inserts zero
 padding. Automatic and uninitialized file-scope storage use stack or explicit
 runtime allocation; there is no implicit host-runtime initialization.
 
-A raw image is limited to 16 MiB, must fit in target process memory, and must
-resolve all PC-relative and intra-image absolute references at link time. An
-absolute data pointer that would change under load bias is rejected for raw
-output. A caller can request `.MZ64` when such pointers are required.
+A file-scope object with no initializer is emitted as zero bytes in the raw
+payload; it is not BSS and therefore contributes to the file image. An
+ordinary tentative definition is resolved to one zero-initialized object by
+the linker. A raw image is limited to 16 MiB, must fit in target process
+memory, and must resolve all PC-relative and intra-image absolute references
+at link time. An absolute data pointer that would change under load bias is
+rejected for raw output. A caller can request `.MZ64` when such pointers are
+required.
 
 The image has no checksums or mandatory trailer in version 1. Deterministic
 output consists of exactly the linked payload bytes. A failed compile or link

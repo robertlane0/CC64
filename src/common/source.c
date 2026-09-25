@@ -20,8 +20,15 @@ SourceManager *source_manager_create(Arena *arena)
 Source *source_manager_add(SourceManager *manager, const char *path,
                            const unsigned char *bytes, size_t length)
 {
+    if (manager == NULL || path == NULL || (length != 0U && bytes == NULL) ||
+        length == SIZE_MAX) {
+        return NULL;
+    }
     if (manager->count == manager->capacity) {
         size_t next = manager->capacity == 0U ? 8U : manager->capacity * 2U;
+        if (next < manager->capacity) {
+            return NULL;
+        }
         Source **sources = arena_alloc_array(manager->arena, next, sizeof(*sources));
         if (sources == NULL) {
             return NULL;
@@ -42,7 +49,13 @@ Source *source_manager_add(SourceManager *manager, const char *path,
         memcpy(copy, bytes, length);
     }
     copy[length] = 0U;
-    source->path = cc64_xstrdup(path);
+    size_t path_length = strlen(path);
+    char *path_copy = arena_alloc(manager->arena, path_length + 1U);
+    if (path_copy == NULL) {
+        return NULL;
+    }
+    memcpy(path_copy, path, path_length + 1U);
+    source->path = path_copy;
     source->bytes = copy;
     source->length = length;
     source->id = (unsigned)manager->count + 1U;
@@ -62,6 +75,10 @@ Source *source_manager_load(SourceManager *manager, const char *path)
     }
     long end = ftell(stream);
     if (end < 0L || fseek(stream, 0L, SEEK_SET) != 0) {
+        fclose(stream);
+        return NULL;
+    }
+    if ((uintmax_t)end > (uintmax_t)SIZE_MAX || (size_t)end == SIZE_MAX) {
         fclose(stream);
         return NULL;
     }

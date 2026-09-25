@@ -21,15 +21,19 @@ build/%.o: %.c
 	@mkdir -p $(@D)
 	$(CC) $(CPPFLAGS) $(ALL_CFLAGS) -MMD -MP -c $< -o $@
 
-build/cc64-unit: $(TEST_OBJECTS) build/libcc64core.a
-	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(TEST_OBJECTS) build/libcc64core.a $(LDLIBS)
+build/cc64-unit: build/tests/unit/test_common.o build/libcc64core.a
+	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ build/tests/unit/test_common.o build/libcc64core.a $(LDLIBS)
+
+build/cc64-frontend: build/tests/unit/test_frontend.o build/libcc64core.a
+	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ build/tests/unit/test_frontend.o build/libcc64core.a $(LDLIBS)
 
 build/libcc64core.a: $(filter-out build/src/driver/main.o,$(OBJECTS))
 	@mkdir -p $(@D)
 	$(AR) rcs $@ $^
 
-test-unit: build/cc64-unit
+test-unit: build/cc64-unit build/cc64-frontend
 	@build/cc64-unit
+	@build/cc64-frontend
 
 test: test-unit
 	@python3 tests/run.py

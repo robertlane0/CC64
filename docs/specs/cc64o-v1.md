@@ -11,7 +11,7 @@ a host object format. All offsets from the beginning of the file are unsigned
 
 ## File header
 
-The 64-byte header is:
+The 96-byte header is:
 
 | Offset | Size | Field |
 |---:|---:|---|
@@ -20,23 +20,33 @@ The 64-byte header is:
 | 10 | 2 | endian marker, currently `0x3433` |
 | 12 | 2 | target ABI, currently 1 |
 | 14 | 2 | machine, currently 62 (`x86-64`) |
-| 16 | 4 | header size, currently 64 |
-| 20 | 4 | section table offset |
-| 24 | 4 | section count |
-| 28 | 4 | symbol table offset |
-| 32 | 4 | symbol count |
-| 36 | 4 | string table offset |
-| 40 | 4 | string table size |
-| 44 | 4 | optional source-map offset, zero when absent |
-| 48 | 4 | optional source-map size |
-| 52 | 4 | flags, reserved and zero in version 1 |
-| 56 | 4 | header CRC-32 over bytes 0 through 55 |
-| 60 | 4 | whole-file CRC-32 over all prior bytes |
+| 16 | 4 | header size, currently 96 |
+| 20 | 4 | target triple string offset |
+| 24 | 4 | target triple string size, including its NUL |
+| 28 | 4 | section table offset |
+| 32 | 4 | section count |
+| 36 | 4 | symbol table offset |
+| 40 | 4 | symbol count |
+| 44 | 4 | string table offset |
+| 48 | 4 | string table size |
+| 52 | 4 | optional source-map offset, zero when absent |
+| 56 | 4 | optional source-map size |
+| 60 | 4 | flags, reserved and zero in version 1 |
+| 64 | 4 | header CRC-32 over bytes 0 through 63 |
+| 68 | 4 | whole-file CRC-32 over all prior bytes |
+| 72 | 24 | reserved zero |
 
-Tables and payload regions may occur in any non-overlapping order, but bytes
-not described by a table must be zero. A reader rejects unknown flags,
-unsupported versions, non-little-endian input, truncation, overlapping ranges,
-duplicate sections, or a CRC mismatch.
+The target triple is the NUL-terminated ASCII string
+`x86_64-pc-dos64`. Tables and payload regions may occur in any non-overlapping
+order, but bytes not described by a table must be zero. A reader rejects
+unknown flags, unsupported versions, non-little-endian input, truncation,
+overlapping ranges, duplicate sections, or a CRC mismatch.
+
+CRC-32 is the reflected IEEE polynomial `0xedb88320`, initialized to
+`0xffffffff`, processed least-significant byte first, and finally exclusive-
+ORed with `0xffffffff`. The header CRC covers bytes 0 through 63 with its CRC
+field treated as zero; the file CRC covers all bytes before offset 68 with the
+file CRC field treated as zero.
 
 ## Sections
 
@@ -85,7 +95,7 @@ are valid.
 
 ## Relocations
 
-Each 24-byte record is:
+Each 32-byte record is:
 
 | Offset | Size | Field |
 |---:|---:|---|

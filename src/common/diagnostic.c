@@ -1,6 +1,7 @@
 #include "cc64.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static const char *const phase_names[] = {
@@ -20,6 +21,9 @@ void diagnostic_emit(DiagnosticSink *sink, unsigned id, DiagnosticPhase phase,
                      const Source *source, size_t line, size_t column,
                      const char *message)
 {
+    if (sink->limit == 0U) {
+        sink->limit = 100U;
+    }
     if (sink->count == sink->limit) {
         return;
     }
@@ -53,4 +57,18 @@ void diagnostic_print(const Diagnostic *diagnostic, FILE *stream)
 size_t diagnostic_error_count(const DiagnosticSink *sink)
 {
     return sink->count;
+}
+
+void diagnostic_sink_destroy(DiagnosticSink *sink)
+{
+    if (sink == NULL) {
+        return;
+    }
+    for (size_t i = 0U; i < sink->count; ++i) {
+        free((void *)sink->items[i].message);
+    }
+    free(sink->items);
+    sink->items = NULL;
+    sink->count = 0U;
+    sink->capacity = 0U;
 }

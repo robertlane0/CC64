@@ -13,10 +13,14 @@ struct ArenaBlock {
     unsigned char *data;
 };
 
-static size_t align_size(size_t value)
+static bool align_size(size_t value, size_t *result)
 {
     size_t mask = ARENA_ALIGNMENT - 1U;
-    return (value + mask) & ~mask;
+    if (value > SIZE_MAX - mask) {
+        return false;
+    }
+    *result = (value + mask) & ~mask;
+    return true;
 }
 
 static bool size_add(size_t left, size_t right, size_t *result)
@@ -48,7 +52,10 @@ Arena *arena_create(size_t limit)
 
 void *arena_alloc(Arena *arena, size_t size)
 {
-    size_t capacity = align_size(size == 0U ? 1U : size);
+    size_t capacity;
+    if (!align_size(size == 0U ? 1U : size, &capacity)) {
+        return NULL;
+    }
     ArenaBlock *block = arena->head;
     size_t total;
 
@@ -56,14 +63,22 @@ void *arena_alloc(Arena *arena, size_t size)
         return NULL;
     }
     if (block == NULL || block->capacity - block->used < capacity) {
-        size_t block_size = capacity > 65536U ? capacity : 65536U;
-        if (!size_add(block_size, sizeof(*block), &block_size)) {
+        size_t block_capacity = capacity > 65536U ? capacity : 65536U;
+        size_t remaining = arena->limit - arena->total;
+        if (block_capacity > remaining) {
+            block_capacity = remaining;
+        }
+        if (block_capacity < capacity) {
+            return NULL;
+        }
+        size_t allocation = block_capacity;
+        if (!size_add(allocation, sizeof(*block), &allocation)) {
             return NULL;
         }
         block = cc64_xmalloc(sizeof(*block));
-        block->data = cc64_xmalloc(block_size - sizeof(*block));
+        block->data = cc64_xmalloc(block_capacity);
         block->used = 0U;
-        block->capacity = block_size - sizeof(*block);
+        block->capacity = block_capacity;
         block->next = arena->head;
         arena->head = block;
     }

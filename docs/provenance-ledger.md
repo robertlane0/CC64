@@ -31,6 +31,8 @@ source input to the normal CC64 build.
 | D-005 | `int32_t` is the first target `int`/pointer-sized ABI | written target contract; avoids inheriting host LP64 |
 | D-006 | Typed linear IR before machine selection | backend never consumes parser nodes |
 | D-007 | Limits reject ambiguous or unbounded translation | deterministic failure for hostile input |
+| D-008 | Preprocessing uses explicit hidesets and bounded expansion depth | prevents recursive macro runaway while retaining blue-painted tokens |
+| D-009 | Failed preprocessing never publishes its temporary output | diagnostics cannot be mistaken for a successful translation |
 
 ## Review rule
 

@@ -81,6 +81,7 @@ void diagnostic_emit(DiagnosticSink *sink, unsigned id, DiagnosticPhase phase,
                      const char *message);
 void diagnostic_print(const Diagnostic *diagnostic, FILE *stream);
 size_t diagnostic_error_count(const DiagnosticSink *sink);
+void diagnostic_sink_destroy(DiagnosticSink *sink);
 
 int cc64_main(int argc, char **argv);
 

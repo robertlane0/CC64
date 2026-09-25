@@ -46,7 +46,7 @@ static void test_diagnostic(void)
     diagnostic_emit(&sink, 44U, DIAG_LINK, NULL, 0U, 0U, "dropped");
     CHECK(diagnostic_error_count(&sink) == 2U);
     CHECK(strcmp(diagnostic_phase_name(DIAG_PREPROCESS), "preprocess") == 0);
-    free(sink.items);
+    diagnostic_sink_destroy(&sink);
 }
 
 int main(void)
