@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import subprocess
@@ -33,6 +34,15 @@ def tracked_files() -> list[str]:
 
 def main() -> int:
     errors: list[str] = []
+    if os.environ.get("CC64_REQUIRE_CLEAN") == "1":
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=ROOT, check=False, capture_output=True, text=True,
+        )
+        if status.returncode != 0:
+            errors.append("cannot inspect source-tree status")
+        elif status.stdout.strip():
+            errors.append("release audit requires a clean tracked and untracked tree")
     files = tracked_files()
     if not files:
         errors.append("no tracked files")
@@ -52,6 +62,15 @@ def main() -> int:
     for required in ("C17", "Intel SDM", "System V AMD64", "MS-DOS64"):
         if required not in ledger:
             errors.append(f"provenance ledger omits {required}")
+
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    if "! -path 'src/runtime/*'" not in makefile:
+        errors.append("host bootstrap source list includes target runtime sources")
+    status = (ROOT / "docs/status.md").read_text(encoding="utf-8")
+    for required in ("M7 self-hosting | partial", "M8 release quality | partial",
+                     "Bochs", "not a releasable"):
+        if required not in status:
+            errors.append(f"status omits release limitation: {required}")
 
     for name in files:
         if not name.endswith((".c", ".h", ".py", ".md")):

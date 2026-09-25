@@ -348,17 +348,42 @@ static bool parse_struct_members(Parser *parser, Type *type)
     return expect(parser, "}") != NULL;
 }
 
+static Type *lookup_local_tag(const Scope *scope, const char *name)
+{
+    if (scope == NULL) {
+        return NULL;
+    }
+    for (Binding *binding = scope->bindings; binding != NULL; binding = binding->next) {
+        if (binding->tag && strcmp(binding->name, name) == 0) {
+            return binding->type;
+        }
+    }
+    return NULL;
+}
+
 static Type *parse_tag_specifier(Parser *parser, TypeKind kind)
 {
     const Token *tag = token_is_identifier(peek(parser)) ? take(parser) : NULL;
+    Type *existing = tag == NULL ? NULL : lookup_local_tag(parser->scope, tag->text);
     if (token_text(peek(parser), "{")) {
-        Type *type = type_basic(parser->arena, kind == TYPE_UNION ? TYPE_UNION : TYPE_STRUCT);
-        if (type == NULL) {
-            return NULL;
+        if (existing != NULL && existing->kind != kind) {
+            semantic_error(parser, 2021U, tag, "tag used with the wrong kind");
+            return existing;
         }
-        if (tag != NULL) {
-            type->tag = copy_name(parser, tag->text);
-            (void)scope_add_tag(parser->arena, parser->scope, tag->text, type);
+        if (existing != NULL && !existing->incomplete) {
+            semantic_error(parser, 2022U, tag, "redefinition of struct or union tag");
+            return existing;
+        }
+        Type *type = existing;
+        if (type == NULL) {
+            type = type_basic(parser->arena, kind == TYPE_UNION ? TYPE_UNION : TYPE_STRUCT);
+            if (type == NULL) {
+                return NULL;
+            }
+            if (tag != NULL) {
+                type->tag = copy_name(parser, tag->text);
+                (void)scope_add_tag(parser->arena, parser->scope, tag->text, type);
+            }
         }
         type->incomplete = true;
         (void)take(parser);
@@ -372,7 +397,7 @@ static Type *parse_tag_specifier(Parser *parser, TypeKind kind)
         semantic_error(parser, 2020U, peek(parser), "struct or union tag is required here");
         return type_basic(parser->arena, kind);
     }
-    Type *existing = scope_lookup_tag(parser->scope, tag->text);
+    existing = scope_lookup_tag(parser->scope, tag->text);
     if (existing != NULL) {
         if (existing->kind != kind) {
             semantic_error(parser, 2021U, tag, "tag used with the wrong kind");
@@ -935,7 +960,8 @@ static AstNode *make_binary(Parser *parser, BinaryOperator op, AstNode *left,
             semantic_error(parser, 2054U, token, "comparison requires scalar operands");
         }
         if (type_is_pointer(left->type) && type_is_pointer(right->type)) {
-            if (!type_compatible(left->type->base, right->type->base)) {
+            if (!type_is_void(left->type->base) && !type_is_void(right->type->base) &&
+                !type_compatible(left->type->base, right->type->base)) {
                 semantic_error(parser, 2055U, token, "pointer comparison is incompatible");
             }
         }

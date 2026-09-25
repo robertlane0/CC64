@@ -5,13 +5,13 @@ WARNINGS = -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wstrict-prototypes -W
 CPPFLAGS += -Isrc -Iinclude
 ALL_CFLAGS = -std=c17 $(WARNINGS) $(CFLAGS)
 
-SOURCES = $(shell find src -name '*.c' ! -path 'src/selfhost/*' -print | sort)
+SOURCES = $(shell find src -name '*.c' ! -path 'src/selfhost/*' ! -path 'src/runtime/*' -print | sort)
 OBJECTS = $(SOURCES:%.c=build/%.o)
-DEPS = $(OBJECTS:.o=.d)
+DEPS = $(OBJECTS:.o=.d) $(TEST_OBJECTS:.o=.d)
 TEST_SOURCES = $(shell find tests/unit -name '*.c' -print | sort 2>/dev/null)
 TEST_OBJECTS = $(TEST_SOURCES:%.c=build/%.o)
 
-.PHONY: all clean check test test-unit test-target test-bochs self-host check-release audit install-tools
+.PHONY: all clean check test test-unit test-target test-bochs self-host fuzz-smoke repro-check check-release check-release-strict audit install-tools
 all: cc64
 
 cc64: $(OBJECTS)
@@ -42,16 +42,26 @@ test-unit: build/cc64-unit build/cc64-frontend build/cc64-semantic
 test: test-unit
 	@python3 tests/run.py
 
-test-target:
+test-target: cc64
 	@python3 tests/run_target.py
 
-test-bochs:
+test-bochs: cc64
 	@python3 tests/run_bochs.py
 
-self-host:
+self-host: cc64
 	@python3 tools/self_host.py
 
-check-release: check test-target test-bochs self-host audit
+fuzz-smoke: cc64
+	@python3 tests/fuzz_smoke.py
+
+repro-check: cc64
+	@python3 tools/repro_check.py
+
+check-release: check test-target test-bochs self-host fuzz-smoke repro-check audit
+check-release-strict:
+	@CC64_REQUIRE_CLEAN=1 python3 tests/audit.py
+	@CC64_REQUIRE_CLEAN=1 CC64_REQUIRE_EMULATORS=1 $(MAKE) check-release
+.NOTPARALLEL: check-release check-release-strict
 
 audit:
 	@python3 tests/audit.py

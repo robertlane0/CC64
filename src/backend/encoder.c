@@ -94,6 +94,10 @@ static void emit_modrm_reg(Encoder *encoder, unsigned reg, unsigned rm)
 static void emit_mem_reg(Encoder *encoder, unsigned base, unsigned reg,
                          int64_t displacement)
 {
+    if (displacement < INT32_MIN || displacement > INT32_MAX) {
+        encoder->failed = true;
+        return;
+    }
     int32_t disp = (int32_t)displacement;
     if (disp >= -128 && disp <= 127) {
         emit8(encoder, (unsigned char)(0x40U | ((reg & 7U) << 3) | (base & 7U)));
@@ -112,6 +116,13 @@ static void emit_mem_rip(Encoder *encoder, unsigned reg)
 static void emit_mov_reg_reg(Encoder *encoder, unsigned dst, unsigned src)
 {
     emit_rex(encoder, true, src, dst);
+    emit8(encoder, 0x89U);
+    emit_modrm_reg(encoder, src, dst);
+}
+
+static void emit_mov_reg32_reg(Encoder *encoder, unsigned dst, unsigned src)
+{
+    if (src >= 8U) emit8(encoder, 0x41U);
     emit8(encoder, 0x89U);
     emit_modrm_reg(encoder, src, dst);
 }
@@ -1444,6 +1455,7 @@ static void emit_runtime_body(Encoder *encoder, RuntimeFunction function)
     case RUNTIME_OPEN:
         emit_push(encoder, 3U);
         emit8(encoder, 0x31U); emit8(encoder, 0xd2U);
+        emit_mov_reg_reg(encoder, 2U, 7U);
         emit_mov_reg_imm(encoder, 0U, 0x3d00U, 4U);
         emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
         emit_pop(encoder, 3U);
@@ -1456,7 +1468,8 @@ static void emit_runtime_body(Encoder *encoder, RuntimeFunction function)
         emit_pop(encoder, 3U);
         break;
     case RUNTIME_EXIT:
-        emit_mov_reg_imm(encoder, 0U, 0x4c00U, 4U);
+        emit_mov_reg32_reg(encoder, 0U, 7U);
+        emit8(encoder, 0xb4U); emit8(encoder, 0x4cU);
         emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
         break;
     }

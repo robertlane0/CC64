@@ -272,6 +272,9 @@ static int object_symbol_compare(const void *left, const void *right)
     if (a->section_index != b->section_index) {
         return a->section_index < b->section_index ? -1 : 1;
     }
+    if (a->kind != b->kind) return a->kind < b->kind ? -1 : 1;
+    if (a->size != b->size) return a->size < b->size ? -1 : 1;
+    if (a->defined != b->defined) return a->defined ? 1 : -1;
     return 0;
 }
 

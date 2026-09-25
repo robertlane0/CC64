@@ -41,6 +41,18 @@ source input to the normal CC64 build.
 | D-015 | The startup stub exposes a bounded one-argument argv view from the target PSP | this is the minimum target interface needed by the first hosted compatibility gate; richer tokenization is recorded for the next ABI revision |
 | D-016 | A separate stage1 smoke program gates target bootstrap execution | isolates loader, relocation, startup, and backend evidence from the larger self-hosting claim |
 | D-017 | MZ64 relocation tables retain only image-relative data fixups | absolute/load-biased values are rejected instead of being silently made non-portable |
+| D-018 | Release fuzzing uses a fixed PRNG seed and temporary inputs | malformed-input smoke remains reproducible without checked-in adversarial artifacts |
+| D-019 | Reproducibility compares a content manifest of two path-independent clean exports, including compiler-produced target artifacts | detects nondeterministic object, archive, dependency, executable, or target-image output rather than checking one file only |
+| D-020 | Target integration pins the adjacent MS-DOS64 revision and checks volume state before/after execution | prevents a passing local image from being attributed to an unpinned or modified loader or a dirty volume |
+| D-021 | `src/runtime` is excluded from the host bootstrap object list | target runtime definitions are emitted for target builds rather than linked into the host driver |
+| D-022 | A tagged aggregate definition completes the existing local tag object | preserves C typedef/forward-declaration identity for self-hosting and ordinary C clients |
+| D-023 | `void *` compares compatibly with an object pointer | implements the C null/general-pointer comparison rule without inheriting host ABI behavior |
+| D-024 | Image inspection rejects empty/oversized raw payloads and negative or out-of-range MZ64 fixups | keeps independent validation aligned with the pinned image contract and makes malformed-input tests meaningful |
+| D-025 | Target service thunks preserve path and exit arguments in their target registers | keeps the encoder-owned runtime boundary faithful to the documented DOS register contract |
+| D-026 | Strict release mode requires a clean source tree and non-skipped emulator evidence | prevents a local aggregate from certifying an unclean or incomplete release |
+| D-027 | Independent object readers and the linker reject overlapping ranges, uncovered bytes, undersized executable alignment, and out-of-range symbol sizes | enforces the version-1 table layout before relocations or output are trusted |
+| D-028 | Backend symbol ordering compares every serialized tie-breaker field | prevents nondeterministic ordering of otherwise equal-prefix symbol records |
+| D-029 | Repeated encoder-emitted target service definitions are coalesced by the linker | permits multiple translation units to reference the same project-owned thunk without duplicate-symbol failures |
 
 ## Review rule
 

@@ -94,6 +94,23 @@ def main() -> int:
         if not second_image.is_file():
             raise SystemExit("single-object link failed")
 
+        runtime_a = directory / "runtime-a.c"
+        runtime_b = directory / "runtime-b.c"
+        runtime_a.write_text(
+            "void cc64_exit(int); int other(void); "
+            "int main(void) { cc64_exit(3); return other(); }\n",
+            encoding="utf-8",
+        )
+        runtime_b.write_text(
+            "void cc64_exit(int); int other(void) { cc64_exit(4); return 0; }\n",
+            encoding="utf-8")
+        runtime_a_object = directory / "runtime-a.cc64o"
+        runtime_b_object = directory / "runtime-b.cc64o"
+        run([str(ROOT / "cc64"), "-c", str(runtime_a), "-o", str(runtime_a_object)])
+        run([str(ROOT / "cc64"), "-c", str(runtime_b), "-o", str(runtime_b_object)])
+        run([str(ROOT / "cc64"), "--link", str(runtime_a_object),
+             str(runtime_b_object), "-o", str(directory / "runtime.com")])
+
         bad = directory / "bad.c"
         bad_output = directory / "bad.i"
         bad.write_text('"unterminated\n', encoding="utf-8")

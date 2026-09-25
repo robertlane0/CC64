@@ -37,6 +37,11 @@ typedef struct LinkSymbol {
     bool defined;
 } LinkSymbol;
 
+typedef struct ObjectRange {
+    size_t offset;
+    size_t length;
+} ObjectRange;
+
 typedef struct LinkObject {
     unsigned char *bytes;
     size_t size;
@@ -44,6 +49,9 @@ typedef struct LinkObject {
     size_t section_count;
     LinkSymbol *symbols;
     size_t symbol_count;
+    ObjectRange *ranges;
+    size_t range_count;
+    size_t range_capacity;
 } LinkObject;
 
 typedef struct GlobalSymbol {
@@ -105,6 +113,48 @@ static bool range_ok(size_t offset, size_t length, size_t total)
 {
     return offset <= total && length <= total - offset;
 }
+
+static bool object_range_add(LinkObject *object, size_t offset, size_t length)
+{
+    if (length == 0U) return true;
+    if (!range_ok(offset, length, object->size)) return false;
+    size_t end = offset + length;
+    for (size_t i = 0U; i < object->range_count; ++i) {
+        size_t other_end = object->ranges[i].offset + object->ranges[i].length;
+        if (offset < other_end && object->ranges[i].offset < end) return false;
+    }
+    if (object->range_count == object->range_capacity) {
+        size_t next = object->range_capacity == 0U ? 16U : object->range_capacity * 2U;
+        object->ranges = cc64_xrealloc(object->ranges, next * sizeof(*object->ranges));
+        object->range_capacity = next;
+    }
+    object->ranges[object->range_count].offset = offset;
+    object->ranges[object->range_count].length = length;
+    ++object->range_count;
+    return true;
+}
+
+static bool object_uncovered_bytes_are_zero(const LinkObject *object)
+{
+    unsigned char *covered = calloc(object->size == 0U ? 1U : object->size, 1U);
+    if (covered == NULL) return false;
+    for (size_t i = 0U; i < object->range_count; ++i) {
+        for (size_t j = 0U; j < object->ranges[i].length; ++j) {
+            covered[object->ranges[i].offset + j] = 1U;
+        }
+    }
+    bool good = true;
+    for (size_t i = 0U; i < object->size; ++i) {
+        if (covered[i] == 0U && object->bytes[i] != 0U) {
+            good = false;
+            break;
+        }
+    }
+    free(covered);
+    return good;
+}
+
+static void free_link_object(LinkObject *object);
 
 static uint32_t link_crc32(const unsigned char *data, size_t size)
 {
@@ -200,10 +250,29 @@ static bool read_object_file(const char *path, LinkObject *object,
         !range_ok(string_offset, string_size, object->size)) {
         link_error(diagnostics, 5008U, path, "object tables are truncated"); return false;
     }
+    if (!object_range_add(object, 0U, CC64O_HEADER_SIZE) ||
+        !object_range_add(object, section_offset,
+                          (size_t)section_count * CC64O_SECTION_SIZE) ||
+        !object_range_add(object, symbol_offset,
+                          (size_t)symbol_count * CC64O_SYMBOL_SIZE) ||
+        !object_range_add(object, string_offset, string_size) ||
+        (source_map_size != 0U &&
+         !object_range_add(object, source_map_offset, source_map_size))) {
+        link_error(diagnostics, 5008U, path, "object tables overlap"); return false;
+    }
+    bool target_in_string = target_offset >= string_offset &&
+                            target_offset + target_size <= string_offset + string_size;
+    if (!target_in_string &&
+        !object_range_add(object, target_offset, target_size)) {
+        link_error(diagnostics, 5008U, path, "object target range overlaps tables");
+        return false;
+    }
     object->section_count = section_count;
     object->sections = cc64_xmalloc((section_count == 0U ? 1U : section_count) * sizeof(*object->sections));
+    memset(object->sections, 0, (section_count == 0U ? 1U : section_count) * sizeof(*object->sections));
     object->symbol_count = symbol_count;
     object->symbols = cc64_xmalloc((symbol_count == 0U ? 1U : symbol_count) * sizeof(*object->symbols));
+    memset(object->symbols, 0, (symbol_count == 0U ? 1U : symbol_count) * sizeof(*object->symbols));
     const unsigned char *strings = object->bytes + string_offset;
     if (object->bytes[string_offset + string_size - 1U] != 0U) {
         link_error(diagnostics, 5008U, path, "object string table is unterminated");
@@ -235,6 +304,14 @@ static bool read_object_file(const char *path, LinkObject *object,
                                              object->size) ||
                                   reloc_offset < CC64O_HEADER_SIZE))) {
             link_error(diagnostics, 5009U, path, "invalid object section"); return false;
+        }
+        if ((section->kind != 3U &&
+             !object_range_add(object, payload_offset, payload_size)) ||
+            (reloc_count != 0U &&
+             !object_range_add(object, reloc_offset,
+                               (size_t)reloc_count * CC64O_RELOC_SIZE))) {
+            link_error(diagnostics, 5009U, path, "object section ranges overlap");
+            return false;
         }
         uint32_t name_end = name_offset;
         while (name_end < string_size && strings[name_end] != 0U) ++name_end;
@@ -319,6 +396,17 @@ static bool read_object_file(const char *path, LinkObject *object,
             link_error(diagnostics, 5014U, path, "symbol value is outside its section");
             return false;
         }
+        if (symbol->section_index != UINT32_MAX && symbol->kind >= 1U &&
+            symbol->kind <= 3U && symbol->size >
+                object->sections[symbol->section_index].size - symbol->value) {
+            link_error(diagnostics, 5014U, path, "symbol range is outside its section");
+            return false;
+        }
+    }
+    if (!object_uncovered_bytes_are_zero(object)) {
+        link_error(diagnostics, 5008U, path, "object contains undescribed data");
+        free_link_object(object);
+        return false;
     }
     return true;
 }
@@ -333,6 +421,7 @@ static void free_link_object(LinkObject *object)
     for (size_t i = 0U; i < object->symbol_count; ++i) free(object->symbols[i].name);
     free(object->sections);
     free(object->symbols);
+    free(object->ranges);
     free(object->bytes);
     memset(object, 0, sizeof(*object));
 }
@@ -408,6 +497,18 @@ static bool align_output(OutputSection *section, size_t alignment, size_t *offse
     return true;
 }
 
+static bool runtime_symbol_name(const char *name)
+{
+    static const char *const names[] = {
+        "cc64_putc", "cc64_write", "cc64_read", "cc64_alloc",
+        "cc64_free", "cc64_open", "cc64_close", "cc64_exit"
+    };
+    for (size_t i = 0U; i < sizeof(names) / sizeof(names[0]); ++i) {
+        if (strcmp(name, names[i]) == 0) return true;
+    }
+    return false;
+}
+
 static bool resolve_symbols(LinkObject *objects, size_t object_count,
                             OutputSection outputs[4], GlobalSymbol **globals_out,
                             size_t *global_count, size_t *global_capacity,
@@ -452,7 +553,7 @@ static bool resolve_symbols(LinkObject *objects, size_t object_count,
                     bool both_tentative = symbol->kind == 1U &&
                                           object->sections[symbol->section_index].kind == 3U &&
                                           global->size == symbol->size;
-                    if (!both_tentative) {
+                    if (!both_tentative && !runtime_symbol_name(symbol->name)) {
                         link_error(diagnostics, 5020U, NULL,
                                    "duplicate global definition");
                         return false;
@@ -727,6 +828,7 @@ bool link_objects(Arena *arena, const char *const *objects, size_t object_count,
     size_t loaded_count = 0U;
     for (size_t i = 0U; i < object_count; ++i) {
         if (!read_object_file(objects[i], &loaded[i], diagnostics)) {
+            free_link_object(&loaded[i]);
             good = false;
             break;
         }

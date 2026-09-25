@@ -36,7 +36,7 @@ def fat_set(image: bytearray, cluster: int, value: int) -> None:
         word = (word & 0xF000) | (value & 0x0FFF)
     image[first] = word & 0xFF
     image[first + 1] = word >> 8
-    mirror = (FAT_LBA + FAT_COUNT - 1) * SECTOR + (cluster * 3) // 2
+    mirror = (FAT_LBA + FAT_SECTORS) * SECTOR + (cluster * 3) // 2
     image[mirror] = image[first]
     image[mirror + 1] = image[first + 1]
 

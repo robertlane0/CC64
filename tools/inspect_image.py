@@ -46,7 +46,9 @@ def inspect(path: pathlib.Path) -> dict[str, object]:
             )
             if destination % 8 != 0 or addend % 8 != 0:
                 fail("MZ64 relocation is not aligned")
-            if destination + 8 > memory_size or addend + 8 > memory_size:
+            if (destination > memory_size or addend < 0 or
+                    addend > memory_size or
+                    memory_size - destination < 8 or memory_size - addend < 8):
                 fail("MZ64 relocation is outside memory")
             relocations.append((destination, addend))
         return {
@@ -57,8 +59,10 @@ def inspect(path: pathlib.Path) -> dict[str, object]:
             "entry": entry,
             "relocations": relocations,
         }
-    if data[:4] == b"\0\0\0\0" and len(data) < 4:
-        fail("truncated raw image")
+    if not data:
+        fail("empty raw image")
+    if len(data) > 16 * 1024 * 1024:
+        fail("raw target limit exceeded")
     return {
         "format": "raw",
         "file_size": len(data),

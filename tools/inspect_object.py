@@ -45,6 +45,14 @@ def read_object(path: pathlib.Path) -> tuple[dict, list[dict], list[dict], bytes
     crc_image[68:72] = b"\0\0\0\0"
     if crc32(crc_image) != struct.unpack_from("<I", data, 68)[0]:
         fail("file CRC mismatch")
+    if len(data) > 512 * 1024 * 1024:
+        fail("object file exceeds 512 MiB")
+    target_offset, target_size = struct.unpack_from("<II", data, 20)
+    if (target_size != len(b"x86_64-pc-dos64\0") or
+            target_offset + target_size > len(data) or
+            data[target_offset:target_offset + target_size] !=
+            b"x86_64-pc-dos64\0"):
+        fail("invalid target triple")
     section_offset = struct.unpack_from("<I", data, 28)[0]
     section_count = struct.unpack_from("<I", data, 32)[0]
     symbol_offset = struct.unpack_from("<I", data, 36)[0]
@@ -63,7 +71,31 @@ def read_object(path: pathlib.Path) -> tuple[dict, list[dict], list[dict], bytes
     if string_offset + string_size > len(data):
         fail("string table is truncated")
     strings = data[string_offset:string_offset + string_size]
+    ranges: list[tuple[int, int]] = []
+
+    def add_range(offset: int, length: int, label: str) -> None:
+        if length == 0:
+            return
+        if offset < 0 or offset + length > len(data):
+            fail(f"{label} is outside the object")
+        end = offset + length
+        for prior_offset, prior_length in ranges:
+            if offset < prior_offset + prior_length and prior_offset < end:
+                fail(f"{label} overlaps another object range")
+        ranges.append((offset, length))
+
+    add_range(0, HEADER_SIZE, "header")
+    add_range(section_offset, section_count * SECTION_SIZE, "section table")
+    add_range(symbol_offset, symbol_count * SYMBOL_SIZE, "symbol table")
+    add_range(string_offset, string_size, "string table")
+    add_range(source_map_offset, source_map_size, "source map")
+    target_offset, target_size = struct.unpack_from("<II", data, 20)
+    target_contained = (string_offset <= target_offset and
+                        target_offset + target_size <= string_offset + string_size)
+    if not target_contained:
+        add_range(target_offset, target_size, "target triple")
     sections: list[dict] = []
+    section_names: set[str] = set()
     for index in range(section_count):
         record = data[section_offset + index * SECTION_SIZE:
                        section_offset + (index + 1) * SECTION_SIZE]
@@ -75,6 +107,8 @@ def read_object(path: pathlib.Path) -> tuple[dict, list[dict], list[dict], bytes
                 struct.unpack_from("<I", record, 28)[0] != 0 or
                 struct.unpack_from("<I", record, 32)[0] != 0):
             fail("invalid section record")
+        if kind != 3 and payload_size > 256 * 1024 * 1024:
+            fail("section payload exceeds 256 MiB")
         if kind != 3 and payload_offset + payload_size > len(data):
             fail("section payload is truncated")
         if kind == 3 and (payload_offset != 0 or struct.unpack_from("<I", record, 36)[0] != 0):
@@ -82,13 +116,23 @@ def read_object(path: pathlib.Path) -> tuple[dict, list[dict], list[dict], bytes
         if kind != 3 and struct.unpack_from("<I", record, 36)[0] != crc32(
                 data[payload_offset:payload_offset + payload_size]):
             fail("section CRC mismatch")
-        if (kind in (0, 1) and align < 4) or (reloc_count and reloc_offset + reloc_count * RELOC_SIZE > len(data)):
+        if ((kind in (0, 1) and align < 4) or
+                (reloc_count and reloc_offset + reloc_count * RELOC_SIZE > len(data))):
             fail("invalid section alignment or relocation table")
+        if kind != 3:
+            add_range(payload_offset, payload_size, "section payload")
+        if reloc_count:
+            add_range(reloc_offset, reloc_count * RELOC_SIZE,
+                      "relocation table")
         name_end = strings.find(b"\0", name_offset)
-        if name_end < 0:
+        if name_end <= name_offset:
             fail("invalid section name")
+        name = strings[name_offset:name_end].decode("ascii")
+        if name in section_names:
+            fail("duplicate section name")
+        section_names.add(name)
         sections.append({
-            "name": strings[name_offset:name_end].decode("ascii"),
+            "name": name,
             "payload_offset": payload_offset,
             "size": payload_size,
             "reloc_offset": reloc_offset,
@@ -113,6 +157,9 @@ def read_object(path: pathlib.Path) -> tuple[dict, list[dict], list[dict], bytes
             fail("unterminated symbol name")
         if section_index != 0xFFFFFFFF and section_index >= section_count:
             fail("symbol section is out of range")
+        if (section_index != 0xFFFFFFFF and kind in (1, 2, 3) and
+                value + size > sections[section_index]["size"]):
+            fail("symbol range is outside its section")
         symbols.append({
             "name": strings[name_offset:name_end].decode("ascii"),
             "value": value,
@@ -139,6 +186,11 @@ def read_object(path: pathlib.Path) -> tuple[dict, list[dict], list[dict], bytes
             relocations.append({"section": section_index, "offset": where,
                                 "symbol": symbol_index, "type": kind,
                                 "addend": addend, "width": width})
+    covered = bytearray(len(data))
+    for offset, length in ranges:
+        covered[offset:offset + length] = b"\1" * length
+    if any(value == 0 and byte != 0 for value, byte in zip(covered, data)):
+        fail("object contains undescribed data")
     header = {
         "size": len(data), "sections": section_count, "symbols": symbol_count,
         "section_offset": section_offset, "symbol_offset": symbol_offset,

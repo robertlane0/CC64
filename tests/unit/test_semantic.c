@@ -49,6 +49,24 @@ static void test_valid(void)
     arena_destroy(arena);
 }
 
+static void test_completed_tag(void)
+{
+    Arena *arena = arena_create(1024U * 1024U);
+    DiagnosticSink diagnostics = {0};
+    TranslationUnit unit;
+    const char *text =
+        "typedef struct Forward Forward;\n"
+        "struct Forward { int value; };\n"
+        "int main(void) { Forward item; Forward *pointer = 0; "
+        "item.value = 7; if (pointer == (void *)0) return item.value; return 0; }\n";
+    CHECK(parse_text(arena, text, &unit, &diagnostics));
+    CHECK(diagnostics.count == 0U);
+    CHECK(unit.has_main);
+    translation_unit_free(&unit);
+    diagnostic_sink_destroy(&diagnostics);
+    arena_destroy(arena);
+}
+
 static void expect_error(const char *text)
 {
     Arena *arena = arena_create(1024U * 1024U);
@@ -64,6 +82,7 @@ static void expect_error(const char *text)
 int main(void)
 {
     test_valid();
+    test_completed_tag();
     expect_error("int main(void) { return missing; }\n");
     expect_error("int main(void) { int a; int a; return 0; }\n");
     expect_error("int main(void) { int a[n]; return 0; }\n");
