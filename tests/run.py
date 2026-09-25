@@ -46,8 +46,44 @@ def main() -> int:
             raise SystemExit("object output is missing or nondeterministic")
         run(["python3", str(ROOT / "tools/inspect_object.py"), str(object_file)])
         run([str(ROOT / "cc64"), "--link", str(object_file), "-o", str(image_file)])
-        if not image_file.is_file() or image_file.read_bytes()[:2] != b"\x31\xff":
+        if not image_file.is_file() or image_file.read_bytes()[:3] != b"\x48\x83\xec":
             raise SystemExit("raw image output is invalid")
+
+        mz_source = directory / "mz.c"
+        mz_object = directory / "mz.cc64o"
+        mz_image = directory / "mz.bin"
+        mz_source.write_text(
+            "int value = 7; int *pointer = &value; "
+            "int main(void) { return *pointer; }\n",
+            encoding="utf-8",
+        )
+        run([str(ROOT / "cc64"), "-c", str(mz_source), "-o", str(mz_object)])
+        run([str(ROOT / "cc64"), "--link", "--format", "mz64", str(mz_object),
+             "-o", str(mz_image)])
+        run(["python3", str(ROOT / "tools/inspect_image.py"), str(mz_image)])
+        malformed = directory / "malformed.mz"
+        malformed.write_bytes(mz_image.read_bytes())
+        malformed_bytes = bytearray(malformed.read_bytes())
+        malformed_bytes[28] = 0
+        malformed.write_bytes(malformed_bytes)
+        rejected_image = subprocess.run(
+            ["python3", str(ROOT / "tools/inspect_image.py"), str(malformed)],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+        )
+        if rejected_image.returncode == 0:
+            raise SystemExit("malformed MZ64 header was accepted")
+
+        second_object = directory / "second.cc64o"
+        second_image = directory / "second.com"
+        second_source = directory / "second.c"
+        second_source.write_text(
+            "int other = 4; int main(void) { return other; }\n",
+            encoding="utf-8",
+        )
+        run([str(ROOT / "cc64"), "-c", str(second_source), "-o", str(second_object)])
+        run([str(ROOT / "cc64"), "--link", str(second_object), "-o", str(second_image)])
+        if not second_image.is_file():
+            raise SystemExit("single-object link failed")
 
         bad = directory / "bad.c"
         bad_output = directory / "bad.i"

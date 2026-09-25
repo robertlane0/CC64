@@ -57,9 +57,10 @@ bool object_add_symbol(ObjectBuilder *builder, const char *name, uint64_t value,
 bool object_add_relocation(ObjectBuilder *builder, ObjectSection *section,
                            size_t offset, Symbol *symbol, uint32_t type,
                            int64_t addend, uint32_t width);
-bool object_write_cc64o(const ObjectBuilder *builder, const char *path,
+bool object_write_cc64o(ObjectBuilder *builder, const char *path,
                         DiagnosticSink *diagnostics);
 
 uint32_t cc64_crc32(const unsigned char *data, size_t size);
+uint32_t cc64_file_crc32(unsigned char *data, size_t size);
 
 #endif

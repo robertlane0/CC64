@@ -71,14 +71,14 @@ it. At entry:
 
 The freestanding startup routine obtains the command tail from the target PSP:
 the byte at `PSP+0xa0` is the tail length and bytes at `PSP+0xa1` are the tail,
-with no terminating NUL required by the loader. It tokenizes on ASCII spaces
-and tabs, accepts at most 128 arguments, constructs NUL-terminated `argv`, and
-passes an empty `envp` unless the target supplies validated environment pairs.
-`argv[0]` is the image name supplied by the loader. The application receives
-at least 64 KiB of loader-owned stack below its entry stack top; the startup
-routine aligns that stack before calling `main`. It passes the `int` return to
-the target exit boundary. A bare `RET` from a raw image returns to the loader
-trampoline.
+with no terminating NUL guaranteed by the loader. Version 1 emits a bounded
+compatibility view: it reports one argument when the tail is empty and exposes
+the tail as the second argument when present; a later ABI revision will
+tokenize all arguments and pass validated environment pairs. The application
+receives at least 64 KiB of loader-owned stack below its entry stack top; the
+startup routine aligns that stack before calling `main`. It passes the `int`
+return to the target exit boundary. A bare `RET` from a raw image returns to
+the loader trampoline.
 
 ## Target services
 

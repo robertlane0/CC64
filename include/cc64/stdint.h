@@ -9,8 +9,8 @@ typedef signed int int32_t;
 typedef unsigned int uint32_t;
 typedef signed long int64_t;
 typedef unsigned long uint64_t;
-typedef __SIZE_TYPE__ size_t;
-typedef __PTRDIFF_TYPE__ ptrdiff_t;
+typedef unsigned long size_t;
+typedef long ptrdiff_t;
 
 #define INT8_MIN (-128)
 #define INT8_MAX 127

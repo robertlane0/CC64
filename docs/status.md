@@ -13,8 +13,8 @@ CC64-generated-image result.
 | M2 parser, types, semantics | complete | typed AST, C17-subset declarations/declarators, scopes/linkage, structs/unions/enums, expressions/statements, conversions, initializers, and deferred-feature diagnostics with positive/negative tests |
 | M3 IR and x86-64 backend | complete | typed linear IR, stack-temporary lowering, x86-64 encoder, frame/call model, CC64O writer, relocations, independent object inspector, deterministic object tests |
 | M4 linker, loader image, runtime | complete | independent CC64O validation, section/symbol merge, PC-relative relocation checks, deterministic raw `.COM`, target entry/exit trampoline, freestanding target headers, and QEMU compiler-produced-image run returning exit 7 |
-| M5 language and MS-DOS64 compatibility | not started | — |
-| M6 `MZ64`, diagnostics, hardening | not started | — |
+| M5 language and MS-DOS64 compatibility | complete | pointers, arrays, nested initializers, structs/unions, enums, switch/short-circuit control flow, increments/compound assignment, stack arguments, scalar/aggregate copies, basic binary32/binary64, target runtime service stubs, and five QEMU raw/MZ64 image cases |
+| M6 `MZ64`, diagnostics, hardening | in progress | MZ64 header/table emission and target data-pointer execution are working; independent malformed-input and release gates remain |
 | M7 self-hosting | not started | — |
 | M8 release quality | not started | — |
 

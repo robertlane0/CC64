@@ -1,8 +1,8 @@
 #ifndef CC64_DOS64_H
 #define CC64_DOS64_H
 
-#include <stdint.h>
-#include <stddef.h>
+#include "stdint.h"
+#include "stddef.h"
 
 typedef int cc64_fd;
 

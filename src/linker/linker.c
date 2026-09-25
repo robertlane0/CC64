@@ -29,6 +29,7 @@ typedef struct LinkSection {
 typedef struct LinkSymbol {
     char *name;
     uint64_t value;
+    uint64_t original_value;
     uint32_t section_index;
     unsigned char binding;
     unsigned char kind;
@@ -50,6 +51,7 @@ typedef struct GlobalSymbol {
     uint64_t address;
     uint64_t size;
     bool defined;
+    bool common;
 } GlobalSymbol;
 
 typedef struct OutputSection {
@@ -60,6 +62,11 @@ typedef struct OutputSection {
     size_t capacity;
     size_t output_offset;
 } OutputSection;
+
+typedef struct ImageRelocation {
+    uint64_t destination;
+    int64_t addend;
+} ImageRelocation;
 
 static uint16_t read_u16(const unsigned char *data)
 {
@@ -142,23 +149,40 @@ static bool read_object_file(const char *path, LinkObject *object,
         link_error(diagnostics, 5003U, path, "cannot read object"); return false;
     }
     fclose(stream);
-    if (object->size < CC64O_HEADER_SIZE || memcmp(object->bytes, "CC64OBJ\0", 8U) != 0) {
+    if (object->size < CC64O_HEADER_SIZE || object->size > 512U * 1024U * 1024U ||
+        memcmp(object->bytes, "CC64OBJ\0", 8U) != 0) {
         link_error(diagnostics, 5004U, path, "invalid CC64O magic"); return false;
     }
     if (read_u16(object->bytes + 8U) != 1U || read_u16(object->bytes + 10U) != 0x3433U ||
         read_u16(object->bytes + 12U) != 1U || read_u16(object->bytes + 14U) != 62U ||
-        read_u32(object->bytes + 16U) != CC64O_HEADER_SIZE) {
+        read_u32(object->bytes + 16U) != CC64O_HEADER_SIZE ||
+        read_u32(object->bytes + 60U) != 0U) {
         link_error(diagnostics, 5005U, path, "unsupported object contract"); return false;
+    }
+    for (size_t i = 72U; i < CC64O_HEADER_SIZE; ++i) {
+        if (object->bytes[i] != 0U) {
+            link_error(diagnostics, 5008U, path, "object reserved bytes are nonzero");
+            return false;
+        }
+    }
+    uint32_t source_map_offset = read_u32(object->bytes + 52U);
+    uint32_t source_map_size = read_u32(object->bytes + 56U);
+    if ((source_map_offset == 0U) != (source_map_size == 0U) ||
+        (source_map_size != 0U &&
+         !range_ok(source_map_offset, source_map_size, object->size))) {
+        link_error(diagnostics, 5008U, path, "object source map range is invalid");
+        return false;
     }
     uint32_t target_offset = read_u32(object->bytes + 20U);
     uint32_t target_size = read_u32(object->bytes + 24U);
-    if (!range_ok(target_offset, target_size, object->size) || target_size == 0U ||
-        target_size < strlen(CC64_TARGET) + 1U ||
+    if (!range_ok(target_offset, target_size, object->size) ||
+        target_size != (uint32_t)strlen(CC64_TARGET) + 1U ||
+        object->bytes[target_offset + target_size - 1U] != 0U ||
         memcmp(object->bytes + target_offset, CC64_TARGET, strlen(CC64_TARGET)) != 0) {
         link_error(diagnostics, 5006U, path, "object target triple is invalid"); return false;
     }
     if (link_crc32(object->bytes, 64U) != read_u32(object->bytes + 64U) ||
-        link_crc32(object->bytes, 68U) != read_u32(object->bytes + 68U)) {
+        cc64_file_crc32(object->bytes, object->size) != read_u32(object->bytes + 68U)) {
         link_error(diagnostics, 5007U, path, "object CRC mismatch"); return false;
     }
     uint32_t section_offset = read_u32(object->bytes + 28U);
@@ -167,9 +191,13 @@ static bool read_object_file(const char *path, LinkObject *object,
     uint32_t symbol_count = read_u32(object->bytes + 40U);
     uint32_t string_offset = read_u32(object->bytes + 44U);
     uint32_t string_size = read_u32(object->bytes + 48U);
-    if (!range_ok(section_offset, (size_t)section_count * CC64O_SECTION_SIZE, object->size) ||
+    if (section_count > 65535U || symbol_count > 1000000U ||
+        string_size == 0U || string_size > object->size ||
+        section_offset < CC64O_HEADER_SIZE || symbol_offset < CC64O_HEADER_SIZE ||
+        string_offset < CC64O_HEADER_SIZE ||
+        !range_ok(section_offset, (size_t)section_count * CC64O_SECTION_SIZE, object->size) ||
         !range_ok(symbol_offset, (size_t)symbol_count * CC64O_SYMBOL_SIZE, object->size) ||
-        !range_ok(string_offset, string_size, object->size) || string_size == 0U) {
+        !range_ok(string_offset, string_size, object->size)) {
         link_error(diagnostics, 5008U, path, "object tables are truncated"); return false;
     }
     object->section_count = section_count;
@@ -177,6 +205,10 @@ static bool read_object_file(const char *path, LinkObject *object,
     object->symbol_count = symbol_count;
     object->symbols = cc64_xmalloc((symbol_count == 0U ? 1U : symbol_count) * sizeof(*object->symbols));
     const unsigned char *strings = object->bytes + string_offset;
+    if (object->bytes[string_offset + string_size - 1U] != 0U) {
+        link_error(diagnostics, 5008U, path, "object string table is unterminated");
+        return false;
+    }
     for (uint32_t i = 0U; i < section_count; ++i) {
         const unsigned char *record = object->bytes + section_offset + i * CC64O_SECTION_SIZE;
         LinkSection *section = &object->sections[i];
@@ -186,17 +218,43 @@ static bool read_object_file(const char *path, LinkObject *object,
         uint32_t reloc_offset = read_u32(record + 12U);
         uint32_t reloc_count = read_u32(record + 16U);
         uint32_t alignment_power = read_u32(record + 20U);
+        uint16_t target_index = (uint16_t)read_u16(record + 26U);
         section->kind = record[24];
         section->alignment = alignment_power > 15U ? 0U : 1U << alignment_power;
         if (name_offset >= string_size || section->kind > 3U || section->alignment == 0U ||
-            (section->kind != 3U && !range_ok(payload_offset, payload_size, object->size)) ||
-            (reloc_count != 0U && !range_ok(reloc_offset, (size_t)reloc_count * CC64O_RELOC_SIZE, object->size))) {
+            target_index != (uint16_t)i || record[25] != 0U ||
+            read_u32(record + 28U) != 0U || read_u32(record + 32U) != 0U ||
+            (section->kind != 3U && (!range_ok(payload_offset, payload_size, object->size) ||
+                                      payload_size > 256U * 1024U * 1024U)) ||
+            (section->kind == 3U && payload_offset != 0U) ||
+            (section->kind == 3U && read_u32(record + 36U) != 0U) ||
+            (section->kind != 3U && read_u32(record + 36U) !=
+                                      cc64_crc32(object->bytes + payload_offset, payload_size)) ||
+            (reloc_count != 0U && (!range_ok(reloc_offset,
+                                             (size_t)reloc_count * CC64O_RELOC_SIZE,
+                                             object->size) ||
+                                  reloc_offset < CC64O_HEADER_SIZE))) {
             link_error(diagnostics, 5009U, path, "invalid object section"); return false;
         }
         uint32_t name_end = name_offset;
         while (name_end < string_size && strings[name_end] != 0U) ++name_end;
         if (name_end == string_size) { link_error(diagnostics, 5010U, path, "invalid section name"); return false; }
         size_t name_length = name_end - name_offset;
+        if ((section->kind == 0U || section->kind == 1U) &&
+            section->alignment < 16U) {
+            link_error(diagnostics, 5009U, path,
+                       "executable section alignment is too small");
+            return false;
+        }
+        for (uint32_t prior = 0U; prior < i; ++prior) {
+            const char *prior_name = object->sections[prior].name;
+            size_t prior_length = strlen(prior_name);
+            if (prior_length == name_length &&
+                memcmp(strings + name_offset, prior_name, name_length) == 0) {
+                link_error(diagnostics, 5009U, path, "duplicate object section");
+                return false;
+            }
+        }
         section->name = cc64_xmalloc(name_length + 1U);
         memcpy(section->name, strings + name_offset, name_length);
         section->name[name_length] = '\0';
@@ -212,7 +270,17 @@ static bool read_object_file(const char *path, LinkObject *object,
             section->relocations[j].addend = read_i64(entry + 16U);
             section->relocations[j].width = read_u32(entry + 24U);
             if (section->relocations[j].symbol_index >= symbol_count ||
-                (section->relocations[j].width != 4U && section->relocations[j].width != 8U) ||
+                read_u32(entry + 28U) != 0U ||
+                (section->relocations[j].type == CC64O_REL_ABS32 &&
+                 section->relocations[j].width != 4U) ||
+                (section->relocations[j].type == CC64O_REL_ABS64 &&
+                 section->relocations[j].width != 8U) ||
+                (section->relocations[j].type == CC64O_REL_PC32 &&
+                 section->relocations[j].width != 4U) ||
+                (section->relocations[j].type == CC64O_REL_SECTION32 &&
+                 section->relocations[j].width != 4U) ||
+                (section->relocations[j].type == CC64O_REL_DATA64 &&
+                 section->relocations[j].width != 8U) ||
                 section->relocations[j].type < 1U || section->relocations[j].type > 5U ||
                 section->relocations[j].offset > section->size ||
                 section->relocations[j].width > section->size - section->relocations[j].offset) {
@@ -233,13 +301,23 @@ static bool read_object_file(const char *path, LinkObject *object,
         memcpy(symbol->name, strings + name_offset, name_length);
         symbol->name[name_length] = '\0';
         symbol->value = read_u32(record + 4U);
+        symbol->original_value = symbol->value;
         symbol->section_index = read_u32(record + 8U);
         symbol->binding = record[12];
         symbol->kind = record[13];
         symbol->size = read_u64(record + 16U);
         symbol->defined = symbol->section_index != UINT32_MAX;
-        if (symbol->section_index != UINT32_MAX && symbol->section_index >= section_count) {
-            link_error(diagnostics, 5014U, path, "symbol section is out of range"); return false;
+        if (symbol->binding > 1U || symbol->kind > 4U ||
+            read_u16(record + 14U) != 0U || read_u32(record + 24U) != 0U ||
+            read_u32(record + 28U) != 0U ||
+            (symbol->section_index != UINT32_MAX &&
+             symbol->section_index >= section_count)) {
+            link_error(diagnostics, 5014U, path, "invalid object symbol"); return false;
+        }
+        if (symbol->section_index != UINT32_MAX &&
+            symbol->value > object->sections[symbol->section_index].size) {
+            link_error(diagnostics, 5014U, path, "symbol value is outside its section");
+            return false;
         }
     }
     return true;
@@ -299,6 +377,27 @@ static bool add_global(GlobalSymbol **globals, size_t *count, size_t *capacity,
     return true;
 }
 
+static bool output_append_zeros(OutputSection *section, size_t size)
+{
+    if (size == 0U) return true;
+    unsigned char *bytes = calloc(size, 1U);
+    if (bytes == NULL) return false;
+    bool good = output_append(section, bytes, size);
+    free(bytes);
+    return good;
+}
+
+static bool output_pad_to(OutputSection *section, size_t old_size)
+{
+    if (section->size <= old_size) return true;
+    size_t padding = section->size - old_size;
+    unsigned char *bytes = calloc(padding, 1U);
+    if (bytes == NULL) return false;
+    bool good = output_append(section, bytes, padding);
+    free(bytes);
+    return good;
+}
+
 static bool align_output(OutputSection *section, size_t alignment, size_t *offset)
 {
     if (alignment == 0U) alignment = 1U;
@@ -318,6 +417,7 @@ static bool resolve_symbols(LinkObject *objects, size_t object_count,
         LinkObject *object = &objects[o];
         for (size_t s = 0U; s < object->symbol_count; ++s) {
             LinkSymbol *symbol = &object->symbols[s];
+            bool is_common = symbol->kind == 4U && symbol->section_index == UINT32_MAX;
             if (symbol->section_index != UINT32_MAX) {
                 LinkSection *section = &object->sections[symbol->section_index];
                 if (section->output_offset > UINT64_MAX - symbol->value) return false;
@@ -328,20 +428,102 @@ static bool resolve_symbols(LinkObject *objects, size_t object_count,
                 GlobalSymbol *global = NULL;
                 if (!add_global(globals_out, global_count, global_capacity, symbol->name)) return false;
                 global = find_global(*globals_out, *global_count, symbol->name);
-                if (global->defined && symbol->defined) {
-                    link_error(diagnostics, 5020U, NULL, "duplicate global definition");
-                    return false;
+                if (is_common) {
+                    size_t alignment = 8U;
+                    size_t mask = alignment - 1U;
+                    if (outputs[3].size > SIZE_MAX - mask) return false;
+                    size_t offset = (outputs[3].size + mask) & ~mask;
+                    if (symbol->size > SIZE_MAX - offset) return false;
+                    outputs[3].size = offset + symbol->size;
+                    symbol->value = outputs[3].output_offset + offset;
+                    symbol->defined = true;
+                    if (global->defined && !global->common) {
+                        link_error(diagnostics, 5020U, NULL,
+                                   "common symbol conflicts with definition");
+                        return false;
+                    }
+                    if (!global->defined || symbol->size > global->size) {
+                        global->address = symbol->value;
+                        global->size = symbol->size;
+                    }
+                    global->defined = true;
+                    global->common = true;
+                } else if (global->defined && symbol->defined && !global->common) {
+                    bool both_tentative = symbol->kind == 1U &&
+                                          object->sections[symbol->section_index].kind == 3U &&
+                                          global->size == symbol->size;
+                    if (!both_tentative) {
+                        link_error(diagnostics, 5020U, NULL,
+                                   "duplicate global definition");
+                        return false;
+                    }
+                } else if (symbol->defined) {
+                    global->address = symbol->value;
+                    global->size = symbol->size;
+                    global->defined = true;
+                    global->common = false;
                 }
-                if (symbol->defined) { global->address = symbol->value; global->size = symbol->size; global->defined = true; }
             }
         }
     }
     return true;
 }
 
+static bool checked_add_signed(uint64_t value, int64_t addend,
+                               int64_t *result)
+{
+    if (addend >= 0) {
+        uint64_t extra = (uint64_t)addend;
+        if (value > UINT64_MAX - extra) return false;
+        if (value + extra > (uint64_t)INT64_MAX) return false;
+        *result = (int64_t)(value + extra);
+        return true;
+    }
+    uint64_t amount = (uint64_t)(-(addend + 1)) + 1U;
+    if (value < amount) {
+        if (value > (uint64_t)INT64_MAX + 1U) {
+            *result = (int64_t)(value - amount);
+            return *result >= INT64_MIN;
+        }
+        return false;
+    }
+    uint64_t difference = value - amount;
+    if (difference > (uint64_t)INT64_MAX) {
+        *result = (int64_t)(difference - (UINT64_C(1) << 63));
+        return true;
+    }
+    *result = (int64_t)difference;
+    return true;
+}
+
+static bool append_image_relocation(ImageRelocation **items, size_t *count,
+                                    size_t *capacity, uint64_t destination,
+                                    int64_t addend)
+{
+    if (*count == *capacity) {
+        size_t next = *capacity == 0U ? 8U : *capacity * 2U;
+        if (next < *capacity || next > SIZE_MAX / sizeof(**items)) return false;
+        ImageRelocation *grown = cc64_xrealloc(*items, next * sizeof(**items));
+        *items = grown;
+        *capacity = next;
+    }
+    size_t position = *count;
+    while (position > 0U && (*items)[position - 1U].destination > destination) {
+        (*items)[position] = (*items)[position - 1U];
+        --position;
+    }
+    (*items)[position].destination = destination;
+    (*items)[position].addend = addend;
+    ++*count;
+    return true;
+}
+
 static bool apply_relocations(LinkObject *objects, size_t object_count,
                               OutputSection outputs[4], GlobalSymbol *globals,
-                              size_t global_count, bool raw_format,
+                              size_t global_count, ImageFormat format,
+                              ImageRelocation **image_relocations,
+                              size_t *image_relocation_count,
+                              size_t *image_relocation_capacity,
                               DiagnosticSink *diagnostics)
 {
     for (size_t o = 0U; o < object_count; ++o) {
@@ -351,32 +533,88 @@ static bool apply_relocations(LinkObject *objects, size_t object_count,
             OutputSection *output = &outputs[section->output_kind];
             for (size_t r = 0U; r < section->relocation_count; ++r) {
                 LinkRelocation *reloc = &section->relocations[r];
+                if ((reloc->type == CC64O_REL_ABS32 && reloc->width != 4U) ||
+                    (reloc->type == CC64O_REL_ABS64 && reloc->width != 8U) ||
+                    (reloc->type == CC64O_REL_PC32 && reloc->width != 4U) ||
+                    (reloc->type == CC64O_REL_SECTION32 && reloc->width != 4U) ||
+                    (reloc->type == CC64O_REL_DATA64 && reloc->width != 8U)) {
+                    link_error(diagnostics, 5031U, NULL,
+                               "relocation type and width do not match");
+                    return false;
+                }
                 LinkSymbol *symbol = &object->symbols[reloc->symbol_index];
                 uint64_t value = symbol->value;
                 if (symbol->binding == 1U) {
                     GlobalSymbol *global = find_global(globals, global_count, symbol->name);
-                    if (global == NULL || !global->defined) { link_error(diagnostics, 5021U, NULL, "unresolved symbol"); return false; }
+                    if (global == NULL || !global->defined) {
+                        link_error(diagnostics, 5021U, NULL, "unresolved symbol");
+                        return false;
+                    }
                     value = global->address;
                 }
-                if (raw_format && (reloc->type == CC64O_REL_ABS64 || reloc->type == CC64O_REL_DATA64 || reloc->type == CC64O_REL_ABS32)) {
-                    link_error(diagnostics, 5022U, NULL, "load-biased relocation is not valid in raw COM"); return false;
+                size_t section_position = section->output_offset +
+                                         (size_t)reloc->offset;
+                if (section_position > output->size ||
+                    reloc->width > output->size - section_position) {
+                    link_error(diagnostics, 5023U, NULL,
+                               "relocation is outside output section");
+                    return false;
                 }
-                size_t position = output->output_offset + section->output_offset + (size_t)reloc->offset;
-                if (position > output->size || reloc->width > output->size - position) { link_error(diagnostics, 5023U, NULL, "relocation is outside output section"); return false; }
+                size_t position = output->output_offset + section_position;
+                if (reloc->type == CC64O_REL_DATA64) {
+                    if (format == IMAGE_RAW_COM) {
+                        link_error(diagnostics, 5022U, NULL,
+                                   "load-biased relocation is not valid in raw COM");
+                        return false;
+                    }
+                    if ((position & 7U) != 0U) {
+                        link_error(diagnostics, 5032U, NULL,
+                                   "data relocation destination is not aligned");
+                        return false;
+                    }
+                    int64_t target = 0;
+                    if (!checked_add_signed(value, reloc->addend, &target) ||
+                        !append_image_relocation(image_relocations,
+                                                 image_relocation_count,
+                                                 image_relocation_capacity,
+                                                 (uint64_t)position, target)) {
+                        link_error(diagnostics, 5033U, NULL,
+                                   "data relocation is out of range");
+                        return false;
+                    }
+                    write_u64(output->data + position, 0U);
+                    continue;
+                }
+                if (reloc->type == CC64O_REL_ABS32 ||
+                    reloc->type == CC64O_REL_ABS64) {
+                    link_error(diagnostics, 5022U, NULL,
+                               "absolute relocation is not load-safe");
+                    return false;
+                }
                 if (reloc->type == CC64O_REL_PC32) {
+                    int64_t target = 0;
+                    if (!checked_add_signed(value, reloc->addend, &target)) {
+                        link_error(diagnostics, 5024U, NULL,
+                                   "PC-relative relocation overflow");
+                        return false;
+                    }
                     int64_t pc = (int64_t)(position + reloc->width);
-                    int64_t result = (int64_t)value + reloc->addend - pc;
-                    if (result < INT32_MIN || result > INT32_MAX) { link_error(diagnostics, 5024U, NULL, "PC-relative relocation overflow"); return false; }
+                    int64_t result = target - pc;
+                    if (result < INT32_MIN || result > INT32_MAX) {
+                        link_error(diagnostics, 5024U, NULL,
+                                   "PC-relative relocation overflow");
+                        return false;
+                    }
                     write_u32(output->data + position, (uint32_t)(int32_t)result);
                 } else if (reloc->type == CC64O_REL_SECTION32) {
-                    uint64_t result = symbol->value + (uint64_t)reloc->addend;
-                    if (result > UINT32_MAX) { link_error(diagnostics, 5025U, NULL, "section relocation overflow"); return false; }
+                    int64_t result = 0;
+                    if (!checked_add_signed(symbol->original_value, reloc->addend,
+                                            &result) || result < 0 || result > UINT32_MAX) {
+                        link_error(diagnostics, 5025U, NULL,
+                                   "section relocation overflow");
+                        return false;
+                    }
                     write_u32(output->data + position, (uint32_t)result);
-                } else {
-                    uint64_t result = value + (uint64_t)reloc->addend;
-                    if (reloc->width == 4U && result > UINT32_MAX) { link_error(diagnostics, 5026U, NULL, "32-bit relocation overflow"); return false; }
-                    if (reloc->width == 4U) write_u32(output->data + position, (uint32_t)result);
-                    else write_u64(output->data + position, result);
                 }
             }
         }
@@ -384,120 +622,209 @@ static bool apply_relocations(LinkObject *objects, size_t object_count,
     return true;
 }
 
+static bool write_linked_image(const OutputSection outputs[4],
+                               ImageFormat format,
+                               const ImageRelocation *image_relocations,
+                               size_t image_relocation_count,
+                               const char *output,
+                               DiagnosticSink *diagnostics)
+{
+    size_t payload_size = 0U;
+    size_t memory_size = 0U;
+    for (size_t i = 0U; i < 4U; ++i) {
+        if (outputs[i].output_offset > SIZE_MAX - outputs[i].size) return false;
+        size_t end = outputs[i].output_offset + outputs[i].size;
+        if (i != 3U && end > payload_size) payload_size = end;
+        if (end > memory_size) memory_size = end;
+    }
+    const size_t image_limit = 16U * 1024U * 1024U;
+    if (memory_size > image_limit || payload_size > UINT32_MAX ||
+        outputs[0].output_offset >= payload_size) {
+        link_error(diagnostics, 5034U, output, "linked image exceeds target limits");
+        return false;
+    }
+    size_t relocation_bytes = 0U;
+    if (image_relocation_count > SIZE_MAX / 16U) return false;
+    relocation_bytes = image_relocation_count * 16U;
+    size_t file_size = format == IMAGE_RAW_COM ? memory_size : 48U + payload_size + relocation_bytes;
+    if (file_size < payload_size || file_size > UINT32_MAX) {
+        link_error(diagnostics, 5034U, output, "linked image size overflow");
+        return false;
+    }
+    unsigned char *image = calloc(file_size == 0U ? 1U : file_size, 1U);
+    if (image == NULL) return false;
+    if (format == IMAGE_RAW_COM) {
+        for (size_t i = 0U; i < 4U; ++i) {
+            if (outputs[i].size != 0U && outputs[i].data != NULL) {
+                memcpy(image + outputs[i].output_offset, outputs[i].data, outputs[i].size);
+            }
+        }
+    } else {
+        memcpy(image, "MZ64", 4U);
+        write_u32(image + 4U, 48U);
+        write_u64(image + 8U, (uint64_t)payload_size);
+        write_u32(image + 16U, (uint32_t)outputs[0].output_offset);
+        write_u32(image + 24U, (uint32_t)image_relocation_count);
+        if (48U + payload_size > UINT32_MAX) {
+            free(image);
+            return false;
+        }
+        write_u32(image + 28U, (uint32_t)(48U + payload_size));
+        write_u64(image + 32U, (uint64_t)memory_size);
+        for (size_t i = 0U; i < 3U; ++i) {
+            if (outputs[i].size != 0U && outputs[i].data != NULL) {
+                memcpy(image + 48U + outputs[i].output_offset,
+                       outputs[i].data, outputs[i].size);
+            }
+        }
+        for (size_t i = 0U; i < image_relocation_count; ++i) {
+            unsigned char *entry = image + 48U + payload_size + i * 16U;
+            write_u64(entry, image_relocations[i].destination);
+            write_u64(entry + 8U, (uint64_t)image_relocations[i].addend);
+        }
+    }
+    size_t path_length = strlen(output) + 5U;
+    char *temporary = cc64_xmalloc(path_length);
+    (void)snprintf(temporary, path_length, "%s.tmp", output);
+    FILE *stream = fopen(temporary, "wb");
+    bool wrote = stream != NULL && fwrite(image, 1U, file_size, stream) == file_size;
+    if (stream != NULL && fclose(stream) != 0) wrote = false;
+    if (wrote && rename(temporary, output) != 0) wrote = false;
+    if (!wrote) {
+        (void)remove(temporary);
+        link_error(diagnostics, 5029U, output,
+                   format == IMAGE_RAW_COM ? "cannot write raw image" :
+                                             "cannot write MZ64 image");
+    }
+    free(temporary);
+    free(image);
+    return wrote;
+}
+
 bool link_objects(Arena *arena, const char *const *objects, size_t object_count,
                   const char *output, ImageFormat format,
                   DiagnosticSink *diagnostics)
 {
     (void)arena;
-    if (format != IMAGE_RAW_COM) { link_error(diagnostics, 5040U, output, "image format is not implemented"); return false; }
-    if (object_count == 0U || output == NULL) { link_error(diagnostics, 5041U, output, "linker requires objects and output"); return false; }
+    if (object_count == 0U || output == NULL) {
+        link_error(diagnostics, 5041U, output,
+                   "linker requires objects and output");
+        return false;
+    }
     LinkObject *loaded = cc64_xmalloc(object_count * sizeof(*loaded));
     OutputSection outputs[4] = {0};
-    outputs[0].kind = 0; outputs[0].alignment = 16U;
-    outputs[1].kind = 1; outputs[1].alignment = 16U;
-    outputs[2].kind = 2; outputs[2].alignment = 8U;
-    outputs[3].kind = 3; outputs[3].alignment = 8U;
+    outputs[0].kind = 0U; outputs[0].alignment = 16U;
+    outputs[1].kind = 1U; outputs[1].alignment = 16U;
+    outputs[2].kind = 2U; outputs[2].alignment = 8U;
+    outputs[3].kind = 3U; outputs[3].alignment = 8U;
     GlobalSymbol *globals = NULL;
     size_t global_count = 0U;
     size_t global_capacity = 0U;
+    ImageRelocation *image_relocations = NULL;
+    size_t image_relocation_count = 0U;
+    size_t image_relocation_capacity = 0U;
     bool good = true;
+    size_t loaded_count = 0U;
     for (size_t i = 0U; i < object_count; ++i) {
-        if (!read_object_file(objects[i], &loaded[i], diagnostics)) { good = false; break; }
+        if (!read_object_file(objects[i], &loaded[i], diagnostics)) {
+            good = false;
+            break;
+        }
+        ++loaded_count;
     }
     if (good) {
-        /* Reserve the target entry trampoline in the text section. */
         static const unsigned char entry_stub[] = {
-            0x31U, 0xffU, 0x31U, 0xf6U, 0xe8U, 0U, 0U, 0U, 0U,
-            0x89U, 0xc1U, 0xb8U, 0U, 0x4cU, 0U, 0U, 0x88U,
+            0x48U, 0x83U, 0xecU, 0x28U,
+            0x48U, 0x89U, 0x3cU, 0x24U,
+            0x48U, 0xc7U, 0x44U, 0x24U, 0x10U, 0U, 0U, 0U, 0U,
+            0x49U, 0x89U, 0xfaU,
+            0x41U, 0x8bU, 0x82U, 0xa0U, 0U, 0U, 0U,
+            0x85U, 0xc0U, 0x0fU, 0x95U, 0xc0U,
+            0x0fU, 0xb6U, 0xc8U, 0x83U, 0xc1U, 0x01U,
+            0x49U, 0x8dU, 0x82U, 0xa1U, 0U, 0U, 0U,
+            0x48U, 0x89U, 0x44U, 0x24U, 0x08U,
+            0x48U, 0x89U, 0xcfU, 0x48U, 0x89U, 0xe6U, 0x31U, 0xd2U,
+            0xe8U, 0U, 0U, 0U, 0U,
+            0x89U, 0xc1U, 0x48U, 0x83U, 0xc4U, 0x28U,
+            0xb8U, 0U, 0x4cU, 0U, 0U, 0x88U,
             0xc8U, 0xcdU, 0x21U, 0xc3U
         };
         if (!output_append(&outputs[0], entry_stub, sizeof(entry_stub))) good = false;
         for (size_t o = 0U; o < object_count && good; ++o) {
-            for (size_t s = 0; s < loaded[o].section_count; ++s) {
+            for (size_t s = 0U; s < loaded[o].section_count; ++s) {
                 LinkSection *section = &loaded[o].sections[s];
                 unsigned output_kind = section->kind;
-                if (!align_output(&outputs[output_kind], section->alignment, &outputs[output_kind].size)) { good = false; break; }
+                size_t old_size = outputs[output_kind].size;
+                if (!align_output(&outputs[output_kind], section->alignment,
+                                   &outputs[output_kind].size) ||
+                    !output_pad_to(&outputs[output_kind], old_size)) {
+                    good = false;
+                    break;
+                }
                 section->output_offset = outputs[output_kind].size;
                 section->output_kind = output_kind;
-                if (section->kind != 3U && !output_append(&outputs[output_kind], section->data, section->size)) { good = false; break; }
-                if (section->kind == 3U) outputs[output_kind].size += section->size;
+                if (section->kind != 3U &&
+                    !output_append(&outputs[output_kind], section->data, section->size)) {
+                    good = false;
+                    break;
+                }
+                if (section->kind == 3U &&
+                    !output_append_zeros(&outputs[output_kind], section->size)) {
+                    good = false;
+                    break;
+                }
             }
         }
     }
     if (good) {
         size_t base = 0U;
         for (size_t i = 0U; i < 4U; ++i) {
-            if (!align_output(&outputs[i], outputs[i].alignment, &base)) { good = false; break; }
+            if (!align_output(&outputs[i], outputs[i].alignment, &base)) {
+                good = false;
+                break;
+            }
             outputs[i].output_offset = base;
+            if (base > SIZE_MAX - outputs[i].size) { good = false; break; }
             base += outputs[i].size;
         }
-        /* The section offsets above are filled again after each output size is known. */
-        if (good) {
-            base = 0U;
-            for (size_t i = 0U; i < 4U; ++i) {
-                outputs[i].output_offset = base;
-                base += outputs[i].size;
-            }
-        }
     }
-    if (good) {
-        /* Recompute each input section's final offset after output layout. */
-        for (size_t o = 0U; o < object_count; ++o) {
-            for (size_t s = 0; s < loaded[o].section_count; ++s) {
-                LinkSection *section = &loaded[o].sections[s];
-                section->output_offset = outputs[section->output_kind].output_offset + section->output_offset - outputs[section->output_kind].output_offset;
-            }
-        }
-        if (!resolve_symbols(loaded, object_count, outputs, &globals, &global_count,
-                             &global_capacity, diagnostics)) good = false;
+    if (good && !resolve_symbols(loaded, object_count, outputs, &globals,
+                                 &global_count, &global_capacity, diagnostics)) {
+        good = false;
     }
     if (good && !apply_relocations(loaded, object_count, outputs, globals,
-                                   global_count, true, diagnostics)) good = false;
+                                   global_count, format, &image_relocations,
+                                   &image_relocation_count,
+                                   &image_relocation_capacity, diagnostics)) {
+        good = false;
+    }
     if (good) {
         GlobalSymbol *main_symbol = find_global(globals, global_count, "main");
-        if (main_symbol == NULL || !main_symbol->defined) { link_error(diagnostics, 5027U, output, "undefined main symbol"); good = false; }
-        else {
-            size_t field = outputs[0].output_offset + 5U;
+        if (main_symbol == NULL || !main_symbol->defined) {
+            link_error(diagnostics, 5027U, output, "undefined main symbol");
+            good = false;
+        } else {
+            size_t field = outputs[0].output_offset + 59U;
             int64_t displacement = (int64_t)main_symbol->address -
                                    (int64_t)(field + 4U);
-            if (displacement < INT32_MIN || displacement > INT32_MAX) { link_error(diagnostics, 5028U, output, "entry trampoline overflow"); good = false; }
-            else write_u32(outputs[0].data + field, (uint32_t)(int32_t)displacement);
-        }
-    }
-    if (good) {
-        size_t total = 0U;
-        for (size_t i = 0U; i < 4U; ++i) {
-            if (outputs[i].output_offset > SIZE_MAX - outputs[i].size) { good = false; break; }
-            size_t end = outputs[i].output_offset + outputs[i].size;
-            if (end > total) total = end;
-        }
-        if (good) {
-            /* Reconstruct contiguous output because BSS is zero-filled. */
-            unsigned char *image = calloc(total == 0U ? 1U : total, 1U);
-            if (image == NULL) { good = false; }
-            else {
-            for (size_t i = 0U; i < 4U; ++i) {
-                if (outputs[i].size != 0U && outputs[i].data != NULL) {
-                    memcpy(image + outputs[i].output_offset, outputs[i].data, outputs[i].size);
-                }
-            }
-            /* Write through a temporary flat buffer using a small helper path. */
-            size_t path_len = strlen(output) + 5U;
-            char *temporary = cc64_xmalloc(path_len);
-            (void)snprintf(temporary, path_len, "%s.tmp", output);
-            FILE *stream = fopen(temporary, "wb");
-            bool wrote = stream != NULL && (total == 0U || fwrite(image, 1U, total, stream) == total);
-            if (stream != NULL && fclose(stream) != 0) wrote = false;
-            if (wrote && rename(temporary, output) != 0) wrote = false;
-            if (!wrote) { (void)remove(temporary); link_error(diagnostics, 5029U, output, "cannot write raw image"); good = false; }
-            free(temporary); free(image);
+            if (displacement < INT32_MIN || displacement > INT32_MAX) {
+                link_error(diagnostics, 5028U, output,
+                           "entry trampoline overflow");
+                good = false;
+            } else {
+                write_u32(outputs[0].data + field, (uint32_t)(int32_t)displacement);
             }
         }
     }
-    for (size_t i = 0; i < object_count; ++i) free_link_object(&loaded[i]);
-    for (size_t i = 0; i < global_count; ++i) free((void *)globals[i].name);
+    if (good && !write_linked_image(outputs, format, image_relocations,
+                                    image_relocation_count, output, diagnostics)) {
+        good = false;
+    }
+    for (size_t i = 0U; i < loaded_count; ++i) free_link_object(&loaded[i]);
+    for (size_t i = 0U; i < global_count; ++i) free((void *)globals[i].name);
     free(globals);
-    for (size_t i = 0; i < 4U; ++i) free(outputs[i].data);
+    free(image_relocations);
+    for (size_t i = 0U; i < 4U; ++i) free(outputs[i].data);
     free(loaded);
     return good;
 }

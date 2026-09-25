@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+static uint32_t find_symbol(const ObjectBuilder *builder, Symbol *symbol);
+
 static bool size_add_size(size_t left, size_t right, size_t *result)
 {
     if (right > SIZE_MAX - left) return false;
@@ -101,6 +103,15 @@ bool object_add_relocation(ObjectBuilder *builder, ObjectSection *section,
                            size_t offset, Symbol *symbol, uint32_t type,
                            int64_t addend, uint32_t width)
 {
+    if (find_symbol(builder, symbol) == UINT32_MAX) {
+        unsigned char binding = (unsigned char)(symbol != NULL &&
+                                                 symbol->linkage == LINKAGE_INTERNAL ? 0U : 1U);
+        unsigned char kind = (unsigned char)(symbol != NULL &&
+                                             symbol->class == SYMBOL_FUNCTION ? 2U : 1U);
+        if (!object_add_symbol(builder, symbol == NULL ? "" : symbol->name,
+                               0U, UINT32_MAX, binding, kind, 0U, false)) return false;
+        builder->symbols[builder->symbol_count - 1U].source_symbol = symbol;
+    }
     IrRelocation *reloc = cc64_xmalloc(sizeof(*reloc));
     reloc->offset = offset;
     reloc->symbol = symbol;
@@ -142,6 +153,17 @@ uint32_t cc64_crc32(const unsigned char *data, size_t size)
         }
     }
     return ~crc;
+}
+
+uint32_t cc64_file_crc32(unsigned char *data, size_t size)
+{
+    if (data == NULL || size < 72U) return 0U;
+    unsigned char saved[4];
+    memcpy(saved, data + 68U, sizeof(saved));
+    memset(data + 68U, 0, sizeof(saved));
+    uint32_t crc = cc64_crc32(data, size);
+    memcpy(data + 68U, saved, sizeof(saved));
+    return crc;
 }
 
 typedef struct StringTable {
@@ -224,10 +246,26 @@ static void free_string_table(StringTable *table)
     memset(table, 0, sizeof(*table));
 }
 
-bool object_write_cc64o(const ObjectBuilder *builder, const char *path,
+static int object_symbol_compare(const void *left, const void *right)
+{
+    const ObjectSymbol *a = left;
+    const ObjectSymbol *b = right;
+    if (a->binding != b->binding) return a->binding < b->binding ? -1 : 1;
+    int name = strcmp(a->name, b->name);
+    if (name != 0) return name;
+    if (a->value != b->value) return a->value < b->value ? -1 : 1;
+    if (a->section_index != b->section_index) {
+        return a->section_index < b->section_index ? -1 : 1;
+    }
+    return 0;
+}
+
+bool object_write_cc64o(ObjectBuilder *builder, const char *path,
                         DiagnosticSink *diagnostics)
 {
     if (builder == NULL || path == NULL) return false;
+    qsort(builder->symbols, builder->symbol_count, sizeof(*builder->symbols),
+          object_symbol_compare);
     StringTable strings = {0};
     uint32_t target_offset = 0U;
     if (!string_add(&strings, "", &target_offset) ||
@@ -336,15 +374,21 @@ bool object_write_cc64o(const ObjectBuilder *builder, const char *path,
         ObjectSection *section = &builder->sections[i];
         unsigned char *record = file + section_table_offset + i * CC64O_SECTION_SIZE;
         put_u32(record + 12U, reloc_count(section) == 0U ? 0U : (uint32_t)reloc_cursor);
-        IrRelocation *ordered[256];
         size_t count = reloc_count(section);
-        if (count > sizeof(ordered) / sizeof(ordered[0])) count = sizeof(ordered) / sizeof(ordered[0]);
+        IrRelocation **ordered = count == 0U ? NULL :
+                                  cc64_xmalloc(count * sizeof(*ordered));
         size_t index = 0U;
-        for (IrRelocation *reloc = section->relocations; reloc != NULL && index < count; reloc = reloc->next) ordered[index++] = reloc;
+        for (IrRelocation *reloc = section->relocations; reloc != NULL;
+             reloc = reloc->next) ordered[index++] = reloc;
         for (size_t j = 0U; j < count; ++j) {
             for (size_t k = j + 1U; k < count; ++k) {
-                if (ordered[k]->offset < ordered[j]->offset) {
-                    IrRelocation *swap = ordered[j]; ordered[j] = ordered[k]; ordered[k] = swap;
+                if (ordered[k]->offset < ordered[j]->offset ||
+                    (ordered[k]->offset == ordered[j]->offset &&
+                     find_symbol(builder, ordered[k]->symbol) <
+                     find_symbol(builder, ordered[j]->symbol))) {
+                    IrRelocation *swap = ordered[j];
+                    ordered[j] = ordered[k];
+                    ordered[k] = swap;
                 }
             }
         }
@@ -359,6 +403,7 @@ bool object_write_cc64o(const ObjectBuilder *builder, const char *path,
             put_u32(entry + 28U, 0U);
             reloc_cursor += CC64O_RELOC_SIZE;
         }
+        free(ordered);
     }
     for (size_t i = 0U; i < builder->symbol_count; ++i) {
         unsigned char *record = file + symbol_table_offset + i * CC64O_SYMBOL_SIZE;
@@ -373,7 +418,7 @@ bool object_write_cc64o(const ObjectBuilder *builder, const char *path,
         put_u32(record + 24U, 0U);
         put_u32(record + 28U, 0U);
     }
-    put_u32(header + 68U, cc64_crc32(file, 68U));
+    put_u32(header + 68U, cc64_file_crc32(file, total));
     size_t path_length = strlen(path) + 5U;
     char *temporary = cc64_xmalloc(path_length);
     (void)snprintf(temporary, path_length, "%s.tmp", path);

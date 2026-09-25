@@ -1,8 +1,8 @@
 #ifndef CC64_STDDEF_H
 #define CC64_STDDEF_H
 
-typedef __SIZE_TYPE__ size_t;
-typedef __PTRDIFF_TYPE__ ptrdiff_t;
+typedef unsigned long size_t;
+typedef long ptrdiff_t;
 
 #ifndef NULL
 #define NULL ((void *)0)

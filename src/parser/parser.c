@@ -28,6 +28,7 @@ struct Parser {
     Type *last_declarator_type;
     unsigned loop_depth;
     unsigned switch_depth;
+    unsigned static_local_count;
 };
 
 static AstNode *parse_statement(Parser *parser);
@@ -391,12 +392,20 @@ static Type *parse_tag_specifier(Parser *parser, TypeKind kind)
 static bool parse_enum_specifier(Parser *parser, Type **result)
 {
     const Token *tag = token_is_identifier(peek(parser)) ? take(parser) : NULL;
-    Type *type = type_basic(parser->arena, TYPE_ENUM);
-    if (type == NULL) {
-        return false;
-    }
+    Type *type = NULL;
     if (tag != NULL) {
-        type->tag = copy_name(parser, tag->text);
+        Type *existing = scope_lookup_tag(parser->scope, tag->text);
+        if (existing != NULL && existing->kind == TYPE_ENUM) {
+            type = existing;
+        }
+    }
+    if (type == NULL) {
+        type = type_basic(parser->arena, TYPE_ENUM);
+        if (type == NULL) return false;
+        if (tag != NULL) {
+            type->tag = copy_name(parser, tag->text);
+            (void)scope_add_tag(parser->arena, parser->scope, tag->text, type);
+        }
     }
     if (accept(parser, "{")) {
         int64_t next_value = 0;
@@ -492,7 +501,8 @@ static bool parse_parameter_list(Parser *parser, Symbol **parameters,
                 type = type_pointer(parser->arena, type->base, type->qualifiers);
             }
         }
-        if (type == NULL || type->kind == TYPE_VOID) {
+        if (type == NULL || type->kind == TYPE_VOID ||
+            type->kind == TYPE_STRUCT || type->kind == TYPE_UNION) {
             semantic_error(parser, 2027U, peek(parser), "invalid parameter type");
             return false;
         }
@@ -562,15 +572,23 @@ static bool parse_declarator(Parser *parser, Type *base, const char **name,
         if (!grouped || !expect(parser, ")")) {
             return false;
         }
+        Type *grouped_type = parser->last_declarator_type;
         if (name != NULL) *name = group_name;
         if (parameters != NULL) *parameters = group_parameters;
         if (parameter_count != NULL) *parameter_count = group_count;
         if (variadic != NULL) *variadic = group_variadic;
+        type = grouped_type;
+        bool wrapped_pointer = grouped_type != NULL && grouped_type->kind == TYPE_POINTER;
+        Type *suffix_base = wrapped_pointer ? grouped_type->base : grouped_type;
         while (accept(parser, "[")) {
             size_t count = 0U;
             if (!parse_constant_size(parser, &count)) return false;
             (void)expect(parser, "]");
-            type = type_array(parser->arena, type, count, true);
+            type = type_array(parser->arena, suffix_base, count, true);
+            suffix_base = type;
+        }
+        if (wrapped_pointer && !token_text(peek(parser), "(")) {
+            type = type_pointer(parser->arena, type, 0U);
         }
         if (accept(parser, "(")) {
             Symbol *function_parameters = NULL;
@@ -578,8 +596,9 @@ static bool parse_declarator(Parser *parser, Type *base, const char **name,
             bool function_variadic = false;
             if (!parse_parameter_list(parser, &function_parameters, &function_count,
                                       &function_variadic)) return false;
-            type = type_function(parser->arena, type, function_parameters,
+            type = type_function(parser->arena, suffix_base, function_parameters,
                                  function_count, function_variadic);
+            if (wrapped_pointer) type = type_pointer(parser->arena, type, 0U);
             if (parameters != NULL) *parameters = function_parameters;
             if (parameter_count != NULL) *parameter_count = function_count;
             if (variadic != NULL) *variadic = function_variadic;
@@ -797,6 +816,12 @@ static bool assignment_compatible(Parser *parser, Type *left, Type *right,
         semantic_error(parser, 2041U, token, "pointer assignment target is incompatible");
         return false;
     }
+    if (type_is_pointer(left) && right != NULL && right->kind == TYPE_ARRAY) {
+        return type_compatible(left->base, right->base) || type_is_void(left->base);
+    }
+    if (type_is_pointer(left) && right != NULL && right->kind == TYPE_FUNCTION) {
+        return type_is_void(left->base);
+    }
     if (type_is_pointer(right) && type_is_integer(left)) return true;
     if (type_compatible(type_unqualified(left), type_unqualified(right))) return true;
     semantic_error(parser, 2042U, token, "incompatible assignment");
@@ -812,6 +837,18 @@ static AstNode *implicit_conversion(Parser *parser, Type *target, AstNode *value
         if (target->size < value->type->size) common = value->type;
         return make_cast(parser, common == target ? target : common, value, token);
     }
+    if (type_is_pointer(target) && value->type != NULL &&
+        value->type->kind == TYPE_ARRAY) {
+        if (!assignment_compatible(parser, target, value->type, token)) return value;
+        AstNode *decay = node_new(parser, NODE_CAST, target, token);
+        if (decay != NULL) decay->a = value;
+        return decay;
+    }
+    if (type_is_pointer(target) && type_is_function(value->type)) {
+        AstNode *decay = node_new(parser, NODE_CAST, target, token);
+        if (decay != NULL) decay->a = value;
+        return decay;
+    }
     if (type_is_pointer(target) && type_is_pointer(value->type)) {
         if (!assignment_compatible(parser, target, value->type, token)) return value;
         return make_cast(parser, target, value, token);
@@ -824,10 +861,32 @@ static AstNode *implicit_conversion(Parser *parser, Type *target, AstNode *value
     return value;
 }
 
+static AstNode *decay_value(Parser *parser, AstNode *value, const Token *token)
+{
+    if (value == NULL || value->type == NULL) return value;
+    if (value->type->kind == TYPE_ARRAY) {
+        AstNode *node = node_new(parser, NODE_CAST,
+                                 type_pointer(parser->arena, value->type->base, 0U),
+                                 token);
+        if (node != NULL) node->a = value;
+        return node;
+    }
+    if (value->type->kind == TYPE_FUNCTION) {
+        AstNode *node = node_new(parser, NODE_CAST,
+                                 type_pointer(parser->arena, value->type, 0U),
+                                 token);
+        if (node != NULL) node->a = value;
+        return node;
+    }
+    return value;
+}
+
 static AstNode *make_binary(Parser *parser, BinaryOperator op, AstNode *left,
                             AstNode *right, const Token *token)
 {
     if (left == NULL || right == NULL) return NULL;
+    left = decay_value(parser, left, token);
+    right = decay_value(parser, right, token);
     AstNode *node;
     Type *type = NULL;
     if (op == BINARY_LOGICAL_AND || op == BINARY_LOGICAL_OR) {
@@ -846,6 +905,12 @@ static AstNode *make_binary(Parser *parser, BinaryOperator op, AstNode *left,
         } else if (op == BINARY_ADD && type_is_integer(left->type) && type_is_pointer(right->type)) {
             type = right->type;
             left = make_cast(parser, type_basic(parser->arena, TYPE_LONG), left, token);
+        } else if (op == BINARY_SUBTRACT && type_is_pointer(left->type) &&
+                   type_is_pointer(right->type)) {
+            if (!type_compatible(left->type->base, right->type->base)) {
+                semantic_error(parser, 2051U, token, "pointer subtraction is incompatible");
+            }
+            type = type_basic(parser->arena, TYPE_LONG);
         } else {
             semantic_error(parser, 2051U, token, "invalid pointer arithmetic");
             type = type_basic(parser->arena, TYPE_LONG);
@@ -930,14 +995,25 @@ static AstNode *parse_number(Parser *parser, const Token *token)
     const char *text = token->text;
     char *end = NULL;
     errno = 0;
-    bool floating = strpbrk(text, ".eEpP") != NULL;
+    bool floating = strpbrk(text, ".eEpP") != NULL ||
+                    text[strlen(text) - 1U] == 'f' ||
+                    text[strlen(text) - 1U] == 'F';
     if (floating) {
-        double value = strtod(text, &end);
-        if (errno == ERANGE || end == text || *end != '\0') {
+        bool float_suffix = text[strlen(text) - 1U] == 'f' ||
+                            text[strlen(text) - 1U] == 'F';
+        char *number_end = NULL;
+        double value = float_suffix ? (double)strtof(text, &number_end)
+                                    : strtod(text, &number_end);
+        end = number_end;
+        if (errno == ERANGE || end == text ||
+            (*end != '\0' && !(float_suffix && (*end == 'f' || *end == 'F')))) {
             semantic_error(parser, 2070U, token, "invalid floating constant");
             value = 0.0;
         }
-        AstNode *node = node_new(parser, NODE_FLOAT, type_basic(parser->arena, TYPE_DOUBLE), token);
+        AstNode *node = node_new(parser, NODE_FLOAT,
+                                 type_basic(parser->arena,
+                                             float_suffix ? TYPE_FLOAT : TYPE_DOUBLE),
+                                 token);
         if (node != NULL) node->floating = value;
         return node;
     }
@@ -972,6 +1048,54 @@ static AstNode *parse_number(Parser *parser, const Token *token)
     return node;
 }
 
+static uint64_t decode_escape(Parser *parser, const char **cursor,
+                              const Token *token)
+{
+    const char *p = *cursor;
+    if (*p != '\\') return (unsigned char)*p++;
+    ++p;
+    uint64_t value = 0U;
+    switch (*p) {
+    case 'a': value = '\a'; ++p; break;
+    case 'b': value = '\b'; ++p; break;
+    case 'f': value = '\f'; ++p; break;
+    case 'n': value = '\n'; ++p; break;
+    case 'r': value = '\r'; ++p; break;
+    case 't': value = '\t'; ++p; break;
+    case 'v': value = '\v'; ++p; break;
+    case '\\': value = '\\'; ++p; break;
+    case '\'': value = '\''; ++p; break;
+    case '"': value = '"'; ++p; break;
+    case 'x':
+        ++p;
+        if (!isxdigit((unsigned char)*p)) {
+            semantic_error(parser, 2074U, token, "invalid hexadecimal escape");
+        }
+        while (isxdigit((unsigned char)*p)) {
+            unsigned digit = (unsigned)(*p >= 'a' ? *p - 'a' + 10 :
+                                       *p >= 'A' ? *p - 'A' + 10 : *p - '0');
+            value = value * 16U + digit;
+            ++p;
+        }
+        break;
+    default:
+        if (*p >= '0' && *p <= '7') {
+            unsigned count = 0U;
+            while (count < 3U && *p >= '0' && *p <= '7') {
+                value = value * 8U + (uint64_t)(unsigned)(*p - '0');
+                ++p;
+                ++count;
+            }
+        } else {
+            semantic_error(parser, 2074U, token, "unknown escape sequence");
+            value = (unsigned char)*p++;
+        }
+        break;
+    }
+    *cursor = p;
+    return value;
+}
+
 static AstNode *parse_character(Parser *parser, const Token *token)
 {
     const char *p = token->text;
@@ -980,16 +1104,8 @@ static AstNode *parse_character(Parser *parser, const Token *token)
     uint64_t value = 0U;
     if (*p == '\0' || *p == '\'') {
         semantic_error(parser, 2074U, token, "empty character constant");
-    } else if (*p == '\\') {
-        ++p;
-        switch (*p) {
-        case 'n': value = '\n'; break; case 'r': value = '\r'; break;
-        case 't': value = '\t'; break; case '0': value = 0U; break;
-        case '\\': value = '\\'; break; case '\'': value = '\''; break;
-        default: value = (unsigned char)*p; break;
-        }
     } else {
-        value = (unsigned char)*p;
+        value = decode_escape(parser, &p, token);
     }
     AstNode *node = node_new(parser, NODE_INTEGER, type_basic(parser->arena, TYPE_INT), token);
     if (node != NULL) { node->unsigned_integer = value; node->integer = (int64_t)value; }
@@ -999,14 +1115,27 @@ static AstNode *parse_character(Parser *parser, const Token *token)
 static AstNode *parse_string(Parser *parser, const Token *token)
 {
     size_t length = strlen(token->text);
-    if (length < 2U) return node_new(parser, NODE_STRING, type_array(parser->arena, type_basic(parser->arena, TYPE_CHAR), 1U, true), token);
-    size_t value_length = length - 2U;
-    AstNode *node = node_new(parser, NODE_STRING, type_array(parser->arena, type_basic(parser->arena, TYPE_CHAR), value_length + 1U, true), token);
+    size_t raw_length = length >= 2U ? length - 2U : 0U;
+    char *decoded = cc64_xmalloc(raw_length + 1U);
+    size_t decoded_length = 0U;
+    const char *p = token->text;
+    if (length >= 2U && *p == '"') {
+        ++p;
+        while (*p != '\0' && *p != '"') {
+            if (*p == '\\') decoded[decoded_length++] = (char)decode_escape(parser, &p, token);
+            else decoded[decoded_length++] = *p++;
+        }
+    }
+    decoded[decoded_length] = '\0';
+    AstNode *node = node_new(parser, NODE_STRING,
+                             type_array(parser->arena,
+                                         type_basic(parser->arena, TYPE_CHAR),
+                                         decoded_length + 1U, true), token);
     if (node != NULL) {
-        node->text = cc64_xmalloc(value_length + 1U);
-        memcpy(node->text, token->text + 1U, value_length);
-        node->text[value_length] = '\0';
-        node->text_length = value_length + 1U;
+        node->text = decoded;
+        node->text_length = decoded_length + 1U;
+    } else {
+        free(decoded);
     }
     return node;
 }
@@ -1038,6 +1167,40 @@ static AstNode *parse_arguments(Parser *parser, AstNode *call)
     return tail;
 }
 
+static void convert_call_arguments(Parser *parser, AstNode *call,
+                                   Type *function_type, const Token *token)
+{
+    if (function_type == NULL) return;
+    size_t count = 0U;
+    for (AstNode *arg = call->b; arg != NULL; arg = arg->next) ++count;
+    if ((!function_type->variadic && count != function_type->parameter_count) ||
+        (function_type->variadic && count < function_type->parameter_count)) {
+        semantic_error(parser, 2115U, token, "call argument count does not match prototype");
+        return;
+    }
+    Symbol *parameter = function_type->parameters;
+    AstNode *arg = call->b;
+    AstNode **link = &call->b;
+    while (arg != NULL) {
+        AstNode *next = arg->next;
+        Type *target = parameter != NULL ? parameter->type :
+                       type_integer_promote(parser->arena, type_unqualified(arg->type));
+        if (parameter != NULL || type_is_arithmetic(arg->type)) {
+            AstNode *converted = implicit_conversion(parser, target, arg, token);
+            if (converted != NULL) {
+                converted->next = next;
+                *link = converted;
+                link = &converted->next;
+            }
+            if (parameter != NULL) parameter = parameter->next;
+        } else {
+            *link = arg;
+            link = &arg->next;
+        }
+        arg = next;
+    }
+}
+
 static AstNode *parse_primary(Parser *parser)
 {
     const Token *token = peek(parser);
@@ -1047,7 +1210,25 @@ static AstNode *parse_primary(Parser *parser)
     }
     if (token->kind == TOKEN_NUMBER) { (void)take(parser); return parse_number(parser, token); }
     if (token->kind == TOKEN_CHARACTER) { (void)take(parser); return parse_character(parser, token); }
-    if (token->kind == TOKEN_STRING) { (void)take(parser); return parse_string(parser, token); }
+    if (token->kind == TOKEN_STRING) {
+        (void)take(parser);
+        AstNode *node = parse_string(parser, token);
+        while (peek(parser) != NULL && peek(parser)->kind == TOKEN_STRING) {
+            const Token *next = take(parser);
+            AstNode *part = parse_string(parser, next);
+            if (node == NULL || part == NULL) return node;
+            size_t combined = node->text_length - 1U + part->text_length;
+            char *text = cc64_xmalloc(combined);
+            memcpy(text, node->text, node->text_length - 1U);
+            memcpy(text + node->text_length - 1U, part->text, part->text_length);
+            node->text = text;
+            node->text_length = combined;
+            node->type = type_array(parser->arena,
+                                    type_basic(parser->arena, TYPE_CHAR),
+                                    combined, true);
+        }
+        return node;
+    }
     if (token_text(token, "(")) {
         (void)take(parser);
         if (token_text(peek(parser), "{")) {
@@ -1082,6 +1263,7 @@ static AstNode *parse_postfix(Parser *parser)
             (void)expect(parser, "]");
             Type *type = NULL;
             if (node != NULL && type_is_pointer(node->type)) type = node->type->base;
+            else if (node != NULL && node->type->kind == TYPE_ARRAY) type = node->type->base;
             else if (index != NULL && type_is_pointer(index->type)) type = index->type->base;
             else semantic_error(parser, 2083U, token, "subscript requires pointer operand");
             AstNode *result = node_new(parser, NODE_INDEX, type, token);
@@ -1092,8 +1274,19 @@ static AstNode *parse_postfix(Parser *parser)
             AstNode *call = node_new(parser, NODE_CALL, type_basic(parser->arena, TYPE_LONG), call_token);
             if (call != NULL) call->a = node;
             (void)parse_arguments(parser, call);
-            if (node != NULL && !type_is_function(node->type)) semantic_error(parser, 2084U, call_token, "called object is not a function");
-            if (node != NULL && type_is_function(node->type)) call->type = node->type->return_type;
+            bool callable = node != NULL &&
+                            (type_is_function(node->type) ||
+                             (type_is_pointer(node->type) &&
+                              type_is_function(node->type->base)));
+            if (!callable) semantic_error(parser, 2084U, call_token, "called object is not a function");
+            Type *called_type = NULL;
+            if (node != NULL && type_is_function(node->type)) called_type = node->type;
+            else if (node != NULL && type_is_pointer(node->type) &&
+                     type_is_function(node->type->base)) called_type = node->type->base;
+            if (call != NULL) {
+                convert_call_arguments(parser, call, called_type, call_token);
+                if (called_type != NULL) call->type = called_type->return_type;
+            }
             node = call;
         } else if (accept(parser, ".") || accept(parser, "->")) {
             bool arrow = token_text(token, "->");
@@ -1299,7 +1492,14 @@ static AstNode *parse_assignment(Parser *parser)
             right = operation;
         }
         AstNode *node = node_new(parser, NODE_ASSIGNMENT, left == NULL ? NULL : left->type, token);
-        if (node != NULL) { node->a = left; node->b = right; }
+        if (node != NULL) {
+            node->a = left;
+            node->b = right;
+            if (compound) {
+                node->binary = binary;
+                node->compound_assignment = true;
+            }
+        }
         return node;
     }
     return left;
@@ -1398,11 +1598,22 @@ static AstNode *parse_local_declaration(Parser *parser)
         } else {
             Symbol *symbol = symbol_new(parser, name, type, SYMBOL_VARIABLE);
             if (symbol == NULL) return first;
+            char *source_name = symbol->name;
             symbol->storage = spec.storage;
-            symbol->linkage = spec.storage == STORAGE_EXTERN ? LINKAGE_EXTERNAL : LINKAGE_NONE;
+            symbol->linkage = spec.storage == STORAGE_STATIC ? LINKAGE_INTERNAL :
+                              (spec.storage == STORAGE_EXTERN ? LINKAGE_EXTERNAL :
+                               LINKAGE_NONE);
+            if (spec.storage == STORAGE_STATIC) symbol->defined = true;
             if (scope_lookup(parser->scope, name) != NULL) {
                 semantic_error(parser, 2098U, peek(parser), "duplicate local declaration");
             } else if (!scope_add_symbol(parser->arena, parser->scope, symbol)) return first;
+            if (spec.storage == STORAGE_STATIC) {
+                char internal_name[48];
+                (void)snprintf(internal_name, sizeof(internal_name),
+                               ".Lstatic.%u", parser->static_local_count++);
+                symbol->name = cc64_xstrdup(internal_name);
+                (void)source_name;
+            }
             if (accept(parser, "=")) symbol->initializer = parse_initializer(parser, type);
             AstNode *declaration = node_new(parser, NODE_DECLARATION, type, peek(parser));
             if (declaration != NULL) { declaration->symbol = symbol; declaration->a = symbol->initializer; if (first == NULL) first = declaration; else tail->next = declaration; tail = declaration; }
@@ -1553,8 +1764,10 @@ static void parse_global_declaration(Parser *parser, DeclSpec spec)
             return;
         } else {
             Symbol *symbol = NULL;
-            bool is_definition = !token_text(peek(parser), "=") && spec.storage != STORAGE_EXTERN;
-            if (!define_symbol(parser, name, type, spec.storage, false, is_definition, &symbol)) return;
+            bool is_function = type_is_function(type);
+            bool is_definition = !is_function && !token_text(peek(parser), "=") &&
+                                 spec.storage != STORAGE_EXTERN;
+            if (!define_symbol(parser, name, type, spec.storage, is_function, is_definition, &symbol)) return;
             if (accept(parser, "=")) {
                 symbol->initializer = parse_initializer(parser, type);
                 symbol->defined = true;
@@ -1582,7 +1795,8 @@ bool parse_tokens(Arena *arena, TokenList *tokens, DiagnosticSink *diagnostics,
             compact[count++] = tokens->items[i];
         }
     }
-    Parser parser = {arena, diagnostics, compact, count, 0U, NULL, NULL, unit, false, NULL, NULL, 0U, 0U};
+    Parser parser = {arena, diagnostics, compact, count, 0U, NULL, NULL, unit,
+                      false, NULL, NULL, 0U, 0U, 0U};
     parser.global_scope = scope_create(arena, NULL);
     parser.scope = parser.global_scope;
     if (parser.global_scope == NULL) return false;

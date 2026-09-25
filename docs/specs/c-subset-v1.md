@@ -30,9 +30,10 @@ The following produce stable semantic diagnostics in version 1: variable
 length arrays, bit-fields, `_Atomic`, `_Alignas`, generic selection, complex
 and imaginary types, `long double`, thread-local storage, compound literals,
 anonymous aggregates, flexible aggregate members, and dynamic libraries.
-Aggregate assignment, variadic calls beyond declaration checking, and full
-initialializer constant folding are added only with their written layout
-contracts.
+Aggregate assignment and basic binary32/binary64 arithmetic are implemented
+for the version 1 integer ABI. Full floating-point conversions, variadic
+formatting, and aggregate-by-value parameter passing remain deferred and are
+diagnosed or kept outside the first target gate.
 
 A construct outside this document is not accepted by silently extending the
 grammar. It must receive a diagnostic before code generation.

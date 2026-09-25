@@ -36,6 +36,9 @@ source input to the normal CC64 build.
 | D-010 | Typed AST nodes carry explicit C types and source locations | later lowering cannot depend on parser token layout |
 | D-011 | `-O0` uses balanced stack temporaries and explicit frame slots | makes ABI and call behavior inspectable before optimization |
 | D-012 | Linker emits a target-owned entry/exit trampoline for raw COM | keeps startup independent of host CRT while preserving `main`'s return byte |
+| D-013 | Target service functions are emitted by the CC64 encoder only when referenced | keeps the freestanding boundary in project-owned machine selection and avoids importing a target runtime |
+| D-014 | `MZ64` data fixups use image-relative destinations and addends | the target loader supplies the load bias, so the same payload remains position-independent |
+| D-015 | The startup stub exposes a bounded one-argument argv view from the target PSP | this is the minimum target interface needed by the first hosted compatibility gate; richer tokenization is recorded for the next ABI revision |
 
 ## Review rule
 

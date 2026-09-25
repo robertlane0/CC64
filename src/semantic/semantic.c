@@ -79,7 +79,9 @@ Type *type_array(Arena *arena, Type *base, size_t count, bool known)
     if (base == NULL || !type_is_complete(base)) {
         return NULL;
     }
-    if (known && count > SIZE_MAX / base->size) {
+    if (base->size == 0U) {
+        if (known && count != 0U) return NULL;
+    } else if (known && count > SIZE_MAX / base->size) {
         return NULL;
     }
     Type *type = type_alloc(arena, TYPE_ARRAY,
@@ -207,9 +209,7 @@ bool type_has_const(const Type *type)
 {
     if (type == NULL) return false;
     if ((type->qualifiers & TYPE_QUAL_CONST) != 0U) return true;
-    if (type->kind == TYPE_ARRAY || type->kind == TYPE_POINTER) {
-        return type_has_const(type->base);
-    }
+    if (type->kind == TYPE_ARRAY) return type_has_const(type->base);
     return false;
 }
 
@@ -245,10 +245,19 @@ bool type_compatible(const Type *left, const Type *right)
         return type_compatible(left->base, right->base) &&
                (left->incomplete || right->incomplete ||
                 left->array_count == right->array_count);
-    case TYPE_FUNCTION:
-        return type_compatible(left->return_type, right->return_type) &&
-               left->parameter_count == right->parameter_count &&
-               left->variadic == right->variadic;
+    case TYPE_FUNCTION: {
+        if (!type_compatible(left->return_type, right->return_type) ||
+            left->parameter_count != right->parameter_count ||
+            left->variadic != right->variadic) return false;
+        Symbol *left_parameter = left->parameters;
+        Symbol *right_parameter = right->parameters;
+        while (left_parameter != NULL && right_parameter != NULL) {
+            if (!type_compatible(left_parameter->type, right_parameter->type)) return false;
+            left_parameter = left_parameter->next;
+            right_parameter = right_parameter->next;
+        }
+        return left_parameter == NULL && right_parameter == NULL;
+    }
     case TYPE_STRUCT:
     case TYPE_UNION:
         return left == right || (left->tag != NULL && right->tag != NULL &&

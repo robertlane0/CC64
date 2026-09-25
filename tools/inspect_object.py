@@ -35,11 +35,15 @@ def read_object(path: pathlib.Path) -> tuple[dict, list[dict], list[dict], bytes
     fields = struct.unpack_from("<8sHHHHIIIIIIII", data, 0)
     if fields[1] != 1 or fields[2] != 0x3433 or fields[3] != 1 or fields[4] != 62:
         fail("unsupported object version or target")
-    if fields[5] != HEADER_SIZE:
-        fail("unexpected header size")
+    if fields[5] != HEADER_SIZE or struct.unpack_from("<I", data, 60)[0] != 0:
+        fail("unexpected header flags or size")
+    if any(data[72:HEADER_SIZE]):
+        fail("nonzero reserved header bytes")
     if crc32(data[:64]) != struct.unpack_from("<I", data, 64)[0]:
         fail("header CRC mismatch")
-    if crc32(data[:68]) != struct.unpack_from("<I", data, 68)[0]:
+    crc_image = bytearray(data)
+    crc_image[68:72] = b"\0\0\0\0"
+    if crc32(crc_image) != struct.unpack_from("<I", data, 68)[0]:
         fail("file CRC mismatch")
     section_offset = struct.unpack_from("<I", data, 28)[0]
     section_count = struct.unpack_from("<I", data, 32)[0]
@@ -47,6 +51,11 @@ def read_object(path: pathlib.Path) -> tuple[dict, list[dict], list[dict], bytes
     symbol_count = struct.unpack_from("<I", data, 40)[0]
     string_offset = struct.unpack_from("<I", data, 44)[0]
     string_size = struct.unpack_from("<I", data, 48)[0]
+    source_map_offset, source_map_size = struct.unpack_from("<II", data, 52)
+    if (source_map_offset == 0) != (source_map_size == 0):
+        fail("invalid source map range")
+    if source_map_size and source_map_offset + source_map_size > len(data):
+        fail("source map is truncated")
     if section_offset + section_count * SECTION_SIZE > len(data):
         fail("section table is truncated")
     if symbol_offset + symbol_count * SYMBOL_SIZE > len(data):
@@ -60,12 +69,21 @@ def read_object(path: pathlib.Path) -> tuple[dict, list[dict], list[dict], bytes
                        section_offset + (index + 1) * SECTION_SIZE]
         name_offset, payload_offset, payload_size, reloc_offset, reloc_count, align = struct.unpack_from("<IIIIII", record, 0)
         kind = record[24]
-        if name_offset >= len(strings) or align > 15 or kind > 3:
+        target_index = struct.unpack_from("<H", record, 26)[0]
+        if (name_offset >= len(strings) or align > 15 or kind > 3 or
+                record[25] != 0 or target_index != index or
+                struct.unpack_from("<I", record, 28)[0] != 0 or
+                struct.unpack_from("<I", record, 32)[0] != 0):
             fail("invalid section record")
         if kind != 3 and payload_offset + payload_size > len(data):
             fail("section payload is truncated")
-        if reloc_count and reloc_offset + reloc_count * RELOC_SIZE > len(data):
-            fail("relocation table is truncated")
+        if kind == 3 and (payload_offset != 0 or struct.unpack_from("<I", record, 36)[0] != 0):
+            fail("invalid BSS section")
+        if kind != 3 and struct.unpack_from("<I", record, 36)[0] != crc32(
+                data[payload_offset:payload_offset + payload_size]):
+            fail("section CRC mismatch")
+        if (kind in (0, 1) and align < 4) or (reloc_count and reloc_offset + reloc_count * RELOC_SIZE > len(data)):
+            fail("invalid section alignment or relocation table")
         name_end = strings.find(b"\0", name_offset)
         if name_end < 0:
             fail("invalid section name")
@@ -85,8 +103,11 @@ def read_object(path: pathlib.Path) -> tuple[dict, list[dict], list[dict], bytes
         name_offset, value, section_index = struct.unpack_from("<III", record, 0)
         binding, kind = record[12], record[13]
         size = struct.unpack_from("<Q", record, 16)[0]
-        if name_offset >= len(strings):
-            fail("invalid symbol name")
+        if (name_offset >= len(strings) or binding > 1 or kind > 4 or
+                struct.unpack_from("<H", record, 14)[0] != 0 or
+                struct.unpack_from("<I", record, 24)[0] != 0 or
+                struct.unpack_from("<I", record, 28)[0] != 0):
+            fail("invalid symbol record")
         name_end = strings.find(b"\0", name_offset)
         if name_end < 0:
             fail("unterminated symbol name")
@@ -110,7 +131,10 @@ def read_object(path: pathlib.Path) -> tuple[dict, list[dict], list[dict], bytes
             width = struct.unpack_from("<I", entry, 24)[0]
             if where + width > section["size"] or symbol_index >= symbol_count:
                 fail("relocation range or symbol is invalid")
-            if width not in (4, 8) or kind not in (1, 2, 3, 4, 5):
+            if (width not in (4, 8) or kind not in (1, 2, 3, 4, 5) or
+                    struct.unpack_from("<I", entry, 28)[0] != 0 or
+                    (kind in (1, 3, 4) and width != 4) or
+                    (kind in (2, 5) and width != 8)):
                 fail("unsupported relocation")
             relocations.append({"section": section_index, "offset": where,
                                 "symbol": symbol_index, "type": kind,

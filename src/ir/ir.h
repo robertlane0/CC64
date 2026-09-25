@@ -27,7 +27,12 @@ typedef enum IrOp {
     IR_COMPARE,
     IR_LOGICAL_AND,
     IR_LOGICAL_OR,
+    IR_INCREMENT,
+    IR_ZERO,
+    IR_COPY,
+    IR_COMPOUND,
     IR_CONDITIONAL,
+    IR_SWITCH,
     IR_COMMA,
     IR_CALL,
     IR_JUMP,
@@ -46,6 +51,13 @@ typedef enum CompareOperator {
 } CompareOperator;
 
 typedef struct IrInst IrInst;
+typedef struct IrCase IrCase;
+struct IrCase {
+    uint64_t value;
+    size_t label;
+    struct IrCase *next;
+};
+
 struct IrInst {
     IrOp op;
     Type *type;
@@ -56,6 +68,11 @@ struct IrInst {
     Symbol *symbol;
     int64_t offset;
     CompareOperator compare;
+    bool post;
+    BinaryOperator binary;
+    IrCase *cases;
+    size_t case_count;
+    size_t default_label;
     IrInst *a;
     IrInst *b;
     IrInst *c;

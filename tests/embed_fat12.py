@@ -81,8 +81,10 @@ def main() -> int:
         raise ValueError("root directory has no free entry")
     cluster = allocate(image)
     cluster_count = (len(payload) + SECTOR - 1) // SECTOR
-    for index in range(1, cluster_count):
-        fat_set(image, cluster + index, 0xFFF)
+    if cluster_count > 1:
+        for index in range(cluster_count - 1):
+            fat_set(image, cluster + index, cluster + index + 1)
+        fat_set(image, cluster + cluster_count - 1, 0xFFF)
     data = (DATA_LBA + (cluster - 2)) * SECTOR
     image[data:data + len(payload)] = payload
     if len(payload) % SECTOR:

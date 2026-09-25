@@ -202,12 +202,14 @@ struct AstNode {
     Symbol *field;
     UnaryOperator unary;
     BinaryOperator binary;
+    bool compound_assignment;
     int64_t integer;
     uint64_t unsigned_integer;
     double floating;
     char *text;
     size_t text_length;
     Type *type_operand;
+    Symbol *literal_symbol;
     unsigned label_id;
 };
 
