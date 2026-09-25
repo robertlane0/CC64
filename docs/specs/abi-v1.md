@@ -83,12 +83,17 @@ it. At entry:
 - callee-saved state is unspecified; the startup code establishes it.
 - no C runtime is implicitly linked.
 
-The freestanding startup routine obtains the command tail from the target PSP:
-the byte at `PSP+0xa0` is the tail length and bytes at `PSP+0xa1` are the tail,
-with no terminating NUL guaranteed by the loader. Version 1 emits a bounded
-compatibility view: it reports one argument when the tail is empty and exposes
-the tail as the second argument when present; a later ABI revision will
-tokenize all arguments and pass validated environment pairs. The application
+The startup routine is emitted into every image that defines `main`; the linker
+trampoline hands it the process prefix address. The routine reads the one-byte
+tail length at `PSP+0xa0`, copies at most 143 tail bytes from `PSP+0xa1` into
+its own frame, terminates the copy, and splits it in place on spaces and tabs.
+`argc` is the number of tokens, `argv` points into that copy and is
+null-terminated after the last entry, and `envp` is a null pointer because
+version 1 has no environment block. A tail of more than 143 bytes is truncated
+rather than rejected, and a tail longer than the loader's 127-byte field cannot
+occur. With the pinned target shell an application is started with an empty
+tail, so it observes `argc == 0`; tokenization is only observable when a caller
+supplies a tail. The application
 receives at least 64 KiB of loader-owned stack below its entry stack top; the
 startup routine aligns that stack before calling `main`. It passes the `int`
 return to the target exit boundary. A bare `RET` from a raw image returns to

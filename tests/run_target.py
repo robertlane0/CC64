@@ -99,6 +99,46 @@ def execute(qemu: str, disk: pathlib.Path, name: str, command: str,
     return text
 
 
+def target_library_objects(work: pathlib.Path) -> list[str]:
+    """Compile the target C library with CC64 for one linked case."""
+    sources = sorted((ROOT / "src" / "runtime").glob("target_*.c"))
+    objects = []
+    for index, source in enumerate(sources):
+        output = work / f"target-lib-{index}.cc64o"
+        run([str(ROOT / "cc64"), "-I", str(ROOT / "include" / "target"),
+             "-I", str(ROOT / "include" / "cc64"), "-I", str(ROOT / "src"),
+             "-c", str(source), "-o", str(output)], ROOT)
+        objects.append(str(output))
+    return objects
+
+
+LIBRARY_PROGRAM = (
+    "#include <stdio.h>\n"
+    "#include <stdlib.h>\n"
+    "#include <string.h>\n"
+    "int cc64_write(int, const void *, unsigned long);\n"
+    "int cc64_putc(int);\n"
+    "int main(void) {\n"
+    "  cc64_write(1, \"A\", 1);\n"
+    "  cc64_putc(48 + (int)strlen(\"abcd\"));\n"
+    "  cc64_write(1, \"B\", 1);\n"
+    "  char *copy = (char *)malloc(16);\n"
+    "  if (copy == 0) return 1;\n"
+    "  copy[0] = 'Z'; copy[1] = 0;\n"
+    "  cc64_write(1, copy, 1);\n"
+    "  if (strcmp(copy, \"Z\") != 0) return 2;\n"
+    "  if (strlen(\"xy\") != 2) return 3;\n"
+    "  memset(copy, 'W', 4);\n"
+    "  if (copy[0] != 'W') return 4;\n"
+    "  cc64_write(1, \"C\", 1);\n"
+    "  if (fputs(\"D\", stdout) != 0) return 5;\n"
+    "  free(copy);\n"
+    "  cc64_write(1, \"E\", 1);\n"
+    "  return 9;\n"
+    "}\n"
+)
+
+
 def compile_and_link(work: pathlib.Path, source_text: str, name: str,
                      image_format: str = "raw") -> pathlib.Path:
     source = work / f"{name}.c"
@@ -242,7 +282,9 @@ def main() -> int:
             ("C64H", ARGUMENT_PROGRAM, "raw", 9, "argc=0 a0=null"),
             ("C64W", FILE_WRITE_PROGRAM, "raw", 7, None),
             ("C64K", SEEK_PROGRAM, "raw", 7, None),
-            ("C64V", VARARG_PROGRAM, "raw", 9, "s=10 n=138"),        ]
+            ("C64V", VARARG_PROGRAM, "raw", 9, "s=10 n=138"),
+        ]
+        library_objects = target_library_objects(work)
         for entry in cases:
             name, source, image_format, expected, expected_text = entry[:5]
             command = entry[5] if len(entry) > 5 else name
@@ -259,7 +301,26 @@ def main() -> int:
                 raise SystemExit(f"{name}: target did not return {expected}")
             if expected_text is not None and expected_text not in text:
                 raise SystemExit(f"{name}: target output lacked {expected_text!r}")
-        print(f"target: QEMU passed {len(cases)} raw/MZ64 image cases")
+        library_source = work / "C64L.c"
+        library_object = work / "C64L.cc64o"
+        library_source.write_text(LIBRARY_PROGRAM, encoding="utf-8")
+        run([str(ROOT / "cc64"), "-I", str(ROOT / "include" / "target"),
+             "-I", str(ROOT / "include" / "cc64"), "-c", str(library_source),
+             "-o", str(library_object)], ROOT)
+        library_image = work / "C64L.mz"
+        run([str(ROOT / "cc64"), "--link", "--format", "mz64",
+             str(library_object), *library_objects, "-o", str(library_image)], ROOT)
+        library_disk = work / "C64L.img"
+        shutil.copy2(TARGET / "build/dos64-lean.img", library_disk)
+        run(["python3", str(ROOT / "tests/embed_fat12.py"), str(library_disk),
+             str(library_image), "C64L"], ROOT)
+        text = execute(qemu, library_disk, "C64L", "C64L", 9)
+        if "Exit 9" not in text:
+            raise SystemExit("C64L: target library case did not return 9")
+        if "A4BZCDE" not in text:
+            raise SystemExit(f"C64L: target library output unexpected: {text[-200:]}")
+        print(f"target: QEMU passed {len(cases)} raw/MZ64 image cases and "
+              "one linked target-library case")
     return 0
 
 

@@ -18,7 +18,7 @@ image case successfully.
 | M4 linker, loader image, runtime | partial | independent CC64O validation, section/symbol merge, PC-relative relocation checks, deterministic raw `.COM`, target entry/exit trampoline, freestanding target headers, and QEMU/Bochs smoke; full runtime I/O coverage remains open |
 | M5 language and MS-DOS64 compatibility | partial | pointers, arrays, nested initializers, structs/unions, enums, switch/short-circuit control flow, increments/compound assignment, stack arguments, scalar/aggregate copies, basic binary32/binary64, target runtime service stubs, seven QEMU cases, and one Bochs raw case; full corpus/runtime/file/process coverage remains open |
 | M6 `MZ64`, diagnostics, hardening | partial | MZ64 header/table emission, image-relative data fixups, BSS sizing, full-file/section CRC validation, bounded relocation/object records, malformed-image rejection, deterministic raw/MZ links, and QEMU data-pointer execution; broad negative/load-bias and Bochs MZ64 coverage remain open |
-| M7 self-hosting | partial | all 13 production translation units compile with the target header profile via `make selfhost-probe`; the target `create`/`lseek` services are implemented and exercised on QEMU, and the remaining 41 undefined symbols are exactly the target C library surface, which is not yet written; the complete compiler is not linked/run as a target compiler, and stage1 remains a bootstrap smoke test |
+| M7 self-hosting | partial | all 14 production translation units and the 6-file target C library compile with the target header profile; the complete compiler now links with no unresolved symbols into a roughly 400 KB `MZ64` image and boots and executes on QEMU; target heap, streams, strings, and `strcmp`/`strlen` are verified by a linked target-library case; the self-hosted compiler's own formatted diagnostics still fault on target, and the pinned target shell starts a program with an empty command tail, so a self-hosted compile is not yet runnable |
 | M8 release quality | partial | path-independent clean-build hash comparison, deterministic malformed source/object/image smoke, automated provenance/source-origin audit, QEMU/Bochs target evidence, and aggregate release gate run; human review and full self-hosting remain open |
 
 A milestone is marked complete only after its tests and required target runs
@@ -29,8 +29,8 @@ pass. Planned code is never reported as completed.
 `make check-release` currently runs and passes the host, object, raw/MZ64,
 QEMU, Bochs, deterministic source/object/image smoke, reproducibility, and
 provenance checks. The measured clean bootstrap build manifest digest is
-`7c50a080d96a10598221f13f34d00a39771a03270905b9bdcf9b2b493a336507`
-across 37 generated files and deterministic target artifacts.
+`b85252e35eb7c22539231f975a041a3776c0737ed6b9c119abae973264e24321`
+across 42 generated files and deterministic target artifacts.
 
 This is a validation checkpoint, not a releasable M7/M8 claim. Full
 self-hosting, target-hosted compiler I/O and formatting, complete argv/envp
