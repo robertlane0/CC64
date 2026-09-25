@@ -1,5 +1,6 @@
 #include "cc64.h"
 #include "frontend/frontend.h"
+#include "semantic/semantic.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,6 +10,7 @@ typedef enum Action {
     ACTION_COMPILE,
     ACTION_PREPROCESS,
     ACTION_DUMP_TOKENS,
+    ACTION_DUMP_AST,
     ACTION_VERSION,
     ACTION_HELP
 } Action;
@@ -37,6 +39,7 @@ static void usage(FILE *stream)
             "  -o FILE        output path\n"
             "  -P             omit line markers\n"
             "  --dump-tokens  print the final token stream\n"
+            "  --dump-ast     parse and print the typed AST\n"
             "  --target NAME  target contract (default: " CC64_TARGET ")\n"
             "  --version      print version\n"
             "  --help         print help\n");
@@ -90,6 +93,8 @@ static bool parse_options(int argc, char **argv, Options *options,
             options->action = ACTION_PREPROCESS;
         } else if (strcmp(arg, "--dump-tokens") == 0) {
             options->action = ACTION_DUMP_TOKENS;
+        } else if (strcmp(arg, "--dump-ast") == 0) {
+            options->action = ACTION_DUMP_AST;
         } else if (strcmp(arg, "-P") == 0) {
             options->line_markers = false;
         } else if (strcmp(arg, "--line-markers") == 0) {
@@ -140,7 +145,8 @@ static bool parse_options(int argc, char **argv, Options *options,
         }
     }
     if ((options->action == ACTION_COMPILE || options->action == ACTION_PREPROCESS ||
-         options->action == ACTION_DUMP_TOKENS) && options->input == NULL) {
+         options->action == ACTION_DUMP_TOKENS || options->action == ACTION_DUMP_AST) &&
+        options->input == NULL) {
         diagnostic_emit(sink, 7U, DIAG_DRIVER, NULL, 0U, 0U, "missing input file");
         return false;
     }
@@ -190,6 +196,29 @@ static bool print_tokens(const TokenList *tokens)
         }
         printf("%zu:%zu:%s:%s\n", token->line, token->column,
                token_kind_name(token->kind), token->text);
+    }
+    return !ferror(stdout);
+}
+
+static void print_ast_node(const AstNode *node, unsigned depth)
+{
+    if (node == NULL) return;
+    for (unsigned i = 0U; i < depth; ++i) fputs("  ", stdout);
+    printf("%s:%s", ast_node_kind_name(node->kind),
+           node->type == NULL ? "none" : type_kind_name(node->type->kind));
+    if (node->symbol != NULL) printf(" symbol=%s", node->symbol->name);
+    putchar('\n');
+    print_ast_node(node->a, depth + 1U);
+    print_ast_node(node->b, depth + 1U);
+    print_ast_node(node->c, depth + 1U);
+    print_ast_node(node->d, depth + 1U);
+    print_ast_node(node->next, depth);
+}
+
+static bool print_ast(const TranslationUnit *unit)
+{
+    for (size_t i = 0U; i < unit->count; ++i) {
+        print_ast_node(unit->declarations[i], 0U);
     }
     return !ferror(stdout);
 }
@@ -251,11 +280,22 @@ int cc64_main(int argc, char **argv)
     if (good && sink.count != diagnostics_before) {
         good = false;
     }
+    TranslationUnit unit = {0};
+    if (good && (options.action == ACTION_COMPILE ||
+                 options.action == ACTION_DUMP_AST)) {
+        size_t parse_before = sink.count;
+        good = parse_tokens(arena, &tokens, &sink, &unit);
+        if (sink.count != parse_before) {
+            good = false;
+        }
+    }
     if (good) {
         if (options.action == ACTION_DUMP_TOKENS) {
             good = print_tokens(&tokens);
         } else if (options.action == ACTION_PREPROCESS) {
             good = write_preprocessed(&options, &tokens);
+        } else if (options.action == ACTION_DUMP_AST) {
+            good = print_ast(&unit);
         } else {
             diagnostic_emit(&sink, 1001U, DIAG_BACKEND, source, 1U, 1U,
                             "code generation is not available in this milestone");
@@ -265,6 +305,7 @@ int cc64_main(int argc, char **argv)
     print_diagnostics(&sink);
     size_t errors = sink.count;
     token_list_free(&tokens);
+    translation_unit_free(&unit);
     diagnostic_sink_destroy(&sink);
     free_options(&options);
     arena_destroy(arena);

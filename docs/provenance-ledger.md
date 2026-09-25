@@ -33,6 +33,7 @@ source input to the normal CC64 build.
 | D-007 | Limits reject ambiguous or unbounded translation | deterministic failure for hostile input |
 | D-008 | Preprocessing uses explicit hidesets and bounded expansion depth | prevents recursive macro runaway while retaining blue-painted tokens |
 | D-009 | Failed preprocessing never publishes its temporary output | diagnostics cannot be mistaken for a successful translation |
+| D-010 | Typed AST nodes carry explicit C types and source locations | later lowering cannot depend on parser token layout |
 
 ## Review rule
 

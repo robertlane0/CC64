@@ -10,7 +10,7 @@ CC64-generated-image result.
 |---|---|---|
 | M0 contract, provenance, skeleton | complete | versioned ABI/object/COM/MZ64 specs; arena, source manager, diagnostics, driver, unit and audit harness |
 | M1 lexer and preprocessor | complete | phase-aware lexer, comments/splices, literals, keywords, object/function/variadic macros, hidesets, conditionals, includes, line/EOF handling, predefined macros, bounded expansion, and frontend/driver tests |
-| M2 parser, types, semantics | not started | — |
+| M2 parser, types, semantics | complete | typed AST, C17-subset declarations/declarators, scopes/linkage, structs/unions/enums, expressions/statements, conversions, initializers, and deferred-feature diagnostics with positive/negative tests |
 | M3 IR and x86-64 backend | not started | — |
 | M4 linker, loader image, runtime | not started | — |
 | M5 language and MS-DOS64 compatibility | not started | — |
