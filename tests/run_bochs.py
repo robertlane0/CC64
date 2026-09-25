@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Run the target image under Bochs when the emulator is installed."""
+"""Run a compiler-produced image under the pinned Bochs target."""
 
 from __future__ import annotations
 
 import os
 import pathlib
+import pty
+import select
 import shutil
 import subprocess
 import tempfile
+import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TARGET = ROOT.parent / "MS-DOS64"
@@ -47,6 +50,52 @@ def check_volume(image: pathlib.Path) -> None:
         raise SystemExit(f"target volume cleanliness check failed: {detail}")
 
 
+def stop_process(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+def run_bochs(bochs: str, config: pathlib.Path, serial: int,
+              console_path: pathlib.Path) -> bytes:
+    console = console_path.open("wb")
+    process = subprocess.Popen([bochs, "-q", "-f", str(config)],
+                               stdin=subprocess.DEVNULL,
+                               stdout=console,
+                               stderr=subprocess.STDOUT)
+    output = bytearray()
+    sent = False
+    deadline = time.monotonic() + 45.0
+    try:
+        while time.monotonic() < deadline:
+            readable, _, _ = select.select([serial], [], [], 0.1)
+            if readable:
+                try:
+                    output.extend(os.read(serial, 65536))
+                except OSError:
+                    pass
+            if not sent and b"A> " in output:
+                os.write(serial, b"BOCH\n")
+                sent = True
+            if b"Exit 7" in output:
+                marker = output.index(b"Exit 7") + len(b"Exit 7")
+                if b"A> " in output[marker:]:
+                    return bytes(output)
+            if process.poll() is not None:
+                break
+        detail = bytes(output).decode("utf-8", errors="replace")
+        console_detail = console_path.read_text(encoding="utf-8", errors="replace")[-600:]
+        raise SystemExit(f"Bochs did not complete the target run: {detail[-600:]} console={console_detail}")
+    finally:
+        stop_process(process)
+        console.close()
+
+
 def main() -> int:
     bochs = shutil.which("bochs")
     if bochs is None or not TARGET.is_dir():
@@ -75,25 +124,30 @@ def main() -> int:
                         str(disk), str(image), "BOCH"], cwd=ROOT, check=True,
                        stdout=subprocess.DEVNULL)
         check_volume(disk)
+
+        master, slave = pty.openpty()
+        serial_path = os.ttyname(slave)
+        os.close(slave)
+        display_master, display_slave = pty.openpty()
+        template = (TARGET / "bochsrc.txt.in").read_text(encoding="utf-8")
+        template = template.replace("@IMAGE@", str(disk))
+        template = template.replace("log: bochs.log", f"log: {work / 'bochs.log'}")
+        template = template.replace("display_library: nogui", "display_library: term")
+        template = template.replace("com1: enabled=1, mode=file, dev=serial.log",
+                                    f"com1: enabled=1, mode=term, dev={serial_path}")
         config = work / "bochs.cfg"
-        config.write_text(
-            f"megs: 128\nromimage: file={disk}, format=raw\n"
-            "display: disabled\nserial: stdio\nboot: c\n",
-            encoding="utf-8",
-        )
+        config.write_text(template, encoding="utf-8")
         try:
-            result = subprocess.run([bochs, "-q", "-f", str(config)],
-                                    input="BOCH\n", text=True,
-                                    stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, timeout=45,
-                                    check=False)
-        except subprocess.TimeoutExpired as error:
-            raise SystemExit("Bochs target run timed out") from error
-        if result.returncode != 0:
-            raise SystemExit(f"Bochs exited with status {result.returncode}")
+            output = run_bochs(bochs, config, master, work / "console.log")
+        except OSError as error:
+            raise SystemExit(f"Bochs serial setup failed: {error}") from error
+        finally:
+            os.close(master)
+            os.close(display_master)
+            os.close(display_slave)
+        if b"Exit 7" not in output:
+            raise SystemExit("Bochs did not report target exit 7")
         check_volume(disk)
-        if "Exit 7" not in result.stdout:
-            raise SystemExit("Bochs did not reach target exit 7")
     print("bochs: target returned exit 7")
     return 0
 
