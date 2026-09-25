@@ -52,7 +52,9 @@ static IrInst *ir_new(LowerContext *context, IrOp op, Type *type,
     memset(inst, 0, sizeof(*inst));
     inst->op = op;
     inst->type = type;
-    inst->location = origin == NULL ? (SourceLocation){0} : origin->location;
+    inst->location.source = origin == NULL ? NULL : origin->location.source;
+    inst->location.line = origin == NULL ? 0U : origin->location.line;
+    inst->location.column = origin == NULL ? 0U : origin->location.column;
     if (type != NULL) {
         inst->width = type_size(type);
         inst->is_signed = type_is_signed(type);

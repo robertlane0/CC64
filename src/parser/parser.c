@@ -104,15 +104,16 @@ static void semantic_error(Parser *parser, unsigned id, const Token *token,
     parser->failed = true;
 }
 
-static SourceLocation location_of(const Token *token)
+static void location_of(const Token *token, SourceLocation *location)
 {
-    SourceLocation location = {0};
+    location->source = NULL;
+    location->line = 0U;
+    location->column = 0U;
     if (token != NULL) {
-        location.source = token->source;
-        location.line = token->line;
-        location.column = token->column;
+        location->source = token->source;
+        location->line = token->line;
+        location->column = token->column;
     }
-    return location;
 }
 
 static AstNode *node_new(Parser *parser, NodeKind kind, Type *type,
@@ -126,7 +127,7 @@ static AstNode *node_new(Parser *parser, NodeKind kind, Type *type,
     memset(node, 0, sizeof(*node));
     node->kind = kind;
     node->type = type;
-    node->location = location_of(token);
+    location_of(token, &node->location);
     return node;
 }
 
@@ -1021,9 +1022,12 @@ static AstNode *parse_number(Parser *parser, const Token *token)
     const char *text = token->text;
     char *end = NULL;
     errno = 0;
-    bool floating = strpbrk(text, ".eEpP") != NULL ||
-                    text[strlen(text) - 1U] == 'f' ||
-                    text[strlen(text) - 1U] == 'F';
+    bool hexadecimal = text[0] == '0' &&
+                       (text[1] == 'x' || text[1] == 'X');
+    bool floating = !hexadecimal &&
+                    (strpbrk(text, ".eEpP") != NULL ||
+                     text[strlen(text) - 1U] == 'f' ||
+                     text[strlen(text) - 1U] == 'F');
     if (floating) {
         bool float_suffix = text[strlen(text) - 1U] == 'f' ||
                             text[strlen(text) - 1U] == 'F';
@@ -1044,7 +1048,7 @@ static AstNode *parse_number(Parser *parser, const Token *token)
         return node;
     }
     unsigned base = 10U;
-    if (text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) base = 16U;
+    if (hexadecimal) base = 16U;
     else if (text[0] == '0' && text[1] != '\0') base = 8U;
     unsigned long long raw = strtoull(text, &end, (int)base);
     if (errno == ERANGE || end == text) {
@@ -1763,12 +1767,12 @@ static bool define_symbol(Parser *parser, const char *name, Type *type,
     return true;
 }
 
-static void parse_function_definition(Parser *parser, DeclSpec spec, Type *type,
-                                      const char *name, Symbol *parameters,
-                                      size_t parameter_count)
+static void parse_function_definition(Parser *parser, const DeclSpec *spec,
+                                      Type *type, const char *name,
+                                      Symbol *parameters, size_t parameter_count)
 {
     Symbol *function = NULL;
-    if (!define_symbol(parser, name, type, spec.storage, true, true, &function)) return;
+    if (!define_symbol(parser, name, type, spec->storage, true, true, &function)) return;
     (void)parameter_count;
     Scope *function_scope = scope_create(parser->arena, parser->global_scope);
     for (Symbol *parameter = parameters; parameter != NULL; parameter = parameter->next) {
@@ -1785,7 +1789,7 @@ static void parse_function_definition(Parser *parser, DeclSpec spec, Type *type,
     if (definition != NULL) { definition->symbol = function; definition->a = body; if (append_declaration(parser->unit, definition)) { if (strcmp(name, "main") == 0) parser->unit->has_main = true; function->initializer = body; } }
 }
 
-static void parse_global_declaration(Parser *parser, DeclSpec spec)
+static void parse_global_declaration(Parser *parser, const DeclSpec *spec)
 {
     if (accept(parser, ";")) return;
     for (;;) {
@@ -1793,7 +1797,7 @@ static void parse_global_declaration(Parser *parser, DeclSpec spec)
         Symbol *parameters = NULL;
         size_t parameter_count = 0U;
         bool variadic = false;
-        Type *type = spec.type;
+        Type *type = spec->type;
         bool global_declarator_ok = parse_declarator(parser, type, &name,
                                                       &parameters, &parameter_count,
                                                       &variadic);
@@ -1802,7 +1806,7 @@ static void parse_global_declaration(Parser *parser, DeclSpec spec)
             semantic_error(parser, 2106U, peek(parser), "global declarator requires a name");
             return;
         }
-        if (spec.storage == STORAGE_TYPEDEF) {
+        if (spec->storage == STORAGE_TYPEDEF) {
             Symbol *symbol = symbol_new(parser, name, type, SYMBOL_TYPEDEF);
             if (symbol == NULL || scope_lookup(parser->global_scope, name) != NULL || !scope_add_symbol(parser->arena, parser->global_scope, symbol)) semantic_error(parser, 2107U, peek(parser), "duplicate typedef");
         } else if (type_is_function(type) && token_text(peek(parser), "{")) {
@@ -1812,8 +1816,8 @@ static void parse_global_declaration(Parser *parser, DeclSpec spec)
             Symbol *symbol = NULL;
             bool is_function = type_is_function(type);
             bool is_definition = !is_function && !token_text(peek(parser), "=") &&
-                                 spec.storage != STORAGE_EXTERN;
-            if (!define_symbol(parser, name, type, spec.storage, is_function, is_definition, &symbol)) return;
+                                 spec->storage != STORAGE_EXTERN;
+            if (!define_symbol(parser, name, type, spec->storage, is_function, is_definition, &symbol)) return;
             if (accept(parser, "=")) {
                 symbol->initializer = parse_initializer(parser, type);
                 complete_initializer_array(type, symbol->initializer);
@@ -1855,7 +1859,7 @@ bool parse_tokens(Arena *arena, TokenList *tokens, DiagnosticSink *diagnostics,
             (void)accept(&parser, ";");
             continue;
         }
-        parse_global_declaration(&parser, spec);
+        parse_global_declaration(&parser, &spec);
     }
     unit->globals = parser.global_scope->bindings == NULL ? NULL : parser.global_scope->bindings->symbol;
     return !parser.failed;

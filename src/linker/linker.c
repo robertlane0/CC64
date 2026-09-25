@@ -590,7 +590,7 @@ static bool checked_add_signed(uint64_t value, int64_t addend,
     }
     uint64_t difference = value - amount;
     if (difference > (uint64_t)INT64_MAX) {
-        *result = (int64_t)(difference - (UINT64_C(1) << 63));
+        *result = (int64_t)(difference - ((uint64_t)1U << 63U));
         return true;
     }
     *result = (int64_t)difference;
@@ -793,9 +793,11 @@ static bool write_linked_image(const OutputSection outputs[4],
     if (wrote && rename(temporary, output) != 0) wrote = false;
     if (!wrote) {
         (void)remove(temporary);
-        link_error(diagnostics, 5029U, output,
-                   format == IMAGE_RAW_COM ? "cannot write raw image" :
-                                             "cannot write MZ64 image");
+        const char *message = "cannot write MZ64 image";
+        if (format == IMAGE_RAW_COM) {
+            message = "cannot write raw image";
+        }
+        link_error(diagnostics, 5029U, output, message);
     }
     free(temporary);
     free(image);

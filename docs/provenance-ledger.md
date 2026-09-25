@@ -54,6 +54,8 @@ source input to the normal CC64 build.
 | D-028 | Backend symbol ordering compares every serialized tie-breaker field | prevents nondeterministic ordering of otherwise equal-prefix symbol records |
 | D-029 | Repeated encoder-emitted target service definitions are coalesced by the linker | permits multiple translation units to reference the same project-owned thunk without duplicate-symbol failures |
 | D-030 | Bochs validation uses the pinned target bochsrc template, a term display, and a dedicated serial PTY | exercises the target's real serial-input shell path without importing emulator or OS implementation code |
+| D-031 | Target compilation uses a dedicated standard-header shadow directory | keeps target translation units free of accidental host libc headers while preserving the compiler's source spellings |
+| D-032 | Production translation units are probed individually with the target header profile before linking | makes self-host coverage and the first failing construct explicit and deterministic |
 
 ## Review rule
 

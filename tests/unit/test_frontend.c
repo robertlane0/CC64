@@ -34,7 +34,8 @@ static void test_lexer(void)
     const char *text = "int x; // hidden \\\nstill hidden\n/* *\\\n/ hidden */ y += 1;\n";
     Source *source = add_text(manager, text);
     DiagnosticSink diagnostics = {0};
-    TokenList tokens = lex_source(arena, source, &diagnostics);
+    TokenList tokens;
+    CHECK(lex_source(arena, source, &diagnostics, &tokens));
     CHECK(tokens.count != 0U);
     CHECK(tokens.items[tokens.count - 1U].kind == TOKEN_EOF);
     CHECK(has_token(&tokens, "int"));

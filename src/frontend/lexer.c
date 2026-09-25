@@ -249,19 +249,26 @@ static bool lex_quoted(Lexer *lexer, Token *token, size_t start,
         }
     }
     if (!closed) {
-        lexer_emit(lexer, 1002U, line, column,
-                   kind == TOKEN_STRING ? "unterminated string literal"
-                                        : "unterminated character literal");
+        const char *message = "unterminated character literal";
+        if (kind == TOKEN_STRING) {
+            message = "unterminated string literal";
+        }
+        lexer_emit(lexer, 1002U, line, column, message);
     }
     finish_token(lexer, token, start, line, column, at_bol, has_space, kind,
                  text, length);
     return closed;
 }
 
-Lexer lexer_create(Arena *arena, const Source *source, DiagnosticSink *diagnostics)
+void lexer_create(Arena *arena, const Source *source,
+                 DiagnosticSink *diagnostics, Lexer *lexer)
 {
-    Lexer lexer = {arena, source, 0U, 1U, 1U, diagnostics};
-    return lexer;
+    lexer->arena = arena;
+    lexer->source = source;
+    lexer->position = 0U;
+    lexer->line = 1U;
+    lexer->column = 1U;
+    lexer->diagnostics = diagnostics;
 }
 
 bool lexer_next(Lexer *lexer, Token *token)
@@ -424,7 +431,7 @@ void token_list_free(TokenList *list)
     token_list_init(list);
 }
 
-bool token_list_push(TokenList *list, Token token)
+bool token_list_push(TokenList *list, const Token *token)
 {
     if (list->count == list->capacity) {
         size_t next = list->capacity == 0U ? 32U : list->capacity * 2U;
@@ -435,7 +442,17 @@ bool token_list_push(TokenList *list, Token token)
         list->items = items;
         list->capacity = next;
     }
-    list->items[list->count++] = token;
+    Token *slot = &list->items[list->count++];
+    slot->kind = token->kind;
+    slot->source = token->source;
+    slot->start = token->start;
+    slot->end = token->end;
+    slot->line = token->line;
+    slot->column = token->column;
+    slot->at_bol = token->at_bol;
+    slot->has_space = token->has_space;
+    slot->text = token->text;
+    slot->hideset = token->hideset;
     return true;
 }
 
@@ -444,20 +461,20 @@ Token *token_list_last(TokenList *list)
     return list->count == 0U ? NULL : &list->items[list->count - 1U];
 }
 
-TokenList lex_source(Arena *arena, const Source *source, DiagnosticSink *diagnostics)
+bool lex_source(Arena *arena, const Source *source,
+                DiagnosticSink *diagnostics, TokenList *list)
 {
-    TokenList list;
-    token_list_init(&list);
-    Lexer lexer = lexer_create(arena, source, diagnostics);
+    token_list_init(list);
+    Lexer lexer;
+    lexer_create(arena, source, diagnostics, &lexer);
     for (;;) {
         Token token;
         bool good = lexer_next(&lexer, &token);
-        if (!token_list_push(&list, token)) {
-            break;
+        if (!token_list_push(list, &token)) {
+            return false;
         }
         if (!good || token.kind == TOKEN_EOF) {
-            break;
+            return true;
         }
     }
-    return list;
 }

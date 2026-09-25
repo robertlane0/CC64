@@ -1,5 +1,5 @@
-#ifndef CC64_STDINT_H
-#define CC64_STDINT_H
+#ifndef CC64_TARGET_STDINT_H
+#define CC64_TARGET_STDINT_H
 
 typedef signed char int8_t;
 typedef unsigned char uint8_t;

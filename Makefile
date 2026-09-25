@@ -11,7 +11,7 @@ DEPS = $(OBJECTS:.o=.d) $(TEST_OBJECTS:.o=.d)
 TEST_SOURCES = $(shell find tests/unit -name '*.c' -print | sort 2>/dev/null)
 TEST_OBJECTS = $(TEST_SOURCES:%.c=build/%.o)
 
-.PHONY: all clean check test test-unit test-target test-bochs self-host fuzz-smoke repro-check check-release check-release-strict audit install-tools
+.PHONY: all clean check test test-unit test-target test-bochs self-host selfhost-probe fuzz-smoke repro-check check-release check-release-strict audit install-tools
 all: cc64
 
 cc64: $(OBJECTS)
@@ -51,13 +51,16 @@ test-bochs: cc64
 self-host: cc64
 	@python3 tools/self_host.py
 
+selfhost-probe: cc64
+	@python3 tools/selfhost_probe.py
+
 fuzz-smoke: cc64
 	@python3 tests/fuzz_smoke.py
 
 repro-check: cc64
 	@python3 tools/repro_check.py
 
-check-release: check test-target test-bochs self-host fuzz-smoke repro-check audit
+check-release: check test-target test-bochs self-host selfhost-probe fuzz-smoke repro-check audit
 check-release-strict:
 	@CC64_REQUIRE_CLEAN=1 python3 tests/audit.py
 	@CC64_REQUIRE_CLEAN=1 CC64_REQUIRE_EMULATORS=1 $(MAKE) check-release

@@ -90,14 +90,16 @@ typedef struct Preprocessor {
 
 void token_list_init(TokenList *list);
 void token_list_free(TokenList *list);
-bool token_list_push(TokenList *list, Token token);
+bool token_list_push(TokenList *list, const Token *token);
 Token *token_list_last(TokenList *list);
 const char *token_kind_name(TokenKind kind);
 void token_list_classify_keywords(TokenList *list);
 
-Lexer lexer_create(Arena *arena, const Source *source, DiagnosticSink *diagnostics);
+void lexer_create(Arena *arena, const Source *source,
+                 DiagnosticSink *diagnostics, Lexer *lexer);
 bool lexer_next(Lexer *lexer, Token *token);
-TokenList lex_source(Arena *arena, const Source *source, DiagnosticSink *diagnostics);
+bool lex_source(Arena *arena, const Source *source,
+                DiagnosticSink *diagnostics, TokenList *list);
 
 Preprocessor *preprocessor_create(Arena *arena, SourceManager *sources,
                                   DiagnosticSink *diagnostics,

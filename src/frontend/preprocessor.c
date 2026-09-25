@@ -144,11 +144,11 @@ static Macro *find_macro(const Preprocessor *pp, const Token *token)
     return NULL;
 }
 
-static bool output_push(Preprocessor *pp, TokenList *output, Token token)
+static bool output_push(Preprocessor *pp, TokenList *output, const Token *token)
 {
     if (pp->token_count >= CC64_PP_MAX_TOKENS ||
         !token_list_push(output, token)) {
-        pp_emit(pp, 1101U, &token, "preprocessor token limit exceeded");
+        pp_emit(pp, 1101U, token, "preprocessor token limit exceeded");
         return false;
     }
     ++pp->token_count;
@@ -163,13 +163,28 @@ static size_t skip_newlines(const Token *tokens, size_t count, size_t position)
     return position;
 }
 
-static Token make_text_token(const Token *like, TokenKind kind, const char *text)
+static void copy_token(Token *result, const Token *token)
 {
-    Token token = *like;
-    token.kind = kind;
-    token.text = cc64_xstrdup(text);
-    token.hideset = NULL;
-    return token;
+    result->kind = token->kind;
+    result->source = token->source;
+    result->start = token->start;
+    result->end = token->end;
+    result->line = token->line;
+    result->column = token->column;
+    result->at_bol = token->at_bol;
+    result->has_space = token->has_space;
+    result->text = token->text;
+    result->hideset = token->hideset;
+}
+
+static bool make_text_token(const Token *like, TokenKind kind, const char *text,
+                            Token *result)
+{
+    copy_token(result, like);
+    result->kind = kind;
+    result->text = cc64_xstrdup(text);
+    result->hideset = NULL;
+    return true;
 }
 
 static bool expand_range(const Token *input, size_t begin, size_t end,
@@ -261,7 +276,7 @@ static bool parse_arguments(const Token *input, size_t count, size_t *position,
                 ++open;
                 break;
             }
-            if (!token_list_push(&lists[used], input[open])) {
+            if (!token_list_push(&lists[used], &input[open])) {
                 for (size_t i = 0U; i < capacity; ++i) {
                     token_list_free(&lists[i]);
                 }
@@ -287,9 +302,11 @@ static bool parse_arguments(const Token *input, size_t count, size_t *position,
             token_list_free(&lists[i]);
         }
         free(lists);
-        pp_emit(pp, 1104U, NULL, macro->parameter_count == 0U
-                                         ? "macro takes no arguments"
-                                         : "too few macro arguments");
+        const char *message = "too few macro arguments";
+        if (macro->parameter_count == 0U) {
+            message = "macro takes no arguments";
+        }
+        pp_emit(pp, 1104U, NULL, message);
         return false;
     }
     *arguments = lists;
@@ -328,7 +345,7 @@ static bool append_paste(TokenList *list, const Token *right)
 {
     Token *left = token_list_last(list);
     if (left == NULL) {
-        return token_list_push(list, *right);
+        return token_list_push(list, right);
     }
     size_t left_length = strlen(left->text);
     size_t right_length = strlen(right->text);
@@ -355,9 +372,11 @@ static bool expand_function_body(const Macro *macro, const Token *body,
         size_t parameter = 0U;
         if (token_is(token, "#") && i + 1U < body_count &&
             is_parameter(macro, &body[i + 1U], &parameter)) {
-            Token string = make_text_token(token, TOKEN_STRING,
-                                           stringize_arguments(&arguments[parameter]));
-            if (!token_list_push(&substituted, string)) {
+            Token string;
+            char *string_text = stringize_arguments(&arguments[parameter]);
+            (void)make_text_token(token, TOKEN_STRING, string_text, &string);
+            free(string_text);
+            if (!token_list_push(&substituted, &string)) {
                 token_list_free(&substituted);
                 return false;
             }
@@ -367,14 +386,14 @@ static bool expand_function_body(const Macro *macro, const Token *body,
         if (is_parameter(macro, token, &parameter)) {
             if (parameter < argument_count) {
                 for (size_t j = 0U; j < arguments[parameter].count; ++j) {
-                    if (!token_list_push(&substituted, arguments[parameter].items[j])) {
+                    if (!token_list_push(&substituted, &arguments[parameter].items[j])) {
                         token_list_free(&substituted);
                         return false;
                     }
                 }
             }
         } else if (!token_is(token, "##")) {
-            if (!token_list_push(&substituted, *token)) {
+            if (!token_list_push(&substituted, token)) {
                 token_list_free(&substituted);
                 return false;
             }
@@ -392,7 +411,7 @@ static bool expand_function_body(const Macro *macro, const Token *body,
                     append_paste(&substituted, &arguments[right_parameter].items[0]);
                     for (size_t j = 1U; j < arguments[right_parameter].count; ++j) {
                         if (!token_list_push(&substituted,
-                                              arguments[right_parameter].items[j])) {
+                                              &arguments[right_parameter].items[j])) {
                             token_list_free(&substituted);
                             return false;
                         }
@@ -411,7 +430,8 @@ static bool expand_function_body(const Macro *macro, const Token *body,
     return good;
 }
 
-static Token predefined_token(ExpandContext *context, const Token *token)
+static bool predefined_token(ExpandContext *context, const Token *token,
+                             Token *result)
 {
     if (token_is(token, "__FILE__")) {
         const char *path = context->pp->display_path == NULL
@@ -423,7 +443,9 @@ static Token predefined_token(ExpandContext *context, const Token *token)
         memcpy(text + 1U, path, length);
         text[length + 1U] = '"';
         text[length + 2U] = '\0';
-        return make_text_token(token, TOKEN_STRING, text);
+        bool good = make_text_token(token, TOKEN_STRING, text, result);
+        free(text);
+        return good;
     }
     if (token_is(token, "__LINE__")) {
         char text[32];
@@ -434,25 +456,28 @@ static Token predefined_token(ExpandContext *context, const Token *token)
             logical_line = 0;
         }
         (void)snprintf(text, sizeof(text), "%lld", (long long)logical_line);
-        return make_text_token(token, TOKEN_NUMBER, text);
+        return make_text_token(token, TOKEN_NUMBER, text, result);
     }
-    Token result = *token;
-    return result;
+    copy_token(result, token);
+    return true;
 }
 
-static ExpandContext expansion_context(const ExpandContext *context,
-                                      const Token *token)
+static void expansion_context(const ExpandContext *context, const Token *token,
+                              ExpandContext *nested)
 {
-    ExpandContext nested = *context;
-    nested.depth = context->depth + 1U;
-    if (!nested.has_invocation) {
-        nested.invocation_line = token->line;
-        nested.has_invocation = true;
+    nested->pp = context->pp;
+    nested->source = context->source;
+    nested->depth = context->depth + 1U;
+    nested->invocation_line = context->invocation_line;
+    nested->has_invocation = context->has_invocation;
+    nested->hideset = context->hideset;
+    if (!nested->has_invocation) {
+        nested->invocation_line = token->line;
+        nested->has_invocation = true;
     }
     if (token_is_kind(token, TOKEN_IDENTIFIER)) {
-        nested.hideset = hideset_add(nested.hideset, token->text);
+        nested->hideset = hideset_add(nested->hideset, token->text);
     }
-    return nested;
 }
 
 static bool expand_range(const Token *input, size_t begin, size_t end,
@@ -470,7 +495,7 @@ static bool expand_range(const Token *input, size_t begin, size_t end,
         const Token *token = &input[position];
         if (token->kind == TOKEN_NEWLINE) {
             if (pp->options.preserve_newlines &&
-                !token_list_push(output, *token)) {
+                !token_list_push(output, token)) {
                 return false;
             }
             ++position;
@@ -478,11 +503,13 @@ static bool expand_range(const Token *input, size_t begin, size_t end,
         }
         if (token_is(token, "__FILE__") || token_is(token, "__LINE__")) {
             if (hide_name != NULL && hideset_contains(token->hideset, hide_name)) {
-                if (!output_push(pp, output, *token)) {
+                if (!output_push(pp, output, token)) {
                     return false;
                 }
             } else {
-                if (!output_push(pp, output, predefined_token(context, token))) {
+                Token predefined;
+                if (!predefined_token(context, token, &predefined) ||
+                    !output_push(pp, output, &predefined)) {
                     return false;
                 }
             }
@@ -495,7 +522,8 @@ static bool expand_range(const Token *input, size_t begin, size_t end,
             (hide_name == NULL || !hideset_contains(token->hideset, hide_name)) &&
             !token_blocked_by_hide(token, hide_name)) {
             if (!macro->function_like) {
-                ExpandContext nested = expansion_context(context, token);
+                ExpandContext nested;
+                expansion_context(context, token, &nested);
                 size_t body_end = macro->body_count;
                 if (!expand_range(macro->body, 0U, body_end, &nested, output,
                                   macro->name)) {
@@ -513,7 +541,8 @@ static bool expand_range(const Token *input, size_t begin, size_t end,
                                      &argument_count, pp)) {
                     return false;
                 }
-                ExpandContext nested = expansion_context(context, token);
+                ExpandContext nested;
+                expansion_context(context, token, &nested);
                 bool good = expand_function_body(macro, macro->body,
                                                  macro->body_count, arguments,
                                                  argument_count, &nested, output);
@@ -528,12 +557,13 @@ static bool expand_range(const Token *input, size_t begin, size_t end,
                 continue;
             }
         }
-        Token copy = *token;
+        Token copy;
+        copy_token(&copy, token);
         if (hide_name != NULL) {
             copy.hideset = hideset_union(token->hideset, NULL);
             copy.hideset = hideset_add(copy.hideset, hide_name);
         }
-        if (!output_push(pp, output, copy)) {
+        if (!output_push(pp, output, &copy)) {
             return false;
         }
         ++position;
@@ -547,30 +577,33 @@ static bool expand_macro_at(const Token *input, size_t count, size_t *position,
     const Token *token = &input[*position];
     if (token->kind == TOKEN_NEWLINE) {
         if (context->pp->options.preserve_newlines) {
-            return token_list_push(output, *token);
+            return token_list_push(output, token);
         }
         ++*position;
         return true;
     }
     if (token_is(token, "__FILE__") || token_is(token, "__LINE__")) {
         ++*position;
-        return output_push(context->pp, output, predefined_token(context, token));
+        Token predefined;
+        return predefined_token(context, token, &predefined) &&
+               output_push(context->pp, output, &predefined);
     }
     Macro *macro = find_macro(context->pp, token);
     if (macro == NULL || hideset_contains(token->hideset, macro->name)) {
         ++*position;
-        return output_push(context->pp, output, *token);
+        return output_push(context->pp, output, token);
     }
     if (!macro->function_like) {
         ++*position;
-        ExpandContext nested = expansion_context(context, token);
+        ExpandContext nested;
+        expansion_context(context, token, &nested);
         return expand_range(macro->body, 0U, macro->body_count, &nested,
                             output, macro->name);
     }
     size_t next = skip_newlines(input, count, *position + 1U);
     if (next >= count || !token_is(&input[next], "(")) {
         ++*position;
-        return output_push(context->pp, output, *token);
+        return output_push(context->pp, output, token);
     }
     TokenList *arguments = NULL;
     size_t argument_count = 0U;
@@ -579,8 +612,8 @@ static bool expand_macro_at(const Token *input, size_t count, size_t *position,
                          &argument_count, context->pp)) {
         return false;
     }
-    ExpandContext nested = *context;
-    nested.depth = context->depth + 1U;
+    ExpandContext nested;
+    expansion_context(context, token, &nested);
     bool good = expand_function_body(macro, macro->body, macro->body_count,
                                      arguments, argument_count, &nested, output);
     for (size_t i = 0U; i < argument_count; ++i) {
@@ -708,7 +741,11 @@ static bool source_path_join(const char *directory, const char *name,
     bool slash = directory_length != 0U && directory[directory_length - 1U] == '/';
     size_t length = directory_length + (slash ? 0U : 1U) + strlen(name) + 1U;
     char *joined = cc64_xmalloc(length);
-    (void)snprintf(joined, length, "%s%s%s", directory, slash ? "" : "/", name);
+    const char *separator = "/";
+    if (slash) {
+        separator = "";
+    }
+    (void)snprintf(joined, length, "%s%s%s", directory, separator, name);
     *result = joined;
     return true;
 }
@@ -839,7 +876,7 @@ static bool process_include(Preprocessor *pp, const Source *source,
         (output->count == 0U || token_list_last(output)->kind != TOKEN_NEWLINE)) {
         Token newline = {0};
         if (output->count != 0U) {
-            newline = *token_list_last(output);
+            copy_token(&newline, token_list_last(output));
         }
         newline.kind = TOKEN_NEWLINE;
         newline.source = included;
@@ -847,7 +884,7 @@ static bool process_include(Preprocessor *pp, const Source *source,
         newline.column = 1U;
         newline.text = cc64_xstrdup("\n");
         newline.hideset = NULL;
-        good = output_push(pp, output, newline);
+        good = output_push(pp, output, &newline);
     }
     --pp->include_stack_count;
     return good;
@@ -1027,7 +1064,10 @@ static bool process_directive(Preprocessor *pp, const Source *source,
 static bool process_source(Preprocessor *pp, const Source *source,
                            TokenList *output)
 {
-    TokenList raw = lex_source(pp->arena, source, pp->diagnostics);
+    TokenList raw;
+    if (!lex_source(pp->arena, source, pp->diagnostics, &raw)) {
+        return false;
+    }
     CondState *conditions = NULL;
     size_t condition_count = 0U;
     size_t condition_capacity = 0U;
@@ -1042,7 +1082,7 @@ static bool process_source(Preprocessor *pp, const Source *source,
         if (token->kind == TOKEN_NEWLINE) {
             if (is_active(conditions, condition_count) &&
                 pp->options.preserve_newlines) {
-                good = output_push(pp, output, *token);
+                good = output_push(pp, output, token);
             }
             ++position;
             continue;
@@ -1115,69 +1155,77 @@ static uint64_t parse_integer_token(const Token *token, bool *is_unsigned,
     return value;
 }
 
-static ExprValue expr_make(uint64_t bits, bool is_unsigned)
+static bool expr_make(uint64_t bits, bool is_unsigned, ExprValue *result)
 {
-    ExprValue value = {bits, is_unsigned};
-    return value;
+    result->bits = bits;
+    result->is_unsigned = is_unsigned;
+    return true;
 }
 
-static ExprValue expr_binary(const char *op, ExprValue left, ExprValue right,
-                             bool *valid)
+static void expr_copy(ExprValue *result, const ExprValue *value)
 {
-    bool result_unsigned = left.is_unsigned || right.is_unsigned;
-    uint64_t left_bits = left.bits;
-    uint64_t right_bits = right.bits;
+    result->bits = value->bits;
+    result->is_unsigned = value->is_unsigned;
+}
+
+static bool expr_binary(const char *op, const ExprValue *left,
+                        const ExprValue *right, bool *valid, ExprValue *result)
+{
+    bool result_unsigned = left->is_unsigned || right->is_unsigned;
+    uint64_t left_bits = left->bits;
+    uint64_t right_bits = right->bits;
     if (!result_unsigned) {
         int64_t signed_left = (int64_t)left_bits;
         int64_t signed_right = (int64_t)right_bits;
-        if (strcmp(op, "+") == 0) return expr_make((uint64_t)(signed_left + signed_right), false);
-        if (strcmp(op, "-") == 0) return expr_make((uint64_t)(signed_left - signed_right), false);
-        if (strcmp(op, "*") == 0) return expr_make((uint64_t)(signed_left * signed_right), false);
+        if (strcmp(op, "+") == 0) return expr_make((uint64_t)(signed_left + signed_right), false, result);
+        if (strcmp(op, "-") == 0) return expr_make((uint64_t)(signed_left - signed_right), false, result);
+        if (strcmp(op, "*") == 0) return expr_make((uint64_t)(signed_left * signed_right), false, result);
         if (strcmp(op, "/") == 0) {
-            if (signed_right == 0) { *valid = false; return expr_make(0U, false); }
-            return expr_make((uint64_t)(signed_left / signed_right), false);
+            if (signed_right == 0) { *valid = false; return expr_make(0U, false, result); }
+            return expr_make((uint64_t)(signed_left / signed_right), false, result);
         }
         if (strcmp(op, "%") == 0) {
-            if (signed_right == 0) { *valid = false; return expr_make(0U, false); }
-            return expr_make((uint64_t)(signed_left % signed_right), false);
+            if (signed_right == 0) { *valid = false; return expr_make(0U, false, result); }
+            return expr_make((uint64_t)(signed_left % signed_right), false, result);
         }
-        if (strcmp(op, "<") == 0) return expr_make((uint64_t)(signed_left < signed_right), false);
-        if (strcmp(op, ">") == 0) return expr_make((uint64_t)(signed_left > signed_right), false);
-        if (strcmp(op, "<=") == 0) return expr_make((uint64_t)(signed_left <= signed_right), false);
-        if (strcmp(op, ">=") == 0) return expr_make((uint64_t)(signed_left >= signed_right), false);
-        if (strcmp(op, "<<") == 0) return expr_make((uint64_t)(signed_left << (signed_right & 63)), false);
-        if (strcmp(op, ">>") == 0) return expr_make((uint64_t)(signed_left >> (signed_right & 63)), false);
+        if (strcmp(op, "<") == 0) return expr_make((uint64_t)(signed_left < signed_right), false, result);
+        if (strcmp(op, ">") == 0) return expr_make((uint64_t)(signed_left > signed_right), false, result);
+        if (strcmp(op, "<=") == 0) return expr_make((uint64_t)(signed_left <= signed_right), false, result);
+        if (strcmp(op, ">=") == 0) return expr_make((uint64_t)(signed_left >= signed_right), false, result);
+        if (strcmp(op, "<<") == 0) return expr_make((uint64_t)(signed_left << (signed_right & 63)), false, result);
+        if (strcmp(op, ">>") == 0) return expr_make((uint64_t)(signed_left >> (signed_right & 63)), false, result);
     } else {
-        if (strcmp(op, "+") == 0) return expr_make(left_bits + right_bits, true);
-        if (strcmp(op, "-") == 0) return expr_make(left_bits - right_bits, true);
-        if (strcmp(op, "*") == 0) return expr_make(left_bits * right_bits, true);
+        if (strcmp(op, "+") == 0) return expr_make(left_bits + right_bits, true, result);
+        if (strcmp(op, "-") == 0) return expr_make(left_bits - right_bits, true, result);
+        if (strcmp(op, "*") == 0) return expr_make(left_bits * right_bits, true, result);
         if (strcmp(op, "/") == 0) {
-            if (right_bits == 0U) { *valid = false; return expr_make(0U, true); }
-            return expr_make(left_bits / right_bits, true);
+            if (right_bits == 0U) { *valid = false; return expr_make(0U, true, result); }
+            return expr_make(left_bits / right_bits, true, result);
         }
         if (strcmp(op, "%") == 0) {
-            if (right_bits == 0U) { *valid = false; return expr_make(0U, true); }
-            return expr_make(left_bits % right_bits, true);
+            if (right_bits == 0U) { *valid = false; return expr_make(0U, true, result); }
+            return expr_make(left_bits % right_bits, true, result);
         }
-        if (strcmp(op, "<") == 0) return expr_make((uint64_t)(left_bits < right_bits), false);
-        if (strcmp(op, ">") == 0) return expr_make((uint64_t)(left_bits > right_bits), false);
-        if (strcmp(op, "<=") == 0) return expr_make((uint64_t)(left_bits <= right_bits), false);
-        if (strcmp(op, ">=") == 0) return expr_make((uint64_t)(left_bits >= right_bits), false);
+        if (strcmp(op, "<") == 0) return expr_make((uint64_t)(left_bits < right_bits), false, result);
+        if (strcmp(op, ">") == 0) return expr_make((uint64_t)(left_bits > right_bits), false, result);
+        if (strcmp(op, "<=") == 0) return expr_make((uint64_t)(left_bits <= right_bits), false, result);
+        if (strcmp(op, ">=") == 0) return expr_make((uint64_t)(left_bits >= right_bits), false, result);
     }
-    if (strcmp(op, "==") == 0) return expr_make((uint64_t)(left_bits == right_bits), false);
-    if (strcmp(op, "!=") == 0) return expr_make((uint64_t)(left_bits != right_bits), false);
-    if (strcmp(op, "&") == 0) return expr_make(left_bits & right_bits, result_unsigned);
-    if (strcmp(op, "|") == 0) return expr_make(left_bits | right_bits, result_unsigned);
-    if (strcmp(op, "^") == 0) return expr_make(left_bits ^ right_bits, result_unsigned);
-    if (strcmp(op, "<<") == 0) return expr_make(left_bits << (right_bits & 63U), result_unsigned);
-    if (strcmp(op, ">>") == 0) return expr_make(left_bits >> (right_bits & 63U), result_unsigned);
-    if (strcmp(op, "&&") == 0) return expr_make((uint64_t)(left_bits != 0U && right_bits != 0U), false);
-    if (strcmp(op, "||") == 0) return expr_make((uint64_t)(left_bits != 0U || right_bits != 0U), false);
+    if (strcmp(op, "==") == 0) return expr_make((uint64_t)(left_bits == right_bits), false, result);
+    if (strcmp(op, "!=") == 0) return expr_make((uint64_t)(left_bits != right_bits), false, result);
+    if (strcmp(op, "&") == 0) return expr_make(left_bits & right_bits, result_unsigned, result);
+    if (strcmp(op, "|") == 0) return expr_make(left_bits | right_bits, result_unsigned, result);
+    if (strcmp(op, "^") == 0) return expr_make(left_bits ^ right_bits, result_unsigned, result);
+    if (strcmp(op, "<<") == 0) return expr_make(left_bits << (right_bits & 63U), result_unsigned, result);
+    if (strcmp(op, ">>") == 0) return expr_make(left_bits >> (right_bits & 63U), result_unsigned, result);
+    if (strcmp(op, "&&") == 0) return expr_make((uint64_t)(left_bits != 0U && right_bits != 0U), false, result);
+    if (strcmp(op, "||") == 0) return expr_make((uint64_t)(left_bits != 0U || right_bits != 0U), false, result);
     *valid = false;
-    return expr_make(0U, false);
+    return expr_make(0U, false, result);
 }
 
-static ExprValue expr_parse_binary(ExprParser *parser, unsigned precedence);
+static bool expr_parse_binary(ExprParser *parser, unsigned precedence,
+                              ExprValue *result);
 
 static bool decode_character(const char **cursor, uint64_t *value)
 {
@@ -1245,39 +1293,49 @@ static bool decode_character(const char **cursor, uint64_t *value)
     return true;
 }
 
-static ExprValue expr_parse_unary(ExprParser *parser)
+static bool expr_parse_unary(ExprParser *parser, ExprValue *result)
 {
     if (parser->position >= parser->count) {
         parser->failed = true;
-        return expr_make(0U, false);
+        return expr_make(0U, false, result);
     }
     const Token *token = &parser->tokens[parser->position++];
     if (token_is(token, "!")) {
-        ExprValue value = expr_parse_unary(parser);
-        return expr_make((uint64_t)(value.bits == 0U), false);
+        ExprValue value;
+        if (!expr_parse_unary(parser, &value)) return false;
+        return expr_make((uint64_t)(value.bits == 0U), false, result);
     }
     if (token_is(token, "~")) {
-        ExprValue value = expr_parse_unary(parser);
+        ExprValue value;
+        if (!expr_parse_unary(parser, &value)) return false;
         value.bits = ~value.bits;
-        return value;
+        expr_copy(result, &value);
+        return true;
     }
     if (token_is(token, "+")) {
-        return expr_parse_unary(parser);
+        return expr_parse_unary(parser, result);
     }
     if (token_is(token, "-")) {
-        ExprValue value = expr_parse_unary(parser);
+        ExprValue value;
+        if (!expr_parse_unary(parser, &value)) return false;
         value.bits = (uint64_t)0 - value.bits;
-        return value;
+        expr_copy(result, &value);
+        return true;
     }
     if (token_is(token, "(")) {
-        ExprValue value = expr_parse_binary(parser, 0U);
+        ExprValue value;
+        if (!expr_parse_binary(parser, 0U, &value)) {
+            expr_copy(result, &value);
+            return false;
+        }
         if (parser->position >= parser->count ||
             !token_is(&parser->tokens[parser->position], ")")) {
             parser->failed = true;
         } else {
             ++parser->position;
         }
-        return value;
+        expr_copy(result, &value);
+        return !parser->failed;
     }
     if (token->kind == TOKEN_NUMBER) {
         bool is_unsigned = false;
@@ -1286,7 +1344,7 @@ static ExprValue expr_parse_unary(ExprParser *parser)
         if (!valid) {
             parser->failed = true;
         }
-        return expr_make(value, is_unsigned);
+        return expr_make(value, is_unsigned, result);
     }
     if (token->kind == TOKEN_CHARACTER) {
         const char *cursor = token->text;
@@ -1298,20 +1356,20 @@ static ExprValue expr_parse_unary(ExprParser *parser)
         }
         if (*cursor == '\0' || *cursor == '\'') {
             parser->failed = true;
-            return expr_make(0U, false);
+            return expr_make(0U, false, result);
         }
         uint64_t value = 0U;
         if (!decode_character(&cursor, &value)) {
             parser->failed = true;
-            return expr_make(0U, false);
+            return expr_make(0U, false, result);
         }
-        return expr_make(value, false);
+        return expr_make(value, false, result);
     }
     if (token->kind == TOKEN_IDENTIFIER || token->kind == TOKEN_KEYWORD) {
-        return expr_make(0U, false);
+        return expr_make(0U, false, result);
     }
     parser->failed = true;
-    return expr_make(0U, false);
+    return expr_make(0U, false, result);
 }
 
 static unsigned binary_precedence(const Token *token)
@@ -1330,49 +1388,84 @@ static unsigned binary_precedence(const Token *token)
     return 0U;
 }
 
-static ExprValue expr_parse_binary(ExprParser *parser, unsigned minimum)
+static bool expr_parse_binary(ExprParser *parser, unsigned minimum,
+                              ExprValue *result)
 {
-    ExprValue left = expr_parse_unary(parser);
+    ExprValue left;
+    if (!expr_parse_unary(parser, &left)) {
+        expr_copy(result, &left);
+        return false;
+    }
     while (!parser->failed && parser->position < parser->count) {
         unsigned precedence = binary_precedence(&parser->tokens[parser->position]);
         if (precedence == 0U || precedence < minimum) {
             break;
         }
-        Token op = parser->tokens[parser->position++];
-        ExprValue right = expr_parse_binary(parser, precedence + 1U);
+        const Token *op = &parser->tokens[parser->position++];
+        ExprValue right;
+        if (!expr_parse_binary(parser, precedence + 1U, &right)) {
+            expr_copy(result, &left);
+            return false;
+        }
         bool valid = true;
-        left = expr_binary(op.text, left, right, &valid);
+        ExprValue computed;
+        (void)expr_binary(op->text, &left, &right, &valid, &computed);
         if (!valid) {
             parser->failed = true;
-            return left;
+            expr_copy(result, &computed);
+            return false;
         }
+        expr_copy(&left, &computed);
     }
-    return left;
+    expr_copy(result, &left);
+    return true;
 }
 
-static ExprValue expr_parse_conditional(ExprParser *parser)
+static bool expr_parse_conditional(ExprParser *parser, ExprValue *result)
 {
-    ExprValue condition = expr_parse_binary(parser, 0U);
-    if (parser->position < parser->count && token_is(&parser->tokens[parser->position], "?")) {
+    ExprValue condition;
+    if (!expr_parse_binary(parser, 0U, &condition)) {
+        expr_copy(result, &condition);
+        return false;
+    }
+    if (parser->position < parser->count &&
+        token_is(&parser->tokens[parser->position], "?")) {
         ++parser->position;
-        ExprValue yes = expr_parse_conditional(parser);
-        if (parser->position >= parser->count || !token_is(&parser->tokens[parser->position], ":")) {
+        ExprValue yes;
+        if (!expr_parse_conditional(parser, &yes)) {
+            expr_copy(result, &yes);
+            return false;
+        }
+        if (parser->position >= parser->count ||
+            !token_is(&parser->tokens[parser->position], ":")) {
             parser->failed = true;
-            return yes;
+            expr_copy(result, &yes);
+            return false;
         }
         ++parser->position;
-        ExprValue no = expr_parse_conditional(parser);
-        return condition.bits != 0U ? yes : no;
+        ExprValue no;
+        if (!expr_parse_conditional(parser, &no)) {
+            expr_copy(result, &no);
+            return false;
+        }
+        if (condition.bits != 0U) {
+            expr_copy(result, &yes);
+        } else {
+            expr_copy(result, &no);
+        }
+        return true;
     }
-    return condition;
+    expr_copy(result, &condition);
+    return true;
 }
+
 
 static bool replace_defined(Preprocessor *pp, const Token *body, size_t count,
                             const Token *directive, TokenList *output)
 {
     for (size_t i = 0U; i < count; ++i) {
         if (!token_is(&body[i], "defined")) {
-            if (!token_list_push(output, body[i])) {
+            if (!token_list_push(output, &body[i])) {
                 return false;
             }
             continue;
@@ -1397,9 +1490,13 @@ static bool replace_defined(Preprocessor *pp, const Token *body, size_t count,
             }
             ++next;
         }
-        Token value_token = make_text_token(&body[i], TOKEN_NUMBER,
-                                             value ? "1" : "0");
-        if (!token_list_push(output, value_token)) {
+        Token value_token;
+        const char *value_text = "0";
+        if (value) {
+            value_text = "1";
+        }
+        (void)make_text_token(&body[i], TOKEN_NUMBER, value_text, &value_token);
+        if (!token_list_push(output, &value_token)) {
             return false;
         }
         i = next - 1U;
@@ -1432,8 +1529,9 @@ static bool evaluate_expression(Preprocessor *pp, const Token *body,
         return false;
     }
     ExprParser parser = {expanded.items, expanded.count, 0U, pp, false};
-    ExprValue value = expr_parse_conditional(&parser);
-    if (parser.failed || parser.position != parser.count) {
+    ExprValue value;
+    bool parsed = expr_parse_conditional(&parser, &value);
+    if (!parsed || parser.failed || parser.position != parser.count) {
         pp_emit(pp, 1134U, directive, "invalid conditional expression");
         token_list_free(&replaced);
         token_list_free(&expanded);
@@ -1519,14 +1617,23 @@ void preprocessor_define_text(Preprocessor *pp, const char *definition)
         return;
     }
     char *text = cc64_xmalloc(name_length + (expanded == NULL ? 1U : strlen(expanded) + 2U));
+    const char *equals_text = "";
+    const char *expanded_text = "";
+    if (expanded != NULL) {
+        equals_text = "=";
+        expanded_text = expanded;
+    }
     (void)snprintf(text, name_length + (expanded == NULL ? 1U : strlen(expanded) + 2U),
-                   "%s%s%s", name, expanded == NULL ? "" : "=", expanded == NULL ? "" : expanded);
+                   "%s%s%s", name, expanded == NULL ? "" : equals_text, expanded_text);
     Source *source = source_manager_add(pp->sources, "<command-line>",
                                         (const unsigned char *)text, strlen(text));
     free(text);
     free(name);
     free(expanded);
-    TokenList tokens = lex_source(pp->arena, source, pp->diagnostics);
+    TokenList tokens;
+    if (!lex_source(pp->arena, source, pp->diagnostics, &tokens)) {
+        return;
+    }
     size_t definition_count = tokens.count;
     while (definition_count != 0U &&
            tokens.items[definition_count - 1U].kind == TOKEN_EOF) {
@@ -1550,7 +1657,7 @@ bool preprocessor_run(Preprocessor *pp, const Source *source, TokenList *output)
         eof.line = 1U;
         eof.column = 1U;
         eof.text = cc64_xstrdup("");
-        good = output_push(pp, output, eof);
+        good = output_push(pp, output, &eof);
     }
     token_list_classify_keywords(output);
     pp->include_stack_count = 0U;

@@ -18,10 +18,12 @@ after its remaining target-library and language dependencies are implemented.
 
 ## Current blockers
 
-A target-header compile probe of the complete compiler sources still reaches
-the deferred aggregate-by-value parameter/return ABI (for example the `Token`
-value parameter in `frontend.h`) and needs a target `stdio`/`stdlib` surface
-for source loading, allocation, diagnostics, and object writing. The current
-probe is diagnostic evidence, not a release gate; no host compiler is used to
-translate or bless target output. These dependencies are recorded as open M7
-work rather than hidden behind the stage1 result.
+The target-header profile now compiles every production compiler translation
+unit individually through `make selfhost-probe`. The remaining work is to
+supply the target runtime implementation, link the complete object set, and
+run the resulting target compiler. The target library must provide the
+compiler's file, allocation, string, and formatting operations without
+including a host libc. A target-built compiler must then reproduce the
+host compiler's objects and diagnostics on the conformance corpus. These
+dependencies are recorded as open M7 work rather than hidden behind the
+stage1 result.

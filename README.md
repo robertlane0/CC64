@@ -14,7 +14,8 @@ make check
 ```
 
 The aggregate validation checkpoint is `make check-release`; it also runs
-malformed-input smoke and clean-build reproducibility checks. Use
+malformed-input smoke, target-profile self-host probing, and clean-build
+reproducibility checks. Use
 `make check-release-strict` when missing QEMU, target, or Bochs evidence must
 fail instead of being reported as skipped. The current status, including the
 intentionally partial self-hosting and conformance matrix, is recorded in

@@ -12,6 +12,7 @@ mismatched checkout rather than silently testing a different interface.
 | compiler-produced QEMU raw cases | passed (7 cases, including exit/open services) |
 | compiler-produced QEMU MZ64 data-pointer case | passed (`Exit 7`) |
 | compiler-produced QEMU stage1 smoke | passed (`Exit 51`; bootstrap smoke, not full self-hosting) |
+| target-profile self-host probe | passed (15 production translation units compile individually) |
 | deterministic malformed source/object/image smoke | passed (46 source cases, 20 bit mutations, 4 CRC-valid structural mutations, truncation and image fixups) |
 | clean-build reproducibility | passed; two path-independent clean exports and target artifacts match |
 | automated provenance/source-origin audit | passed; human review/signoff remains open |
