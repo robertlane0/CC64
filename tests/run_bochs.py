@@ -62,7 +62,7 @@ def stop_process(process: subprocess.Popen) -> None:
 
 
 def run_bochs(bochs: str, config: pathlib.Path, serial: int,
-              console_path: pathlib.Path) -> bytes:
+              console_path: pathlib.Path, command: str, expected: int) -> bytes:
     console = console_path.open("wb")
     process = subprocess.Popen([bochs, "-q", "-f", str(config)],
                                stdin=subprocess.DEVNULL,
@@ -80,10 +80,11 @@ def run_bochs(bochs: str, config: pathlib.Path, serial: int,
                 except OSError:
                     pass
             if not sent and b"A> " in output:
-                os.write(serial, b"BOCH\n")
+                os.write(serial, command.encode("ascii") + b"\n")
                 sent = True
-            if b"Exit 7" in output:
-                marker = output.index(b"Exit 7") + len(b"Exit 7")
+            marker_text = f"Exit {expected}".encode("ascii")
+            if marker_text in output:
+                marker = output.index(marker_text) + len(marker_text)
                 if b"A> " in output[marker:]:
                     return bytes(output)
             if process.poll() is not None:
@@ -107,48 +108,63 @@ def main() -> int:
     check_target()
     with tempfile.TemporaryDirectory(prefix="cc64-bochs-") as temp:
         work = pathlib.Path(temp)
-        source = work / "bochs.c"
-        obj = work / "bochs.cc64o"
-        image = work / "bochs.com"
-        disk = work / "dos64.img"
-        source.write_text("int main(void) { return 7; }\n", encoding="utf-8")
-        subprocess.run([str(ROOT / "cc64"), "-c", str(source), "-o", str(obj)],
-                       cwd=ROOT, check=True)
-        subprocess.run([str(ROOT / "cc64"), "--link", str(obj), "-o", str(image)],
-                       cwd=ROOT, check=True)
         subprocess.run(["make", "clean", "lean"], cwd=TARGET, check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-        shutil.copy2(TARGET / "build/dos64-lean.img", disk)
-        check_volume(disk)
-        subprocess.run(["python3", str(ROOT / "tests/embed_fat12.py"),
-                        str(disk), str(image), "BOCH"], cwd=ROOT, check=True,
-                       stdout=subprocess.DEVNULL)
-        check_volume(disk)
+        cases = [
+            ("BOCHR", "int main(void) { return 7; }\n", "raw", 7),
+            ("BOCHZ", "int value = 7; int *pointer = &value; "
+                      "int main(void) { return *pointer; }\n", "mz64", 7),
+        ]
+        for name, source_text, image_format, expected in cases:
+            source = work / f"{name}.c"
+            obj = work / f"{name}.cc64o"
+            image = work / (f"{name}.mz64" if image_format == "mz64"
+                            else f"{name}.com")
+            disk = work / f"{name}.img"
+            source.write_text(source_text, encoding="utf-8")
+            subprocess.run([str(ROOT / "cc64"), "-c", str(source), "-o", str(obj)],
+                           cwd=ROOT, check=True)
+            command = [str(ROOT / "cc64"), "--link"]
+            if image_format == "mz64":
+                command += ["--format", "mz64"]
+            command += [str(obj), "-o", str(image)]
+            subprocess.run(command, cwd=ROOT, check=True)
+            shutil.copy2(TARGET / "build/dos64-lean.img", disk)
+            check_volume(disk)
+            subprocess.run(["python3", str(ROOT / "tests/embed_fat12.py"),
+                            str(disk), str(image), name], cwd=ROOT, check=True,
+                           stdout=subprocess.DEVNULL)
+            check_volume(disk)
 
-        master, slave = pty.openpty()
-        serial_path = os.ttyname(slave)
-        os.close(slave)
-        display_master, display_slave = pty.openpty()
-        template = (TARGET / "bochsrc.txt.in").read_text(encoding="utf-8")
-        template = template.replace("@IMAGE@", str(disk))
-        template = template.replace("log: bochs.log", f"log: {work / 'bochs.log'}")
-        template = template.replace("display_library: nogui", "display_library: term")
-        template = template.replace("com1: enabled=1, mode=file, dev=serial.log",
-                                    f"com1: enabled=1, mode=term, dev={serial_path}")
-        config = work / "bochs.cfg"
-        config.write_text(template, encoding="utf-8")
-        try:
-            output = run_bochs(bochs, config, master, work / "console.log")
-        except OSError as error:
-            raise SystemExit(f"Bochs serial setup failed: {error}") from error
-        finally:
-            os.close(master)
-            os.close(display_master)
-            os.close(display_slave)
-        if b"Exit 7" not in output:
-            raise SystemExit("Bochs did not report target exit 7")
-        check_volume(disk)
-    print("bochs: target returned exit 7")
+            master, slave = pty.openpty()
+            serial_path = os.ttyname(slave)
+            os.close(slave)
+            display_master, display_slave = pty.openpty()
+            template = (TARGET / "bochsrc.txt.in").read_text(encoding="utf-8")
+            template = template.replace("@IMAGE@", str(disk))
+            template = template.replace("log: bochs.log",
+                                        f"log: {work / (name + '.bochs.log')}")
+            template = template.replace("display_library: nogui",
+                                        "display_library: term")
+            template = template.replace(
+                "com1: enabled=1, mode=file, dev=serial.log",
+                f"com1: enabled=1, mode=term, dev={serial_path}")
+            config = work / f"{name}.cfg"
+            config.write_text(template, encoding="utf-8")
+            try:
+                output = run_bochs(bochs, config, master,
+                                   work / f"{name}.console.log", name, expected)
+            except OSError as error:
+                raise SystemExit(f"Bochs serial setup failed: {error}") from error
+            finally:
+                os.close(master)
+                os.close(display_master)
+                os.close(display_slave)
+            marker = f"Exit {expected}".encode("ascii")
+            if marker not in output:
+                raise SystemExit(f"Bochs did not report {name} exit {expected}")
+            check_volume(disk)
+    print("bochs: target returned exit 7 for raw and MZ64 cases")
     return 0
 
 

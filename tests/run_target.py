@@ -8,6 +8,7 @@ import pathlib
 import shutil
 import subprocess
 import tempfile
+import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TARGET = ROOT.parent / "MS-DOS64"
@@ -54,10 +55,21 @@ def check_volume(image: pathlib.Path, label: str) -> None:
         raise SystemExit(f"target volume cleanliness check failed ({label}): {detail}")
 
 
+def stop_process(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
 def execute(qemu: str, disk: pathlib.Path, name: str, command: str,
             expected: int) -> str:
     transcript = disk.with_suffix(".log")
-    timed_out = False
+    process = None
     with transcript.open("w", encoding="utf-8") as stream:
         process = subprocess.Popen(
             [qemu, "-drive", f"file={disk},format=raw", "-serial", "stdio",
@@ -65,19 +77,25 @@ def execute(qemu: str, disk: pathlib.Path, name: str, command: str,
             stdin=subprocess.PIPE, stdout=stream, stderr=subprocess.STDOUT,
             text=True,
         )
-        try:
-            process.communicate(command + "\n", timeout=15)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.communicate()
-            timed_out = True
+        process.stdin.write(command + "\n")
+        process.stdin.close()
+        marker = f"Exit {expected}"
+        deadline = time.monotonic() + 15.0
+        complete = False
+        while time.monotonic() < deadline:
+            text = transcript.read_text(encoding="utf-8", errors="replace")
+            if marker in text and "A> " in text[text.index(marker) + len(marker):]:
+                complete = True
+                break
+            if process.poll() is not None:
+                break
+            time.sleep(0.05)
+        stop_process(process)
     text = transcript.read_text(encoding="utf-8", errors="replace")
-    marker = f"Exit {expected}"
-    if timed_out:
-        if marker not in text or "A> " not in text[text.index(marker) + len(marker):]:
-            raise SystemExit(f"{name}: QEMU timed out before a complete target result")
-    elif process.returncode != 0:
-        raise SystemExit(f"{name}: QEMU exited with status {process.returncode}")
+    if not complete:
+        if process.returncode not in (0, -15):
+            raise SystemExit(f"{name}: QEMU exited with status {process.returncode}")
+        raise SystemExit(f"{name}: QEMU timed out before a complete target result")
     return text
 
 
@@ -109,15 +127,22 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="cc64-target-") as temp:
         work = pathlib.Path(temp)
         cases = [
-            ("C64R", "int main(void) { return 7; }", "raw", 7),
-            ("C64S", "int f(int x){int y=0; switch(x){case 7: y=9; break; default: y=3;} return y;} int main(void){return f(7);}", "raw", 9),
-            ("C64A", "int main(void){int a[2][2]={{1,2},{3,4}}; return a[1][1];}", "raw", 4),
-            ("C64P", "int x=7; int *p=&x; int main(void){return *p;}", "mz64", 7),
-            ("C64I", "int main(void){int x=4; int y=x++; return y*10+x;}", "raw", 45),
-            ("C64X", "void cc64_exit(int); int main(void){cc64_exit(9); return 3;}", "raw", 9),
-            ("C64O", "int cc64_open(const char *); int cc64_close(int); int main(void){int h=cc64_open(\"HELLO.TXT\"); if(h>=0) cc64_close(h); return h>=0?7:1;}", "raw", 7),
+            ("C64R", "int main(void) { return 7; }", "raw", 7, None),
+            ("C64S", "int f(int x){int y=0; switch(x){case 7: y=9; break; default: y=3;} return y;} int main(void){return f(7);}", "raw", 9, None),
+            ("C64A", "int main(void){int a[2][2]={{1,2},{3,4}}; return a[1][1];}", "raw", 4, None),
+            ("C64P", "int x=7; int *p=&x; int main(void){return *p;}", "mz64", 7, None),
+            ("C64I", "int main(void){int x=4; int y=x++; return y*10+x;}", "raw", 45, None),
+            ("C64X", "void cc64_exit(int); int main(void){cc64_exit(9); return 3;}", "raw", 9, None),
+            ("C64O", "int cc64_open(const char *); int cc64_close(int); int main(void){int h=cc64_open(\"HELLO.TXT\"); if(h>=0) cc64_close(h); return h>=0?7:1;}", "raw", 7, None),
+            ("C64U", "int cc64_putc(int); int main(void){cc64_putc(65); return 7;}", "raw", 7, "A"),
+            ("C64V", "int cc64_write(int,const void*,unsigned long); int main(void){cc64_write(1,\"W\",1); return 8;}", "raw", 8, "W"),
+            ("C64M", "void *cc64_alloc(unsigned long); void cc64_free(void*); int main(void){char *p=cc64_alloc(16); if(!p)return 1; p[0]=7; int v=p[0]; cc64_free(p); return v;}", "raw", 7, None),
+            ("C64F", "int cc64_open(const char*); int cc64_read(int,void*,unsigned long); int cc64_close(int); int main(void){char b[4]; int h=cc64_open(\"HELLO.TXT\"); if(h<0)return 1; cc64_read(h,b,4); cc64_close(h); return b[0]==72?7:2;}", "raw", 7, None),
+            ("C64B", "int zero_global; int main(void){zero_global=9; return zero_global;}", "raw", 9, None),
+            ("C64Z", "int zero_global; int main(void){zero_global=9; return zero_global;}", "mz64", 9, None),
+            ("C64G", "int main(int argc, char **argv){return argc;}", "raw", 1, None),
         ]
-        for name, source, image_format, expected in cases:
+        for name, source, image_format, expected, expected_text in cases:
             disk = work / f"{name}.img"
             image = compile_and_link(work, source, name, image_format)
             shutil.copy2(TARGET / "build/dos64-lean.img", disk)
@@ -129,6 +154,8 @@ def main() -> int:
             check_volume(disk, f"{name} after QEMU")
             if f"Exit {expected}" not in text:
                 raise SystemExit(f"{name}: target did not return {expected}")
+            if expected_text is not None and expected_text not in text:
+                raise SystemExit(f"{name}: target output lacked {expected_text!r}")
         print(f"target: QEMU passed {len(cases)} raw/MZ64 image cases")
     return 0
 
