@@ -463,24 +463,11 @@ bool object_write_cc64o(ObjectBuilder *builder, const char *path,
         put_u32(record + 28U, 0U);
     }
     put_u32(header + 68U, cc64_file_crc32(file, total));
-    size_t path_length = strlen(path) + 5U;
-    char *temporary = cc64_xmalloc(path_length);
-    (void)snprintf(temporary, path_length, "%s.tmp", path);
-    FILE *stream = fopen(temporary, "wb");
-    bool good = stream != NULL;
-    if (good) {
-        good = fwrite(file, 1U, total, stream) == total;
-        if (fclose(stream) != 0) good = false;
-        stream = NULL;
-    }
-    if (good && rename(temporary, path) != 0) good = false;
+    bool good = cc64_write_file(path, file, total);
     if (!good) {
-        if (stream != NULL) (void)fclose(stream);
-        (void)remove(temporary);
         diagnostic_emit(diagnostics, 4001U, DIAG_BACKEND, NULL, 0U, 0U,
                         "cannot write CC64O output");
     }
-    free(temporary);
     free(data_offsets);
     free(file);
     free(section_name_offsets);

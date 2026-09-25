@@ -18,7 +18,7 @@ image case successfully.
 | M4 linker, loader image, runtime | partial | independent CC64O validation, section/symbol merge, PC-relative relocation checks, deterministic raw `.COM`, target entry/exit trampoline, freestanding target headers, and QEMU/Bochs smoke; full runtime I/O coverage remains open |
 | M5 language and MS-DOS64 compatibility | partial | pointers, arrays, nested initializers, structs/unions, enums, switch/short-circuit control flow, increments/compound assignment, stack arguments, scalar/aggregate copies, basic binary32/binary64, target runtime service stubs, seven QEMU cases, and one Bochs raw case; full corpus/runtime/file/process coverage remains open |
 | M6 `MZ64`, diagnostics, hardening | partial | MZ64 header/table emission, image-relative data fixups, BSS sizing, full-file/section CRC validation, bounded relocation/object records, malformed-image rejection, deterministic raw/MZ links, and QEMU data-pointer execution; broad negative/load-bias and Bochs MZ64 coverage remain open |
-| M7 self-hosting | partial | all 15 production translation units compile with the target header profile via `make selfhost-probe`; the complete compiler is not yet linked/run as a target compiler, and stage1 remains a bootstrap smoke test |
+| M7 self-hosting | partial | all 13 production translation units compile with the target header profile via `make selfhost-probe`; the target `create`/`lseek` services are implemented and exercised on QEMU, and the remaining 41 undefined symbols are exactly the target C library surface, which is not yet written; the complete compiler is not linked/run as a target compiler, and stage1 remains a bootstrap smoke test |
 | M8 release quality | partial | path-independent clean-build hash comparison, deterministic malformed source/object/image smoke, automated provenance/source-origin audit, QEMU/Bochs target evidence, and aggregate release gate run; human review and full self-hosting remain open |
 
 A milestone is marked complete only after its tests and required target runs
@@ -29,7 +29,7 @@ pass. Planned code is never reported as completed.
 `make check-release` currently runs and passes the host, object, raw/MZ64,
 QEMU, Bochs, deterministic source/object/image smoke, reproducibility, and
 provenance checks. The measured clean bootstrap build manifest digest is
-`fa70dab34fc35cbb2a3b98dc5c547def7be7feed9f070d72759312c10d23b0de`
+`7c50a080d96a10598221f13f34d00a39771a03270905b9bdcf9b2b493a336507`
 across 37 generated files and deterministic target artifacts.
 
 This is a validation checkpoint, not a releasable M7/M8 claim. Full

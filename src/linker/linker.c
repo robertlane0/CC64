@@ -822,22 +822,14 @@ static bool write_linked_image(const OutputSection outputs[4],
             write_u64(entry + 8U, (uint64_t)image_relocations[i].addend);
         }
     }
-    size_t path_length = strlen(output) + 5U;
-    char *temporary = cc64_xmalloc(path_length);
-    (void)snprintf(temporary, path_length, "%s.tmp", output);
-    FILE *stream = fopen(temporary, "wb");
-    bool wrote = stream != NULL && fwrite(image, 1U, file_size, stream) == file_size;
-    if (stream != NULL && fclose(stream) != 0) wrote = false;
-    if (wrote && rename(temporary, output) != 0) wrote = false;
+    bool wrote = cc64_write_file(output, image, file_size);
     if (!wrote) {
-        (void)remove(temporary);
         const char *message = "cannot write MZ64 image";
         if (format == IMAGE_RAW_COM) {
             message = "cannot write raw image";
         }
         link_error(diagnostics, 5029U, output, message);
     }
-    free(temporary);
     free(image);
     return wrote;
 }

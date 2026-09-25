@@ -59,6 +59,8 @@ source input to the normal CC64 build.
 | D-033 | Relocations are applied to the flattened image payload, after per-kind section buffers are merged at their final offsets | the per-kind buffers are scratch; writing a final-layout offset into them corrupts unrelated memory, and BSS is zero-filled by the image buffer rather than copied |
 | D-034 | Every non-BSS data object is aligned to at least eight bytes | keeps the pinned MZ64 contract that a relocated pointer's represented value is eight-byte aligned, so the loader needs one aligned store per fixup |
 | D-035 | One declarator per AST node, chained through `next`, spliced whole into statement lists | a single node per declaration statement silently dropped later declarators, which then lost their frame slot and were emitted as external references |
+| D-036 | Output files are created once and written once from a fully built in-memory image; there is no temporary-file rename step | the pinned target dispatches no `rename` (56h) or `delete` (41h) service, so the temporary protocol could never run on target; a truncated write stays detectable through the CC64O and MZ64 checksums |
+| D-037 | `cc64_create` and `cc64_lseek` join the emitted service thunks, using the target's RAX result and CF error convention | the compiler must open and seek real files, and both services are already listed in the pinned ABI table; the file-descriptor result register is read back from the target source rather than assumed from classic DOS |
 
 ## Review rule
 

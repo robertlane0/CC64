@@ -63,6 +63,7 @@ typedef struct DiagnosticSink {
 void *cc64_xmalloc(size_t size);
 void *cc64_xrealloc(void *ptr, size_t size);
 char *cc64_xstrdup(const char *text);
+bool cc64_write_file(const char *path, const void *data, size_t size);
 
 Arena *arena_create(size_t limit);
 void *arena_alloc(Arena *arena, size_t size);

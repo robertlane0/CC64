@@ -127,6 +127,16 @@ static void emit_mov_reg32_reg(Encoder *encoder, unsigned dst, unsigned src)
     emit_modrm_reg(encoder, src, dst);
 }
 
+/* Opcode 88 is "MOV r/m8, r8": the destination is the r/m operand and the
+   source is the reg operand, so the register arguments are passed in the
+   opposite order from the 64-bit move. */
+static void emit_mov_reg8_reg(Encoder *encoder, unsigned dst, unsigned src)
+{
+    emit_rex(encoder, false, src, dst);
+    emit8(encoder, 0x88U);
+    emit_modrm_reg(encoder, src, dst);
+}
+
 static void emit_mov_reg_imm(Encoder *encoder, unsigned reg, uint64_t value, unsigned width)
 {
     if (width == 8U) {
@@ -1399,6 +1409,8 @@ typedef enum RuntimeFunction {
     RUNTIME_ALLOC,
     RUNTIME_FREE,
     RUNTIME_OPEN,
+    RUNTIME_CREATE,
+    RUNTIME_LSEEK,
     RUNTIME_CLOSE,
     RUNTIME_EXIT
 } RuntimeFunction;
@@ -1412,6 +1424,8 @@ static bool runtime_function_info(const char *name, RuntimeFunction *function)
     else if (strcmp(name, "cc64_alloc") == 0) *function = RUNTIME_ALLOC;
     else if (strcmp(name, "cc64_free") == 0) *function = RUNTIME_FREE;
     else if (strcmp(name, "cc64_open") == 0) *function = RUNTIME_OPEN;
+    else if (strcmp(name, "cc64_create") == 0) *function = RUNTIME_CREATE;
+    else if (strcmp(name, "cc64_lseek") == 0) *function = RUNTIME_LSEEK;
     else if (strcmp(name, "cc64_close") == 0) *function = RUNTIME_CLOSE;
     else if (strcmp(name, "cc64_exit") == 0) *function = RUNTIME_EXIT;
     else return false;
@@ -1464,6 +1478,29 @@ static void emit_runtime_body(Encoder *encoder, RuntimeFunction function)
         emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
         emit_pop(encoder, 3U);
         break;
+    case RUNTIME_CREATE:
+        /* cc64_create(path, mode): RDX=path, AH=3Ch, AL=mode.
+           The target returns the file descriptor in RAX with CF clear, or an
+           error code in RAX with CF set. */
+        emit_mov_reg_reg(encoder, 2U, 7U);
+        emit_mov_reg_reg(encoder, 8U, 6U);
+        emit_mov_reg_imm(encoder, 0U, 0x3c00U, 4U);
+        emit_mov_reg8_reg(encoder, 0U, 8U);
+        emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
+        break;
+    case RUNTIME_LSEEK:
+        /* cc64_lseek(handle, offset, origin): RBX=handle, RCX=signed offset,
+           AH=42h, AL=origin. The offset is sign-extended into the 64-bit
+           register the target reads. */
+        emit_mov_reg_reg(encoder, 8U, 2U);
+        emit_mov_reg_reg(encoder, 3U, 7U);
+        emit_mov_reg_reg(encoder, 0U, 6U);
+        emit8(encoder, 0x99U);
+        emit_mov_reg_reg(encoder, 1U, 0U);
+        emit_mov_reg_imm(encoder, 0U, 0x4200U, 4U);
+        emit_mov_reg8_reg(encoder, 0U, 8U);
+        emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
+        break;
     case RUNTIME_CLOSE:
         emit_push(encoder, 3U);
         emit_mov_reg_reg(encoder, 3U, 7U);
@@ -1484,7 +1521,8 @@ static bool append_runtime_functions(Encoder *encoder)
 {
     static const char *const names[] = {
         "cc64_putc", "cc64_write", "cc64_read", "cc64_alloc",
-        "cc64_free", "cc64_open", "cc64_close", "cc64_exit"
+        "cc64_free", "cc64_open", "cc64_create", "cc64_lseek",
+        "cc64_close", "cc64_exit"
     };
     for (size_t i = 0U; i < sizeof(names) / sizeof(names[0]); ++i) {
         size_t symbol_index = UINT32_MAX;

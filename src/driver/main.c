@@ -201,25 +201,16 @@ static bool write_preprocessed(const Options *options, const TokenList *tokens)
     if (options->output == NULL || strcmp(options->output, "-") == 0) {
         return write_token_list(stdout, tokens, options->line_markers);
     }
-    size_t length = strlen(options->output) + 5U;
-    char *temporary = cc64_xmalloc(length);
-    (void)snprintf(temporary, length, "%s.tmp", options->output);
-    FILE *stream = fopen(temporary, "wb");
+    /* Preprocessing has already succeeded, so the output file is created once
+       and streamed directly; there is no temporary-file rename step. */
+    FILE *stream = fopen(options->output, "wb");
     if (stream == NULL) {
-        free(temporary);
         return false;
     }
     bool good = write_token_list(stream, tokens, options->line_markers);
     if (fclose(stream) != 0) {
         good = false;
     }
-    if (good && rename(temporary, options->output) != 0) {
-        good = false;
-    }
-    if (!good) {
-        (void)remove(temporary);
-    }
-    free(temporary);
     return good;
 }
 

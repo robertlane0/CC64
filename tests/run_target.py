@@ -114,6 +114,52 @@ def compile_and_link(work: pathlib.Path, source_text: str, name: str,
     return image
 
 
+FILE_WRITE_PROGRAM = (
+    "int cc64_create(const char *, int);\n"
+    "int cc64_open(const char *);\n"
+    "int cc64_write(int, const void *, unsigned long);\n"
+    "int cc64_read(int, void *, unsigned long);\n"
+    "int cc64_close(int);\n"
+    "char scratch[8];\n"
+    "int main(void) {\n"
+    "  int handle = cc64_create(\"CC64W.TXT\", 0);\n"
+    "  if (handle < 0) return 1;\n"
+    "  if (cc64_write(handle, \"hello\", 5) != 5) return 2;\n"
+    "  if (cc64_close(handle) != 0) return 3;\n"
+    "  handle = cc64_open(\"CC64W.TXT\");\n"
+    "  if (handle < 0) return 4;\n"
+    "  if (cc64_read(handle, scratch, 5) != 5) return 5;\n"
+    "  cc64_close(handle);\n"
+    "  if (scratch[0] != 'h') return 6;\n"
+    "  if (scratch[4] != 'o') return 7;\n"
+    "  return 7;\n"
+    "}\n"
+)
+
+SEEK_PROGRAM = (
+    "int cc64_open(const char *);\n"
+    "int cc64_close(int);\n"
+    "int cc64_lseek(int, long, int);\n"
+    "int cc64_read(int, void *, unsigned long);\n"
+    "char scratch[8];\n"
+    "int main(void) {\n"
+    "  int handle = cc64_open(\"HELLO.TXT\");\n"
+    "  if (handle < 0) return 1;\n"
+    "  if (cc64_lseek(999, 0L, 0) != 6L) return 2;\n"
+    "  if (cc64_lseek(handle, 0L, 3) != 1L) return 3;\n"
+    "  long size = cc64_lseek(handle, 0L, 2);\n"
+    "  if (size <= 0L) return 4;\n"
+    "  if (cc64_lseek(handle, 0L, 0) != 0L) return 5;\n"
+    "  if (cc64_lseek(handle, 1L, 0) != 1L) return 6;\n"
+    "  if (cc64_lseek(handle, 0L, 1) != 1L) return 7;\n"
+    "  if (cc64_lseek(handle, 0L, 0) != 0L) return 8;\n"
+    "  if (cc64_read(handle, scratch, 1) != 1) return 9;\n"
+    "  cc64_close(handle);\n"
+    "  return 7;\n"
+    "}\n"
+)
+
+
 def main() -> int:
     qemu = shutil.which("qemu-system-x86_64")
     if qemu is None or not TARGET.is_dir():
@@ -141,6 +187,8 @@ def main() -> int:
             ("C64B", "int zero_global; int main(void){zero_global=9; return zero_global;}", "raw", 9, None),
             ("C64Z", "int zero_global; int main(void){zero_global=9; return zero_global;}", "mz64", 9, None),
             ("C64G", "int main(int argc, char **argv){return argc;}", "raw", 1, None),
+            ("C64W", FILE_WRITE_PROGRAM, "raw", 7, None),
+            ("C64K", SEEK_PROGRAM, "raw", 7, None),
         ]
         for name, source, image_format, expected, expected_text in cases:
             disk = work / f"{name}.img"

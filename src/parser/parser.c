@@ -1705,8 +1705,16 @@ static AstNode *parse_statement(Parser *parser)
         (void)take(parser); (void)expect(parser, "(");
         Scope *old_scope = parser->scope; parser->scope = scope_create(parser->arena, old_scope);
         AstNode *init = NULL;
-        if (!token_text(peek(parser), ";")) init = token_is_start_of_declaration(parser) ? parse_local_declaration(parser) : (accept(parser, ";"), parse_expression(parser));
-        else (void)take(parser);
+        if (token_text(peek(parser), ";")) {
+            (void)take(parser);
+        } else if (token_is_start_of_declaration(parser)) {
+            /* parse_local_declaration consumes the terminating semicolon. */
+            init = parse_local_declaration(parser);
+        } else {
+            /* An expression initializer stops before its own semicolon. */
+            init = parse_expression(parser);
+            (void)expect(parser, ";");
+        }
         AstNode *condition = token_text(peek(parser), ";") ? NULL : parse_expression(parser);
         (void)expect(parser, ";");
         AstNode *step = token_text(peek(parser), ")") ? NULL : parse_expression(parser);
