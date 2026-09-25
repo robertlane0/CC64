@@ -53,6 +53,7 @@ source input to the normal CC64 build.
 | D-027 | Independent object readers and the linker reject overlapping ranges, uncovered bytes, undersized executable alignment, and out-of-range symbol sizes | enforces the version-1 table layout before relocations or output are trusted |
 | D-028 | Backend symbol ordering compares every serialized tie-breaker field | prevents nondeterministic ordering of otherwise equal-prefix symbol records |
 | D-029 | Repeated encoder-emitted target service definitions are coalesced by the linker | permits multiple translation units to reference the same project-owned thunk without duplicate-symbol failures |
+| D-030 | Bochs validation uses the pinned target bochsrc template, a term display, and a dedicated serial PTY | exercises the target's real serial-input shell path without importing emulator or OS implementation code |
 
 ## Review rule
 

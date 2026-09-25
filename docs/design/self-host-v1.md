@@ -6,7 +6,8 @@ host bootstrap compiler emits its `CC64O` and `MZ64` image, and the target
 loader runs the resulting stage under QEMU. `make self-host` builds and runs
 the stage twice, compares the two images, and records the expected `Exit 51`
 result. The adjacent target checkout is revision-pinned by the test scripts;
-an absent emulator is reported as skipped, never as a successful Bochs run.
+when an emulator is unavailable, the local gate reports a skip, while strict
+release mode rejects that condition.
 
 This gate is intentionally separate from host `make`: it proves that target
 objects, MZ64 relocation, startup, integer calls, local aggregate/string

@@ -15,12 +15,11 @@ mismatched checkout rather than silently testing a different interface.
 | deterministic malformed source/object/image smoke | passed (46 source cases, 20 bit mutations, 4 CRC-valid structural mutations, truncation and image fixups) |
 | clean-build reproducibility | passed; two path-independent clean exports and target artifacts match |
 | automated provenance/source-origin audit | passed; human review/signoff remains open |
-| full QEMU/Bochs target matrix | blocked; QEMU coverage is recorded, Bochs is unavailable |
-| Bochs | skipped; `bochs` is absent from the configured Pacman repositories |
+| full QEMU/Bochs target matrix | partial; QEMU has 7 cases and Bochs has 1 raw case; MZ64/alternate-emulator coverage remains open |
+| Bochs | passed (`Exit 7`, raw `.COM`, Bochs 3.1) |
 | target volume cleanliness | passed before/after each QEMU case using the target checkout's `check_volume_clean.py`; stage1 and Bochs paths use the same check |
 
-`make check-release` is the aggregate local gate. It returns success when
-Bochs is unavailable, but that result is recorded as skipped and is not a
-Bochs pass. `make check-release-strict` turns missing emulator evidence and a
-dirty source tree into failures. Neither gate is a release approval while M7
-full self-hosting and the required alternate-emulator evidence remain open.
+`make check-release` is the aggregate local gate. `make check-release-strict`
+turns missing emulator evidence and a dirty source tree into failures. Both
+gates now have QEMU and Bochs evidence, but neither is a release approval
+while M7 full self-hosting and the complete conformance matrix remain open.

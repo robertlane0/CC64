@@ -17,8 +17,8 @@ The aggregate validation checkpoint is `make check-release`; it also runs
 malformed-input smoke and clean-build reproducibility checks. Use
 `make check-release-strict` when missing QEMU, target, or Bochs evidence must
 fail instead of being reported as skipped. The current status, including the
-intentionally partial self-hosting and unavailable Bochs gates, is recorded
-in `docs/status.md` and `docs/release-matrix.md`.
+intentionally partial self-hosting and conformance matrix, is recorded in
+`docs/status.md` and `docs/release-matrix.md`.
 
 No target program is built by the host compiler. The MS-DOS64 checkout, if
 present beside this repository, is an interface reference and test target; it
