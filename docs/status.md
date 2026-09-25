@@ -3,7 +3,7 @@
 Status date: 2026-09-24.
 
 Bootstrap audit record: GCC 16.2.1, GNU Make 4.4.1, Python 3.14.7,
-QEMU 11.1.1, Bochs 3.1, Git 2.55.0; validation source revision `73ce185`.
+QEMU 11.1.1, Bochs 3.1, Git 2.55.0; validation source revision `738e6a7`.
 `make clean && make check` and `make check-release` pass locally. The target
 matrix is measured with compiler-produced images against MS-DOS64 revision
 `13c3cedb05ad75592c17bf2006ba8617c8761a38`; Bochs now runs the pinned raw
