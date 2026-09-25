@@ -40,6 +40,8 @@ void object_builder_destroy(ObjectBuilder *builder)
 ObjectSection *object_add_section(ObjectBuilder *builder, const char *name,
                                   unsigned char kind, unsigned alignment)
 {
+    if (builder == NULL || name == NULL || kind > 3U || alignment == 0U ||
+        (alignment & (alignment - 1U)) != 0U || alignment > 32768U) return NULL;
     if (builder->section_count == builder->section_capacity) {
         size_t next = builder->section_capacity == 0U ? 4U : builder->section_capacity * 2U;
         if (next < builder->section_capacity) return NULL;
@@ -59,6 +61,8 @@ bool object_append_data(ObjectBuilder *builder, ObjectSection *section,
                         const unsigned char *data, size_t size)
 {
     if (section == NULL || (size != 0U && data == NULL)) return false;
+    if (section->size > 256U * 1024U * 1024U ||
+        size > 256U * 1024U * 1024U - section->size) return false;
     if (size > SIZE_MAX - section->size) return false;
     size_t needed = section->size + size;
     if (needed > section->capacity) {
@@ -80,6 +84,7 @@ bool object_add_symbol(ObjectBuilder *builder, const char *name, uint64_t value,
                        uint32_t section_index, unsigned char binding,
                        unsigned char kind, uint64_t size, bool defined)
 {
+    if (builder == NULL || name == NULL || binding > 1U || kind > 4U) return false;
     if (builder->symbol_count == builder->symbol_capacity) {
         size_t next = builder->symbol_capacity == 0U ? 16U : builder->symbol_capacity * 2U;
         if (next < builder->symbol_capacity) return false;
@@ -103,6 +108,16 @@ bool object_add_relocation(ObjectBuilder *builder, ObjectSection *section,
                            size_t offset, Symbol *symbol, uint32_t type,
                            int64_t addend, uint32_t width)
 {
+    if (builder == NULL || section == NULL || symbol == NULL ||
+        (type < 1U || type > 5U) ||
+        (width != 4U && width != 8U) ||
+        (type == CC64O_REL_ABS32 && width != 4U) ||
+        (type == CC64O_REL_ABS64 && width != 8U) ||
+        (type == CC64O_REL_PC32 && width != 4U) ||
+        (type == CC64O_REL_SECTION32 && width != 4U) ||
+        (type == CC64O_REL_DATA64 && width != 8U) ||
+        offset > 256U * 1024U * 1024U ||
+        width > 256U * 1024U * 1024U - offset) return false;
     if (find_symbol(builder, symbol) == UINT32_MAX) {
         unsigned char binding = (unsigned char)(symbol != NULL &&
                                                  symbol->linkage == LINKAGE_INTERNAL ? 0U : 1U);
@@ -263,9 +278,16 @@ static int object_symbol_compare(const void *left, const void *right)
 bool object_write_cc64o(ObjectBuilder *builder, const char *path,
                         DiagnosticSink *diagnostics)
 {
-    if (builder == NULL || path == NULL) return false;
-    qsort(builder->symbols, builder->symbol_count, sizeof(*builder->symbols),
-          object_symbol_compare);
+    if (builder == NULL || path == NULL ||
+        builder->section_count > 65535U || builder->symbol_count > 1000000U) {
+        diagnostic_emit(diagnostics, 4002U, DIAG_BACKEND, NULL, 0U, 0U,
+                        "object table count exceeds format limit");
+        return false;
+    }
+    if (builder->symbol_count != 0U) {
+        qsort(builder->symbols, builder->symbol_count, sizeof(*builder->symbols),
+              object_symbol_compare);
+    }
     StringTable strings = {0};
     uint32_t target_offset = 0U;
     if (!string_add(&strings, "", &target_offset) ||
@@ -315,6 +337,13 @@ bool object_write_cc64o(ObjectBuilder *builder, const char *path,
             free(section_name_offsets); free(symbol_name_offsets); free_string_table(&strings); return false;
         }
     }
+    if (total > UINT32_MAX || total > 512U * 1024U * 1024U) {
+        free(section_name_offsets); free(symbol_name_offsets);
+        free_string_table(&strings);
+        diagnostic_emit(diagnostics, 4003U, DIAG_BACKEND, NULL, 0U, 0U,
+                        "object file exceeds format limit");
+        return false;
+    }
     unsigned char *file = cc64_xmalloc(total == 0U ? 1U : total);
     memset(file, 0, total == 0U ? 1U : total);
     if (strings.size != 0U) memcpy(file + string_offset_value, strings.bytes, strings.size);
@@ -325,6 +354,11 @@ bool object_write_cc64o(ObjectBuilder *builder, const char *path,
         if (section->kind == 3U) {
             data_offsets[i] = 0U;
         } else {
+            if (data_cursor > UINT32_MAX) {
+                free(file); free(data_offsets); free(section_name_offsets);
+                free(symbol_name_offsets); free_string_table(&strings);
+                return false;
+            }
             data_offsets[i] = (uint32_t)data_cursor;
             if (section->size != 0U) memcpy(file + data_cursor, section->data, section->size);
             data_cursor += section->size;
@@ -408,6 +442,13 @@ bool object_write_cc64o(ObjectBuilder *builder, const char *path,
     for (size_t i = 0U; i < builder->symbol_count; ++i) {
         unsigned char *record = file + symbol_table_offset + i * CC64O_SYMBOL_SIZE;
         ObjectSymbol *symbol = &builder->symbols[i];
+        if (symbol->value > UINT32_MAX) {
+            free(file); free(data_offsets); free(section_name_offsets);
+            free(symbol_name_offsets); free_string_table(&strings);
+            diagnostic_emit(diagnostics, 4004U, DIAG_BACKEND, NULL, 0U, 0U,
+                            "symbol value exceeds object field");
+            return false;
+        }
         put_u32(record, symbol_name_offsets[i]);
         put_u32(record + 4U, (uint32_t)symbol->value);
         put_u32(record + 8U, symbol->section_index);

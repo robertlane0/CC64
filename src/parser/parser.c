@@ -1566,6 +1566,23 @@ static AstNode *parse_compound(Parser *parser)
     return compound;
 }
 
+static void complete_initializer_array(Type *type, AstNode *initializer)
+{
+    if (type == NULL || initializer == NULL || type->kind != TYPE_ARRAY ||
+        !type->incomplete || type->base == NULL || type->base->size == 0U) return;
+    AstNode *value = initializer->kind == NODE_INITIALIZER ? initializer->a : initializer;
+    size_t count = 0U;
+    if (value != NULL && value->kind == NODE_STRING) {
+        count = value->text_length;
+    } else if (value != NULL && value->kind == NODE_INITIALIZER) {
+        for (AstNode *item = value; item != NULL; item = item->next) ++count;
+    }
+    if (count == 0U || count > SIZE_MAX / type->base->size) return;
+    type->array_count = count;
+    type->size = count * type->base->size;
+    type->incomplete = false;
+}
+
 static AstNode *parse_local_declaration(Parser *parser)
 {
     DeclSpec spec;
@@ -1614,7 +1631,10 @@ static AstNode *parse_local_declaration(Parser *parser)
                 symbol->name = cc64_xstrdup(internal_name);
                 (void)source_name;
             }
-            if (accept(parser, "=")) symbol->initializer = parse_initializer(parser, type);
+            if (accept(parser, "=")) {
+                symbol->initializer = parse_initializer(parser, type);
+                complete_initializer_array(type, symbol->initializer);
+            }
             AstNode *declaration = node_new(parser, NODE_DECLARATION, type, peek(parser));
             if (declaration != NULL) { declaration->symbol = symbol; declaration->a = symbol->initializer; if (first == NULL) first = declaration; else tail->next = declaration; tail = declaration; }
         }
@@ -1770,6 +1790,7 @@ static void parse_global_declaration(Parser *parser, DeclSpec spec)
             if (!define_symbol(parser, name, type, spec.storage, is_function, is_definition, &symbol)) return;
             if (accept(parser, "=")) {
                 symbol->initializer = parse_initializer(parser, type);
+                complete_initializer_array(type, symbol->initializer);
                 symbol->defined = true;
                 AstNode *declaration = node_new(parser, NODE_DECLARATION, type, peek(parser));
                 if (declaration != NULL) { declaration->symbol = symbol; declaration->a = symbol->initializer; (void)append_declaration(parser->unit, declaration); }

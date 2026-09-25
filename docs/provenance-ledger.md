@@ -39,6 +39,8 @@ source input to the normal CC64 build.
 | D-013 | Target service functions are emitted by the CC64 encoder only when referenced | keeps the freestanding boundary in project-owned machine selection and avoids importing a target runtime |
 | D-014 | `MZ64` data fixups use image-relative destinations and addends | the target loader supplies the load bias, so the same payload remains position-independent |
 | D-015 | The startup stub exposes a bounded one-argument argv view from the target PSP | this is the minimum target interface needed by the first hosted compatibility gate; richer tokenization is recorded for the next ABI revision |
+| D-016 | A separate stage1 smoke program gates target bootstrap execution | isolates loader, relocation, startup, and backend evidence from the larger self-hosting claim |
+| D-017 | MZ64 relocation tables retain only image-relative data fixups | absolute/load-biased values are rejected instead of being silently made non-portable |
 
 ## Review rule
 

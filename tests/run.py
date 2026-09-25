@@ -46,6 +46,10 @@ def main() -> int:
             raise SystemExit("object output is missing or nondeterministic")
         run(["python3", str(ROOT / "tools/inspect_object.py"), str(object_file)])
         run([str(ROOT / "cc64"), "--link", str(object_file), "-o", str(image_file)])
+        second_image = directory / "hello2.com"
+        run([str(ROOT / "cc64"), "--link", str(object_file), "-o", str(second_image)])
+        if image_file.read_bytes() != second_image.read_bytes():
+            raise SystemExit("raw image output is not deterministic")
         if not image_file.is_file() or image_file.read_bytes()[:3] != b"\x48\x83\xec":
             raise SystemExit("raw image output is invalid")
 
@@ -60,6 +64,11 @@ def main() -> int:
         run([str(ROOT / "cc64"), "-c", str(mz_source), "-o", str(mz_object)])
         run([str(ROOT / "cc64"), "--link", "--format", "mz64", str(mz_object),
              "-o", str(mz_image)])
+        second_mz = directory / "mz2.bin"
+        run([str(ROOT / "cc64"), "--link", "--format", "mz64", str(mz_object),
+             "-o", str(second_mz)])
+        if mz_image.read_bytes() != second_mz.read_bytes():
+            raise SystemExit("MZ64 output is not deterministic")
         run(["python3", str(ROOT / "tools/inspect_image.py"), str(mz_image)])
         malformed = directory / "malformed.mz"
         malformed.write_bytes(mz_image.read_bytes())

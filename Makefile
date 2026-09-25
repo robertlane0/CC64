@@ -5,13 +5,13 @@ WARNINGS = -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wstrict-prototypes -W
 CPPFLAGS += -Isrc -Iinclude
 ALL_CFLAGS = -std=c17 $(WARNINGS) $(CFLAGS)
 
-SOURCES = $(shell find src -name '*.c' -print | sort)
+SOURCES = $(shell find src -name '*.c' ! -path 'src/selfhost/*' -print | sort)
 OBJECTS = $(SOURCES:%.c=build/%.o)
 DEPS = $(OBJECTS:.o=.d)
 TEST_SOURCES = $(shell find tests/unit -name '*.c' -print | sort 2>/dev/null)
 TEST_OBJECTS = $(TEST_SOURCES:%.c=build/%.o)
 
-.PHONY: all clean check test test-unit test-target audit install-tools
+.PHONY: all clean check test test-unit test-target test-bochs self-host check-release audit install-tools
 all: cc64
 
 cc64: $(OBJECTS)
@@ -44,6 +44,14 @@ test: test-unit
 
 test-target:
 	@python3 tests/run_target.py
+
+test-bochs:
+	@python3 tests/run_bochs.py
+
+self-host:
+	@python3 tools/self_host.py
+
+check-release: check test-target test-bochs self-host audit
 
 audit:
 	@python3 tests/audit.py
