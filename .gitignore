@@ -1,1 +1,13 @@
-MS-DOS64
+/build/
+/cc64
+/MS-DOS64
+*.o
+*.obj
+*.a
+*.exe
+*.com
+*.mz64
+*.tmp
+*.log
+.cache/
+__pycache__/
