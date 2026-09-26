@@ -203,6 +203,31 @@ def main() -> int:
                 "multi-declarator declaration produced an external reference:\n"
                 + unresolved.stdout)
 
+        conditional_source = directory / "conditional.c"
+        conditional_object = directory / "conditional.cc64o"
+        # The conditional operator converts its operands, so a conditional over
+        # two string literals, or over a literal and a pointer, is ordinary C
+        # rather than a rejected pair of branches.
+        conditional_source.write_text(
+            "static const char *pick(int flag) {\n"
+            "  return flag ? \"yes\" : \"no\";\n"
+            "}\n"
+            "int main(void) {\n"
+            "  const char *a = 1 ? \"alpha\" : \"beta\";\n"
+            "  char local[4] = \"xy\";\n"
+            "  const char *b = 0 ? local : \"gamma\";\n"
+            "  if (a[0] != 'a') return 1;\n"
+            "  if (b[0] != 'g') return 2;\n"
+            "  if (pick(1)[0] != 'y') return 3;\n"
+            "  return 9;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        run([str(ROOT / "cc64"), "-c", str(conditional_source),
+             "-o", str(conditional_object)])
+        run([str(ROOT / "cc64"), "--link", str(conditional_object),
+             "-o", str(directory / "conditional.com")])
+
         bad = directory / "bad.c"
         bad_output = directory / "bad.i"
         bad.write_text('"unterminated\n', encoding="utf-8")
