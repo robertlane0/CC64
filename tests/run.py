@@ -228,6 +228,27 @@ def main() -> int:
         run([str(ROOT / "cc64"), "--link", str(conditional_object),
              "-o", str(directory / "conditional.com")])
 
+        # Several inputs produce one object each, named after the input, and a
+        # single -o cannot stand in for them.
+        many_a = directory / "many-a.c"
+        many_b = directory / "many-b.c"
+        many_a.write_text("int first(void) { return 4; }\n", encoding="utf-8")
+        many_b.write_text("int first(void);\nint main(void) { return first(); }\n",
+                          encoding="utf-8")
+        run([str(ROOT / "cc64"), "-c", str(many_a), str(many_b)])
+        for produced in (directory / "many-a.cc64o", directory / "many-b.cc64o"):
+            if not produced.is_file():
+                raise SystemExit("multi-input compile did not produce every object")
+        linked = directory / "many.com"
+        run([str(ROOT / "cc64"), "--link", str(directory / "many-a.cc64o"),
+             str(directory / "many-b.cc64o"), "-o", str(linked)])
+        rejected_many = subprocess.run(
+            [str(ROOT / "cc64"), "-c", str(many_a), str(many_b),
+             "-o", str(directory / "many.o")],
+            cwd=ROOT, capture_output=True, text=True, check=False)
+        if rejected_many.returncode == 0 or "CC0013" not in rejected_many.stderr:
+            raise SystemExit("multi-input -o was not rejected")
+
         bad = directory / "bad.c"
         bad_output = directory / "bad.i"
         bad.write_text('"unterminated\n', encoding="utf-8")
