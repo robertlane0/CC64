@@ -202,8 +202,10 @@ static bool condition_code(CompareOperator compare, bool is_signed, unsigned *co
     case COMPARE_NOT_EQUAL: *code = 5U; return true;
     case COMPARE_LESS: *code = is_signed ? 12U : 2U; return true;
     case COMPARE_LESS_EQUAL: *code = is_signed ? 14U : 6U; return true;
-    case COMPARE_GREATER: *code = is_signed ? 7U : 3U; return true;
-    case COMPARE_GREATER_EQUAL: *code = is_signed ? 13U : 5U; return true;
+    /* The comparison always computes a - b, so the greater forms need the
+       "above" conditions and the less forms the "below" ones. */
+    case COMPARE_GREATER: *code = is_signed ? 15U : 7U; return true;
+    case COMPARE_GREATER_EQUAL: *code = is_signed ? 13U : 3U; return true;
     }
     *code = 0U;
     return false;
@@ -1520,6 +1522,8 @@ static bool runtime_function_info(const char *name, RuntimeFunction *function)
 #define CC64_START_SCAN 4U
 #define CC64_START_SPLIT 5U
 #define CC64_START_DONE 6U
+#define CC64_START_COPY 7U
+#define CC64_START_COPIED 8U
 
 static void emit_startup_body(Encoder *encoder, Symbol *main_symbol)
 {
@@ -1546,7 +1550,20 @@ static void emit_startup_body(Encoder *encoder, Symbol *main_symbol)
     emit_lea_mem(encoder, 5U, 6U, CC64_START_TAIL_AT);   /* lea rsi */
     emit_lea_mem(encoder, 10U, 7U, 0xa1U);             /* lea rdi */
     emit_mov_reg_reg(encoder, 1U, 0U);                 /* mov rcx, rax */
-    emit8(encoder, 0xf3U); emit8(encoder, 0xa4U);       /* rep movsb */
+    /* The tail copy is an explicit byte loop. A repeated-string move depends
+       on the direction flag reaching this code clear, and this routine runs
+       before any library code has had a chance to establish that; the loop
+       removes the dependency entirely. */
+    define_label(encoder, CC64_START_COPY);
+    emit8(encoder, 0x48U); emit8(encoder, 0x85U); emit8(encoder, 0xc9U);
+    emit_conditional_jump(encoder, 4U, CC64_START_COPIED);
+    emit8(encoder, 0x8aU); emit8(encoder, 0x07U);       /* mov al, [rdi] */
+    emit8(encoder, 0x88U); emit8(encoder, 0x06U);       /* mov [rsi], al */
+    emit8(encoder, 0x48U); emit8(encoder, 0xffU); emit8(encoder, 0xc7U);
+    emit8(encoder, 0x48U); emit8(encoder, 0xffU); emit8(encoder, 0xc6U);
+    emit8(encoder, 0x48U); emit8(encoder, 0xffU); emit8(encoder, 0xc9U);
+    emit_jump(encoder, CC64_START_COPY);
+    define_label(encoder, CC64_START_COPIED);
     emit8(encoder, 0xc6U); emit8(encoder, 0x04U);
     emit8(encoder, 0x06U); emit8(encoder, 0x00U);       /* byte [rsi+rax] = 0 */
     emit_lea_mem(encoder, 5U, 2U, CC64_START_VECTOR_AT);  /* lea rdx */

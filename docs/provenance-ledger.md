@@ -20,6 +20,17 @@ compiler is copied, translated, decompiled, or mechanically adapted.
 The nested `MS-DOS64/` directory is ignored and is neither a dependency nor a
 source input to the normal CC64 build.
 
+## Target changes on the edit branch
+
+AGENTS.md section 1 permits a change in the `MS-DOS64` repository only on a
+branch named `edit`, only to make the compiler operational, and only when it is
+recorded here. `main` and the pinned revision stay unmodified so any build can
+still be compared against the reference target.
+
+| Edit revision | Reason and observed defect | Observable effect |
+|---|---|---|
+| `8b989fb` (branch `edit`, file `src/kernel/shell64.asm`) | CC64's startup contract requires a program to receive the text the shell was given after the program name, because `argc` and `argv` are built from it. A program started as `NAME ARG ARG` received an empty tail, and `argc` was always zero. The shell's program-execution path held the tail pointer in `R9` across the two calls that stage the image; the allocator uses `R9` as a scratch register, so the pointer handed to the spawn call was whatever the allocator left behind, and the child recorded a length measured from unrelated kernel memory. CC64 reproduced the defect with an original test (`C64H`, a program that prints its own argument vector) and located it by reading the length byte the target actually wrote. The change moves the tail pointer into a callee-saved register and restores it on every exit; it is minimal, carries nothing from CC64 into the target, and no target code was moved into CC64. | Before: `C64H` under the pinned revision receives `argc=0` and an empty first argument. After: it receives `argc=2` with `AA` and `BB`, and every image that parses arguments works. The pinned revision remains in the repository and is what the unmodified-target comparison uses. |
+
 ## Design decisions
 
 | ID | Decision | Independent rationale |
@@ -66,6 +77,12 @@ source input to the normal CC64 build.
 | D-040 | Array bounds, enumerators, and case labels are evaluated by a project integer constant-expression evaluator | accepting only a bare literal rejected ordinary spellings such as `[4 * 2 + 1]`, a macro, or `sizeof`, including in CC64's own sources |
 | D-041 | Floating constants are converted by project code with a 128-bit intermediate and round-to-nearest-even | a bootstrap build and a self-hosted build must emit identical objects, so the conversion cannot depend on whichever library each build links; values outside the documented range are diagnosed rather than misrounded |
 | D-042 | An array or function member decays to its address, like a bare identifier of that type | loading a member of array type produced the first element's value instead of the member address |
+| D-043 | The target startup routine is emitted into every image that defines `main`, and the link trampoline calls it | the old trampoline passed a pointer to the process prefix where `argv[0]` belonged, so no target program could read its own name or arguments; a required startup symbol makes the entry path part of the object contract |
+| D-044 | The startup copies the command tail into its own frame, terminates it, and splits it in place on spaces and tabs; the length field is read as a byte | the prefix stores a one-byte length, so reading a quadword would copy unrelated prefix bytes; scanning to the terminating NUL removes any bound on the tokenizer loop |
+| D-045 | Every hand-encoded startup instruction is checked against the assembler byte for byte | four separate encodings in the first draft were wrong or invalid (`C7 /1`, a reversed 8-bit move, a spurious REX bit), and an invalid opcode silently hung the target |
+| D-046 | Section alignment padding is applied to the output buffer before the section payload is appended | the previous order appended the padding after the offset had already been aligned, doubling every gap and leaving sections at unaligned offsets that broke eight-byte data relocations |
+| D-047 | The startup copies the command tail with an explicit byte loop instead of a repeated-string move | the startup runs before any library code can establish the direction flag, so a repeated move would depend on state the image itself has not set; the loop also gives the copy a bound the instruction does not |
+| D-048 | A relational operator selects the condition code for the operand order the comparison actually computes, and signedness selects between the signed and unsigned condition | the table mixed operand orders, so unsigned `>` behaved as `>=` and unsigned `>=` behaved as `!=`; a loop guarded by an unsigned `>` then never terminated, which is why the target formatter hung while the host build passed |
 
 ## Review rule
 
@@ -74,8 +91,4 @@ that requires studying unrelated source is rejected and redesigned from its
 specification. `tests/audit.py` checks tracked source, forbidden artifact
 patterns, provenance records, and clean milestone documentation. Release
 review also records tool versions and performs a clean deterministic rebuild.
-| D-043 | The target startup routine is emitted into every image that defines `main`, and the link trampoline calls it | the old trampoline passed a pointer to the process prefix where `argv[0]` belonged, so no target program could read its own name or arguments; a required startup symbol makes the entry path part of the object contract |
-| D-044 | The startup copies the command tail into its own frame, terminates it, and splits it in place on spaces and tabs; the length field is read as a byte | the prefix stores a one-byte length, so reading a quadword would copy unrelated prefix bytes; scanning to the terminating NUL removes any bound on the tokenizer loop |
-| D-045 | Every hand-encoded startup instruction is checked against the assembler byte for byte | four separate encodings in the first draft were wrong or invalid (`C7 /1`, a reversed 8-bit move, a spurious REX bit), and an invalid opcode silently hung the target |
-| D-046 | Section alignment padding is applied to the output buffer before the section payload is appended | the previous order appended the padding after the offset had already been aligned, doubling every gap and leaving sections at unaligned offsets that broke eight-byte data relocations |
 

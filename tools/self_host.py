@@ -7,11 +7,14 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TARGET = ROOT.parent / "MS-DOS64"
-TARGET_REVISION = "13c3cedb05ad75592c17bf2006ba8617c8761a38"
+sys.path.insert(0, str(ROOT / "tools"))
+import target_revision  # noqa: E402  (path is set above)
+TARGET_REVISION = target_revision.TARGET_REVISION
 VOLUME_ARGUMENTS = [
     "--vol-lba", "512", "--vol-sectors", "2880", "--sector-size", "512",
     "--kernel-lba", "16", "--kernel-sectors", "256",
@@ -19,21 +22,7 @@ VOLUME_ARGUMENTS = [
 
 
 def check_target() -> None:
-    override = os.environ.get("CC64_TARGET_REVISION")
-    if override is not None and os.environ.get("CC64_REQUIRE_EMULATORS") == "1":
-        raise SystemExit("strict release mode does not allow a target revision override")
-    expected = override or TARGET_REVISION
-    result = subprocess.run(["git", "-C", str(TARGET), "rev-parse", "HEAD"],
-                            capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        raise SystemExit("target checkout has no readable revision")
-    actual = result.stdout.strip()
-    if actual != expected:
-        raise SystemExit(f"target revision {actual} does not match pinned {expected}")
-    dirty = subprocess.run(["git", "-C", str(TARGET), "diff", "--quiet", "HEAD", "--"],
-                           check=False)
-    if dirty.returncode != 0:
-        raise SystemExit("target checkout has tracked source changes")
+    target_revision.check(TARGET)
 
 
 def check_volume(image: pathlib.Path) -> None:
