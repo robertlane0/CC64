@@ -253,7 +253,9 @@ static void assign_frame(LowerContext *context, Symbol *function, AstNode *body)
     size_t va_area = 0U;
     if (function->type->variadic) {
         frame = align_up(frame, 8U);
-        frame += 48U;
+        /* The six register slots, then room for the copied stack slots the
+           argument walk continues into. */
+        frame += 48U + CC64_VARIADIC_SLOTS * 8U;
         va_area = frame;
     }
     /* The walk above is intentionally bounded; reject deeper frame nesting. */

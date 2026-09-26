@@ -66,8 +66,12 @@ int fclose(FILE *stream)
     if (stream == NULL) return 0;
     struct cc64_file *file = (struct cc64_file *)stream;
     int result = 0;
-    if ((file->flags & CC64_STREAM_OPEN) != 0 &&
-        (file->flags & CC64_STREAM_WRITABLE) != 0) {
+    /* Every handle this stream owns is released, not only a writable one. The
+       target keeps thirteen handles for the whole process, so a read handle
+       that is never closed still occupies a slot when the next file is opened,
+       and a program that opens several files runs out of handles part way
+       through. */
+    if ((file->flags & CC64_STREAM_OPEN) != 0 && file->handle >= 3) {
         if (cc64_close(file->handle) < 0) result = -1;
     }
     file->flags = 0;

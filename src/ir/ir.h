@@ -1,4 +1,9 @@
 #ifndef CC64_IR_H
+/* The variadic save area holds the six integer argument registers followed by
+   this many copied stack slots, so a walk of eight bytes per slot reaches the
+   arguments the caller had to pass on the stack. */
+#define CC64_VARIADIC_SLOTS 8U
+
 #define CC64_IR_H
 
 #include "semantic/semantic.h"

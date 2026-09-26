@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""Place a raw COM file into the project target's known FAT12 volume."""
+"""Place files into the project target's known FAT12 volume.
+
+One file per invocation, or a whole set at once with `--manifest`, so a run that
+needs a source tree on the volume does not rewrite the image once per file. The
+geometry is the one the target's own volume uses.
+"""
 
 from __future__ import annotations
 
 import argparse
 import pathlib
 import struct
+import sys
 
 SECTOR = 512
 RESERVED = 1
@@ -17,6 +23,7 @@ VOLUME_LBA = 512
 DATA_LBA = VOLUME_LBA + RESERVED + FAT_COUNT * FAT_SECTORS + ROOT_SECTORS
 FAT_LBA = VOLUME_LBA + RESERVED
 ROOT_LBA = FAT_LBA + FAT_COUNT * FAT_SECTORS
+TOTAL_CLUSTERS = 2880
 
 
 def fat_get(image: bytearray, cluster: int) -> int:
@@ -41,12 +48,23 @@ def fat_set(image: bytearray, cluster: int, value: int) -> None:
     image[mirror + 1] = image[first + 1]
 
 
-def allocate(image: bytearray) -> int:
-    for cluster in range(2, 2880):
-        if fat_get(image, cluster) == 0:
-            fat_set(image, cluster, 0xFFF)
-            return cluster
-    raise ValueError("FAT12 volume is full")
+def allocate(image: bytearray, count: int) -> int:
+    """Find a run of `count` free clusters, so a file's chain stays contiguous."""
+    run_start = 0
+    run = 0
+    for cluster in range(2, TOTAL_CLUSTERS):
+        if fat_get(image, cluster) != 0:
+            if run and run < count:
+                run = 0
+            continue
+        if run == 0:
+            run_start = cluster
+        run += 1
+        if run == count:
+            for index in range(count):
+                fat_set(image, run_start + index, 0xFFF)
+            return run_start
+    raise ValueError("FAT12 volume cannot hold the requested payload")
 
 
 def name83(name: str) -> bytes:
@@ -54,54 +72,87 @@ def name83(name: str) -> bytes:
         name += ".COM"
     base, extension = name.split(".", 1)
     if len(base) > 8 or len(extension) > 3 or not base or not extension:
-        raise ValueError("name is not an 8.3 file name")
+        raise ValueError(f"name is not an 8.3 file name: {name}")
     return base.upper().encode("ascii").ljust(8, b" ") + extension.upper().encode("ascii").ljust(3, b" ")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("image", type=pathlib.Path)
-    parser.add_argument("program", type=pathlib.Path)
-    parser.add_argument("name")
-    args = parser.parse_args()
-    image = bytearray(args.image.read_bytes())
-    payload = args.program.read_bytes()
-    # A raw COM test program is small, but a self-hosted compiler image is an
-    # MZ64 payload of a few hundred kilobytes. The volume holds 2880 clusters;
-    # the budget below keeps a malformed or oversized input from filling it, and
-    # the allocator still fails loudly when the volume is genuinely full.
-    payload_budget = 768 * 1024
-    if len(payload) > payload_budget:
-        raise ValueError("test program exceeds the reserved volume budget")
+def free_entry(image: bytearray) -> int:
     directory = ROOT_LBA * SECTOR
-    encoded = name83(args.name)
-    entry = None
     for index in range(ROOT_ENTRIES):
         offset = directory + index * 32
-        first = image[offset]
-        if first in (0, 0xE5):
-            entry = offset
-            break
-    if entry is None:
-        raise ValueError("root directory has no free entry")
-    cluster = allocate(image)
-    cluster_count = (len(payload) + SECTOR - 1) // SECTOR
+        if image[offset] in (0, 0xE5):
+            return offset
+    raise ValueError("root directory has no free entry")
+
+
+def add_file(image: bytearray, name: str, payload: bytes) -> tuple[int, int]:
+    # A raw COM test program is small, but a self-hosted compiler image is an
+    # MZ64 payload of a few hundred kilobytes. The budget below keeps a
+    # malformed or oversized input from filling the volume, and the allocator
+    # still fails loudly when the volume is genuinely full.
+    payload_budget = 768 * 1024
+    if len(payload) > payload_budget:
+        raise ValueError(f"{name} exceeds the reserved volume budget")
+    cluster_count = max(1, (len(payload) + SECTOR - 1) // SECTOR)
+    entry = free_entry(image)
+    cluster = allocate(image, cluster_count)
     if cluster_count > 1:
         for index in range(cluster_count - 1):
             fat_set(image, cluster + index, cluster + index + 1)
-        fat_set(image, cluster + cluster_count - 1, 0xFFF)
     data = (DATA_LBA + (cluster - 2)) * SECTOR
     image[data:data + len(payload)] = payload
     if len(payload) % SECTOR:
-        image[data + len(payload):data + cluster_count * SECTOR] = b"\0" * (cluster_count * SECTOR - len(payload))
+        image[data + len(payload):data + cluster_count * SECTOR] = (
+            b"\0" * (cluster_count * SECTOR - len(payload)))
+    encoded = name83(name)
     image[entry:entry + 11] = encoded
     image[entry + 11] = 0x20
     struct.pack_into("<H", image, entry + 26, cluster)
     struct.pack_into("<I", image, entry + 28, len(payload))
+    return cluster, cluster_count
+
+
+def read_manifest(path: pathlib.Path) -> list[tuple[str, pathlib.Path]]:
+    entries: list[tuple[str, pathlib.Path]] = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        parts = text.split()
+        if len(parts) != 2:
+            raise ValueError(f"{path}:{number}: expected 'NAME PATH'")
+        entries.append((parts[0], pathlib.Path(parts[1])))
+    return entries
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("image", type=pathlib.Path)
+    parser.add_argument("program", type=pathlib.Path, nargs="?")
+    parser.add_argument("name", nargs="?")
+    parser.add_argument("--manifest", type=pathlib.Path,
+                        help="file of 'NAME PATH' lines to embed in one pass")
+    args = parser.parse_args()
+    if args.manifest is None and (args.program is None or args.name is None):
+        parser.error("either a program and name, or --manifest, is required")
+    if args.manifest is not None and (args.program is not None or args.name is not None):
+        parser.error("--manifest cannot be combined with a program and name")
+    image = bytearray(args.image.read_bytes())
+    if args.manifest is not None:
+        entries = read_manifest(args.manifest)
+        for name, path in entries:
+            cluster, sectors = add_file(image, name, path.read_bytes())
+            print(f"embedded {name} cluster={cluster} sectors={sectors}")
+    else:
+        cluster, sectors = add_file(image, args.name, args.program.read_bytes())
+        print(f"embedded {args.name} cluster={cluster} sectors={sectors}")
     args.image.write_bytes(image)
-    print(f"embedded {args.name} cluster={cluster} sectors={cluster_count}")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except ValueError as error:
+        print(f"embed: {error}", file=sys.stderr)
+        raise SystemExit(1) from None

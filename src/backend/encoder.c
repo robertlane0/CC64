@@ -1205,9 +1205,31 @@ static void emit_prologue(Encoder *encoder, IrFunction *function)
        so that va_start can walk the unnamed arguments. Floating arguments are
        not part of the version 1 variadic contract. */
     if (function->symbol->type->variadic && function->va_area_offset != 0) {
+        unsigned named = 0U;
+        for (Symbol *parameter = function->symbol->type->parameters;
+             parameter != NULL; parameter = parameter->next) {
+            if (!is_float_type(parameter->type) && named < 6U) ++named;
+        }
         for (unsigned i = 0U; i < 6U; ++i) {
             emit_store_mem(encoder, argument_registers[i], 5U,
                            function->va_area_offset + (int64_t)i * 8, 8U);
+        }
+        /* Unnamed arguments past the sixth did not arrive in registers. The
+           walk in va_arg is a flat eight-byte step from the save area, so the
+           incoming stack area is copied into the slots that follow it and the
+           walk carries on across the boundary unchanged. Slots the caller did
+           not fill are copied but never read, because a caller only ever reads
+           the arguments it passed. The copy is unrolled: a loop would need
+           labels, and the encoder's own label ids share a space with the
+           per-function ids the lowering hands out. */
+        int64_t source = 16 + (int64_t)(named > 6U ? named - 6U : 0U) * 8;
+        for (unsigned slot = 0U; slot < CC64_VARIADIC_SLOTS; ++slot) {
+            int64_t from = source + (int64_t)slot * 8;
+            int64_t to = function->va_area_offset + 48 + (int64_t)slot * 8;
+            emit8(encoder, 0x48U); emit8(encoder, 0x8bU); emit8(encoder, 0x85U);
+            emit32(encoder, (uint32_t)from);
+            emit8(encoder, 0x48U); emit8(encoder, 0x89U); emit8(encoder, 0x85U);
+            emit32(encoder, (uint32_t)to);
         }
     }
 }
@@ -1508,6 +1530,8 @@ static bool runtime_function_info(const char *name, RuntimeFunction *function)
  * Register use follows the call-clobbered set only: RAX holds the tail length,
  * RDX the argument vector base, RSI the tail buffer, RCX the copy count, R11
  * the cursor, R8 the argument count, and R10 the process prefix. */
+#define CC64_VARIADIC_COPY 14U
+#define CC64_VARIADIC_COPIED 15U
 #define CC64_START_ARGUMENTS 16
 #define CC64_START_TAIL 144
 /* The invocation name is copied to the frame immediately below the tail copy
@@ -1681,6 +1705,22 @@ static void emit_startup_body(Encoder *encoder, Symbol *main_symbol)
     (void)resolve_labels(encoder);
 }
 
+/* A target service reports failure by setting CF and leaving a small positive
+   code in RAX. Left alone, that code is indistinguishable from a valid result:
+   error 6 from a file read is a plausible handle, error 25 from a seek is a
+   plausible offset, and the max-free count from a failed allocation is a
+   plausible address. Every service thunk therefore ends with one fixed rule,
+   which is what the runtime library is written against: the service value on
+   success, -1 on failure. CF survives the interrupt return in the trap frame's
+   RFLAGS slot, so a forward conditional jump over the assignment is enough. */
+static void emit_service_int(Encoder *encoder)
+{
+    emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
+    emit8(encoder, 0x73U); emit8(encoder, 0x07U);   /* jnc past the assignment */
+    emit8(encoder, 0x48U); emit8(encoder, 0xc7U); emit8(encoder, 0xc0U);
+    emit32(encoder, 0xffffffffU);                  /* mov rax, -1 */
+}
+
 static void emit_runtime_body(Encoder *encoder, RuntimeFunction function)
 {
     switch (function) {
@@ -1698,7 +1738,7 @@ static void emit_runtime_body(Encoder *encoder, RuntimeFunction function)
         emit_mov_reg_reg(encoder, 3U, 7U);
         emit_mov_reg_reg(encoder, 1U, 2U);
         emit_mov_reg_reg(encoder, 2U, 6U);
-        emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
+        emit_service_int(encoder);
         emit_pop(encoder, 3U);
         break;
     case RUNTIME_ALLOC:
@@ -1709,14 +1749,14 @@ static void emit_runtime_body(Encoder *encoder, RuntimeFunction function)
         emit8(encoder, 0x48U); emit8(encoder, 0xc1U);
         emit8(encoder, 0xebU); emit8(encoder, 0x04U);
         emit_mov_reg_imm(encoder, 0U, 0x4800U, 4U);
-        emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
+        emit_service_int(encoder);
         emit_pop(encoder, 3U);
         break;
     case RUNTIME_FREE:
         emit_push(encoder, 3U);
         emit_mov_reg_reg(encoder, 3U, 7U);
         emit_mov_reg_imm(encoder, 0U, 0x4900U, 4U);
-        emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
+        emit_service_int(encoder);
         emit_pop(encoder, 3U);
         break;
     case RUNTIME_OPEN:
@@ -1724,7 +1764,7 @@ static void emit_runtime_body(Encoder *encoder, RuntimeFunction function)
         emit8(encoder, 0x31U); emit8(encoder, 0xd2U);
         emit_mov_reg_reg(encoder, 2U, 7U);
         emit_mov_reg_imm(encoder, 0U, 0x3d00U, 4U);
-        emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
+        emit_service_int(encoder);
         emit_pop(encoder, 3U);
         break;
     case RUNTIME_CREATE:
@@ -1735,7 +1775,7 @@ static void emit_runtime_body(Encoder *encoder, RuntimeFunction function)
         emit_mov_reg_reg(encoder, 8U, 6U);
         emit_mov_reg_imm(encoder, 0U, 0x3c00U, 4U);
         emit_mov_reg8_reg(encoder, 0U, 8U);
-        emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
+        emit_service_int(encoder);
         break;
     case RUNTIME_LSEEK:
         /* cc64_lseek(handle, offset, origin): RBX=handle, RCX=signed offset,
@@ -1748,13 +1788,13 @@ static void emit_runtime_body(Encoder *encoder, RuntimeFunction function)
         emit_mov_reg_reg(encoder, 1U, 0U);
         emit_mov_reg_imm(encoder, 0U, 0x4200U, 4U);
         emit_mov_reg8_reg(encoder, 0U, 8U);
-        emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
+        emit_service_int(encoder);
         break;
     case RUNTIME_CLOSE:
         emit_push(encoder, 3U);
         emit_mov_reg_reg(encoder, 3U, 7U);
         emit_mov_reg_imm(encoder, 0U, 0x3e00U, 4U);
-        emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
+        emit_service_int(encoder);
         emit_pop(encoder, 3U);
         break;
     case RUNTIME_EXIT:

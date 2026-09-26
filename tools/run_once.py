@@ -26,8 +26,9 @@ def run_source(name: str, text: str, image_format: str = "raw",
     source.write_text(text, encoding="utf-8")
     obj = work / f"{name}.o"
     image = work / f"{name}.{'mz' if image_format == 'mz64' else 'com'}"
-    subprocess.run([str(ROOT / "cc64"), "-c", str(source), "-o", str(obj)],
-                   check=True, cwd=ROOT)
+    subprocess.run([str(ROOT / "cc64"), "-I", str(ROOT / "include/target"),
+                    "-I", str(ROOT / "include/cc64"), "-I", str(ROOT / "src"),
+                    "-c", str(source), "-o", str(obj)], check=True, cwd=ROOT)
     subprocess.run([str(ROOT / "cc64"), "--link", "--format", image_format,
                     str(obj), "-o", str(image)], check=True, cwd=ROOT)
     disk = work / "volume.img"

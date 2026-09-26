@@ -733,7 +733,12 @@ static bool parse_macro_definition(Preprocessor *pp, const Token *body,
 static bool source_path_join(const char *directory, const char *name,
                              char **result)
 {
-    if (name[0] == '/') {
+    /* A current directory contributes no prefix at all. "./name" is the same file
+       on a host, but the target's name parser is DOS-strict and refuses any name
+       containing a separator, so a prefixed candidate could never be opened
+       there. */
+    if (name[0] == '/' || directory == NULL || directory[0] == '\0' ||
+        (directory[0] == '.' && directory[1] == '\0')) {
         *result = cc64_xstrdup(name);
         return true;
     }
@@ -853,6 +858,35 @@ static bool process_include(Preprocessor *pp, const Source *source,
         (void)source_path_join(pp->options.include_paths[i], name, &candidate);
         included = source_manager_load(pp->sources, candidate);
         free(candidate);
+    }
+    /* A volume that holds no directories cannot open a name that contains a
+       separator, so a qualified name is retried with its final component once
+       the exact name has failed everywhere. The exact name is always tried
+       first, so this only applies where the named file does not exist at all,
+       and the header basenames in this project are unique. */
+    const char *separator = NULL;
+    for (const char *scan = name; *scan != '\0'; ++scan) {
+        if (*scan == '/' || *scan == '\\') separator = scan;
+    }
+    if (included == NULL && separator != NULL) {
+        char *leaf = cc64_xstrdup(separator + 1);
+        if (leaf != NULL && leaf[0] != '\0') {
+            (void)source_path_join(directory, leaf, &candidate);
+            included = source_manager_load(pp->sources, candidate);
+            free(candidate);
+            if (included == NULL && !angled) {
+                (void)source_path_join(".", leaf, &candidate);
+                included = source_manager_load(pp->sources, candidate);
+                free(candidate);
+            }
+            for (size_t i = 0U;
+                 included == NULL && i < pp->options.include_path_count; ++i) {
+                (void)source_path_join(pp->options.include_paths[i], leaf, &candidate);
+                included = source_manager_load(pp->sources, candidate);
+                free(candidate);
+            }
+        }
+        free(leaf);
     }
     free(directory);
     free(name);

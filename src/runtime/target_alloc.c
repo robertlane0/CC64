@@ -15,12 +15,21 @@ void cc64_exit(int code);
 
 #define CC64_HEAP_HEADER 16
 
+/* A service thunk returns -1 when the target refuses the request, which for
+   this allocator is the only failure report: a refused allocation otherwise
+   hands back the size of the largest free block, and that is a usable-looking
+   address. */
+static int alloc_refused(void *pointer)
+{
+    return pointer == (void *)-1;
+}
+
 void *malloc(size_t size)
 {
     if (size == 0U) size = 1U;
     if (size > (size_t)-1 - CC64_HEAP_HEADER) return NULL;
     void *base = cc64_alloc((unsigned long)(size + CC64_HEAP_HEADER));
-    if (base == NULL) return NULL;
+    if (alloc_refused(base)) return NULL;
     *(size_t *)base = size;
     return (char *)base + CC64_HEAP_HEADER;
 }
@@ -50,7 +59,7 @@ void *realloc(void *pointer, size_t size)
     size_t previous = *(size_t *)((char *)pointer - CC64_HEAP_HEADER);
     if (size <= previous) return pointer;
     void *next = malloc(size);
-    if (next == NULL) return NULL;
+    if (next == NULL) return (void *)-1;
     memcpy(next, pointer, previous);
     free(pointer);
     return next;
