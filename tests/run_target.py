@@ -7,12 +7,16 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TARGET = ROOT.parent / "MS-DOS64"
-TARGET_REVISION = "13c3cedb05ad75592c17bf2006ba8617c8761a38"
+sys.path.insert(0, str(ROOT / "tools"))
+import target_revision  # noqa: E402  (path is set above)
+
+TARGET_REVISION = target_revision.TARGET_REVISION
 VOLUME_ARGUMENTS = [
     "--vol-lba", "512", "--vol-sectors", "2880", "--sector-size", "512",
     "--kernel-lba", "16", "--kernel-sectors", "256",
@@ -25,23 +29,7 @@ def run(command: list[str], cwd: pathlib.Path, timeout: int = 180) -> None:
 
 
 def check_target() -> None:
-    if not TARGET.is_dir():
-        return
-    override = os.environ.get("CC64_TARGET_REVISION")
-    if override is not None and os.environ.get("CC64_REQUIRE_EMULATORS") == "1":
-        raise SystemExit("strict release mode does not allow a target revision override")
-    expected = override or TARGET_REVISION
-    result = subprocess.run(["git", "-C", str(TARGET), "rev-parse", "HEAD"],
-                            capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        raise SystemExit("target checkout has no readable revision")
-    actual = result.stdout.strip()
-    if actual != expected:
-        raise SystemExit(f"target revision {actual} does not match pinned {expected}")
-    dirty = subprocess.run(["git", "-C", str(TARGET), "diff", "--quiet", "HEAD", "--"],
-                           check=False)
-    if dirty.returncode != 0:
-        raise SystemExit("target checkout has tracked source changes")
+    target_revision.check(TARGET)
 
 
 def check_volume(image: pathlib.Path, label: str) -> None:
@@ -132,6 +120,11 @@ LIBRARY_PROGRAM = (
     "  if (copy[0] != 'W') return 4;\n"
     "  cc64_write(1, \"C\", 1);\n"
     "  if (fputs(\"D\", stdout) != 0) return 5;\n"
+    "  char text[32];\n"
+    "  int n = snprintf(text, sizeof text, \"%s=%u:%d\", \"k\", 42u, -7);\n"
+    "  if (n != 7) return 6;\n"
+    "  if (strcmp(text, \"k=42:-7\") != 0) return 7;\n"
+    "  cc64_write(1, text, (unsigned long)n);\n"
     "  free(copy);\n"
     "  cc64_write(1, \"E\", 1);\n"
     "  return 9;\n"
@@ -236,17 +229,57 @@ VARARG_PROGRAM = (
 )
 
 
-# The pinned target shell starts a program with an empty command tail, so the
-# observable startup contract here is an empty, null-terminated argument vector.
-# A non-empty tail is exercised by the linker startup unit test on the host side.
+# The command tail is everything the shell was given after the program name,
+# so "C64H AA BB" starts the program with two arguments. This case is the
+# observable check of the startup contract: tail copy, in-place split, and the
+# null terminator after the last entry.
+# Relational operators are the only part of the comparison lowering that the
+# host bootstrap cannot check, because the bootstrap host compiler generates the
+# comparisons itself. This case pins every signed and unsigned relation, plus
+# the loop shape that an unsigned ">" drives, so a wrong condition code shows up
+# as a wrong exit code rather than as a silent hang.
+COMPARE_PROGRAM = (
+    "int cc64_write(int, const void *, unsigned long);\n"
+    "static void count_down(unsigned long value, unsigned long base)\n"
+    "{\n"
+    "    char digits[72];\n"
+    "    unsigned long length = 0UL;\n"
+    "    while (value > 0UL) {\n"
+    "        digits[length] = (char)(48 + (int)(value % base));\n"
+    "        ++length;\n"
+    "        value = value / base;\n"
+    "    }\n"
+    "    while (length > 0UL) { --length; cc64_write(1, digits + length, 1); }\n"
+    "}\n"
+    "int main(void)\n"
+    "{\n"
+    "    count_down(42UL, 10UL);\n"
+    "    cc64_write(1, \"\\n\", 1);\n"
+    "    if (3UL > 4UL) return 1;\n"
+    "    if (4UL <= 3UL) return 2;\n"
+    "    if (!(4UL >= 4UL)) return 3;\n"
+    "    if (3UL >= 4UL) return 4;\n"
+    "    if (-1 > 0) return 5;\n"
+    "    if (2 >= 3) return 6;\n"
+    "    if (2 <= 1) return 7;\n"
+    "    if (-5 > -9) cc64_write(1, \"K\", 1);\n"
+    "    if (-9 < -5) cc64_write(1, \"=\", 1);\n"
+    "    return 9;\n"
+    "}\n"
+)
+
 ARGUMENT_PROGRAM = (
     "int cc64_write(int, const void *, unsigned long);\n"
     "int main(int argc, char **argv) {\n"
     "  cc64_write(1, \"argc=\", 5);\n"
-    "  if (argc != 0) return 1;\n"
-    "  cc64_write(1, (const char *)\"0\", 1);\n"
-    "  if (argv[0] != 0) return 2;\n"
-    "  cc64_write(1, \" a0=null\\n\", 8);\n"
+    "  if (argc != 2) return 1;\n"
+    "  cc64_write(1, (const char *)\"2\", 1);\n"
+    "  cc64_write(1, \" a0=\", 4);\n"
+    "  cc64_write(1, argv[0], 2);\n"
+    "  cc64_write(1, \" a1=\", 4);\n"
+    "  cc64_write(1, argv[1], 2);\n"
+    "  cc64_write(1, \"\\n\", 1);\n"
+    "  if (argv[2] != 0) return 2;\n"
     "  return 9;\n"
     "}\n"
 )
@@ -279,10 +312,12 @@ def main() -> int:
             ("C64B", "int zero_global; int main(void){zero_global=9; return zero_global;}", "raw", 9, None),
             ("C64Z", "int zero_global; int main(void){zero_global=9; return zero_global;}", "mz64", 9, None),
             ("C64G", "int main(int argc, char **argv){return argc;}", "raw", 0, None),
-            ("C64H", ARGUMENT_PROGRAM, "raw", 9, "argc=0 a0=null"),
+            ("C64H", ARGUMENT_PROGRAM, "raw", 9, "argc=2 a0=AA a1=BB",
+             "C64H AA BB"),
             ("C64W", FILE_WRITE_PROGRAM, "raw", 7, None),
             ("C64K", SEEK_PROGRAM, "raw", 7, None),
             ("C64V", VARARG_PROGRAM, "raw", 9, "s=10 n=138"),
+            ("C64C", COMPARE_PROGRAM, "raw", 9, "42\nK="),
         ]
         library_objects = target_library_objects(work)
         for entry in cases:
@@ -317,7 +352,7 @@ def main() -> int:
         text = execute(qemu, library_disk, "C64L", "C64L", 9)
         if "Exit 9" not in text:
             raise SystemExit("C64L: target library case did not return 9")
-        if "A4BZCDE" not in text:
+        if "A4BZCDk=42:-7E" not in text:
             raise SystemExit(f"C64L: target library output unexpected: {text[-200:]}")
         print(f"target: QEMU passed {len(cases)} raw/MZ64 image cases and "
               "one linked target-library case")
