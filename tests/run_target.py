@@ -262,6 +262,47 @@ CONDITIONAL_PROGRAM = (
     "}\n"
 )
 
+# Aggregate initializers are written by the initializer writer rather than by
+# expression code, so a case that only compiles would not notice a dropped
+# element. This one checks the values at run time: a partially initialized
+# array, a nested brace initializer, a struct with an array member, a union, a
+# string initializer of an exact and a short length, and a designated-free
+# trailing element.
+INITIALIZER_PROGRAM = (
+    "int cc64_write(int, const void *, unsigned long);\n"
+    "struct Inner { int a; int b; };\n"
+    "struct Outer { struct Inner inner; char name[4]; long tail; };\n"
+    "union Mix { long whole; int halves[2]; };\n"
+    "static int short_array[5] = {1, 2};\n"
+    "static int nested[2][3] = {{1, 2, 3}, {4, 5, 6}};\n"
+    "static struct Inner inner_value = {7, 8};\n"
+    "static struct Outer outer_value = {{1, 2}, \"ab\", 9};\n"
+    "static union Mix mix_value;\n"
+    "static char exact[3] = \"xyz\";\n"
+    "static char shorter[6] = \"hi\";\n"
+    "int main(void)\n"
+    "{\n"
+    "    int local[3] = {4, 5, 6};\n"
+    "    struct Inner local_inner = {3, 4};\n"
+    "    mix_value.whole = 0x000100020001L;\n"
+    "    if (short_array[0] != 1 || short_array[1] != 2) return 1;\n"
+    "    if (short_array[2] != 0 || short_array[4] != 0) return 2;\n"
+    "    if (nested[0][2] != 3 || nested[1][0] != 4 || nested[1][2] != 6) return 3;\n"
+    "    if (inner_value.a != 7 || inner_value.b != 8) return 4;\n"
+    "    if (outer_value.inner.a != 1 || outer_value.inner.b != 2) return 5;\n"
+    "    if (outer_value.name[0] != 'a' || outer_value.name[1] != 'b') return 6;\n"
+    "    if (outer_value.name[2] != 0) return 7;\n"
+    "    if (outer_value.tail != 9) return 8;\n"
+    "    if (exact[2] != 'z' || exact[0] != 'x') return 9;\n"
+    "    if (shorter[1] != 'i' || shorter[2] != 0 || shorter[5] != 0) return 10;\n"
+    "    if (local[2] != 6 || local_inner.b != 4) return 11;\n"
+    "    if (mix_value.halves[0] != 0x00020001) return 12;\n"
+    "    if (mix_value.halves[1] != 0x0001) return 13;\n"
+    "    cc64_write(1, \"I\", 1);\n"
+    "    return 9;\n"
+    "}\n"
+)
+
 COMPARE_PROGRAM = (
     "int cc64_write(int, const void *, unsigned long);\n"
     "static void count_down(unsigned long value, unsigned long base)\n"
@@ -350,6 +391,7 @@ def main() -> int:
             ("C64V", VARARG_PROGRAM, "raw", 9, "s=10 n=138"),
             ("C64C", COMPARE_PROGRAM, "raw", 9, "42\nK="),
             ("C64Q", CONDITIONAL_PROGRAM, "raw", 9, "algayes"),
+            ("C64N", INITIALIZER_PROGRAM, "raw", 9, "I"),
         ]
         library_objects = target_library_objects(work)
         for entry in cases:

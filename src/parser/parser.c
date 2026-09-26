@@ -713,18 +713,33 @@ static bool parse_declarator(Parser *parser, Type *base, const char **name,
         if (name != NULL) *name = take(parser)->text;
         else (void)take(parser);
     }
+    /* Array suffixes are written outermost first, so they are collected in
+       source order and applied in reverse: in "a[2][3]" the element type is an
+       array of three, which is what the inner suffix describes. Applying them
+       as they are read builds the opposite shape, which compiles and then
+       silently misplaces every initializer. */
+    struct ArraySuffix { size_t count; bool known; } suffixes[8];
+    size_t suffix_count = 0U;
     for (;;) {
         if (accept(parser, "[")) {
             size_t count = 0U;
+            bool known = true;
             if (token_text(peek(parser), "]")) {
                 (void)take(parser);
-                type = type_array(parser->arena, type, 0U, false);
+                known = false;
             } else {
                 if (!parse_constant_size(parser, &count) || !expect(parser, "]")) {
                     return false;
                 }
-                type = type_array(parser->arena, type, count, true);
             }
+            if (suffix_count == sizeof(suffixes) / sizeof(suffixes[0])) {
+                semantic_error(parser, 2030U, peek(parser),
+                               "array declarator has too many dimensions");
+                return false;
+            }
+            suffixes[suffix_count].count = count;
+            suffixes[suffix_count].known = known;
+            ++suffix_count;
         } else if (accept(parser, "(")) {
             Symbol *function_parameters = NULL;
             size_t function_count = 0U;
@@ -745,6 +760,10 @@ static bool parse_declarator(Parser *parser, Type *base, const char **name,
         } else {
             break;
         }
+    }
+    for (size_t i = suffix_count; i > 0U; --i) {
+        type = type_array(parser->arena, type, suffixes[i - 1U].count,
+                          suffixes[i - 1U].known);
     }
     parser->last_declarator_type = type;
     return type != NULL;
