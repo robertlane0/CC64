@@ -266,6 +266,100 @@ static bool print_ast(const TranslationUnit *unit)
     return !ferror(stdout);
 }
 
+/* derive_output_name builds the per-input output path for a multi-input run: the
+   input's own stem with the action's extension. A single -o cannot name more
+   than one output, so that combination is rejected instead of guessed. */
+static char *derive_output_name(const char *input, const char *extension)
+{
+    size_t length = strlen(input);
+    size_t base = length;
+    while (base > 0U) {
+        char c = input[base - 1U];
+        if (c == '/' || c == '\\' || c == ':') break;
+        --base;
+    }
+    const char *dot = NULL;
+    for (size_t i = length; i > base; --i) {
+        if (input[i - 1U] == '.') { dot = input + i - 1U; break; }
+    }
+    size_t stem = dot == NULL ? length : (size_t)(dot - input);
+    size_t extra = strlen(extension);
+    char *name = cc64_xmalloc(stem + extra + 1U);
+    if (name == NULL) return NULL;
+    memcpy(name, input, stem);
+    memcpy(name + stem, extension, extra + 1U);
+    return name;
+}
+
+/* compile_one runs the whole pipeline for a single input. The driver keeps one
+   options block, so several inputs share every setting and differ only in the
+   input path and the output path derived from it. Diagnostics accumulate in the
+   shared sink, and the return value reports only what this input produced. */
+static int compile_one(Options *options, DiagnosticSink *sink)
+{
+    size_t errors_before = sink->count;
+    Arena *arena = arena_create(256U * 1024U * 1024U);
+    SourceManager *manager = source_manager_create(arena);
+    Source *source = manager == NULL ? NULL
+                                  : source_manager_load(manager, options->input);
+    if (source == NULL) {
+        diagnostic_emit(sink, 11U, DIAG_DRIVER, NULL, 0U, 0U,
+                        "cannot read input file");
+        print_diagnostics(sink);
+        arena_destroy(arena);
+        return 1;
+    }
+
+    PreprocessorOptions pp_options = {
+        options->include_paths, options->include_path_count,
+        options->predefines, options->predefine_count, options->preserve_newlines
+    };
+    TokenList tokens;
+    token_list_init(&tokens);
+    size_t diagnostics_before = sink->count;
+    bool good = preprocess_source(arena, manager, sink, source, &pp_options, &tokens);
+    if (good && sink->count != diagnostics_before) {
+        good = false;
+    }
+    TranslationUnit unit = {0};
+    IrProgram program = {0};
+    if (good && (options->action == ACTION_COMPILE ||
+                 options->action == ACTION_DUMP_AST)) {
+        size_t parse_before = sink->count;
+        good = parse_tokens(arena, &tokens, sink, &unit);
+        if (sink->count != parse_before) {
+            good = false;
+        }
+    }
+    if (good) {
+        if (options->action == ACTION_DUMP_TOKENS) {
+            good = print_tokens(&tokens);
+        } else if (options->action == ACTION_PREPROCESS) {
+            good = write_preprocessed(options, &tokens);
+        } else if (options->action == ACTION_DUMP_AST) {
+            good = print_ast(&unit);
+        } else {
+            size_t lower_before = sink->count;
+            good = lower_translation_unit(arena, &unit, sink, &program);
+            if (sink->count != lower_before) good = false;
+            if (good) {
+                ObjectBuilder builder;
+                object_builder_init(&builder, arena);
+                good = encode_ir_program(arena, &program, &builder, sink) &&
+                       object_write_cc64o(&builder, options->output, sink);
+                object_builder_destroy(&builder);
+            }
+        }
+    }
+    print_diagnostics(sink);
+    size_t errors = sink->count - errors_before;
+    token_list_free(&tokens);
+    ir_program_free(&program);
+    translation_unit_free(&unit);
+    arena_destroy(arena);
+    return good && errors == 0U ? 0 : 1;
+}
+
 int cc64_main(int argc, char **argv)
 {
     DiagnosticSink sink = {0};
@@ -309,71 +403,40 @@ int cc64_main(int argc, char **argv)
         free_options(&options);
         return 1;
     }
-
-    Arena *arena = arena_create(256U * 1024U * 1024U);
-    SourceManager *manager = source_manager_create(arena);
-    Source *source = manager == NULL ? NULL : source_manager_load(manager, options.input);
-    if (source == NULL) {
-        diagnostic_emit(&sink, 11U, DIAG_DRIVER, NULL, 0U, 0U,
-                        "cannot read input file");
+    if (options.input_count > 1U && options.output_set) {
+        diagnostic_emit(&sink, 13U, DIAG_DRIVER, NULL, 0U, 0U,
+                        "option '-o' cannot be used with several inputs");
         print_diagnostics(&sink);
         diagnostic_sink_destroy(&sink);
         free_options(&options);
-        arena_destroy(arena);
         return 1;
     }
-
-    PreprocessorOptions pp_options = {
-        options.include_paths, options.include_path_count,
-        options.predefines, options.predefine_count, options.preserve_newlines
-    };
-    TokenList tokens;
-    token_list_init(&tokens);
-    size_t diagnostics_before = sink.count;
-    bool good = preprocess_source(arena, manager, &sink, source, &pp_options,
-                                  &tokens);
-    if (good && sink.count != diagnostics_before) {
-        good = false;
-    }
-    TranslationUnit unit = {0};
-    IrProgram program = {0};
-    if (good && (options.action == ACTION_COMPILE ||
-                 options.action == ACTION_DUMP_AST)) {
-        size_t parse_before = sink.count;
-        good = parse_tokens(arena, &tokens, &sink, &unit);
-        if (sink.count != parse_before) {
-            good = false;
-        }
-    }
-    if (good) {
-        if (options.action == ACTION_DUMP_TOKENS) {
-            good = print_tokens(&tokens);
-        } else if (options.action == ACTION_PREPROCESS) {
-            good = write_preprocessed(&options, &tokens);
-        } else if (options.action == ACTION_DUMP_AST) {
-            good = print_ast(&unit);
-        } else {
-            size_t lower_before = sink.count;
-            good = lower_translation_unit(arena, &unit, &sink, &program);
-            if (sink.count != lower_before) good = false;
-            if (good) {
-                ObjectBuilder builder;
-                object_builder_init(&builder, arena);
-                good = encode_ir_program(arena, &program, &builder, &sink) &&
-                       object_write_cc64o(&builder, options.output, &sink);
-                object_builder_destroy(&builder);
+    /* Every action other than linking produces one file per input. */
+    if (options.input_count > 1U) {
+        const char *extension =
+            options.action == ACTION_COMPILE ? ".cc64o" : ".i";
+        int status = 0;
+        for (size_t i = 0U; i < options.input_count; ++i) {
+            char *derived = derive_output_name(options.inputs[i], extension);
+            if (derived == NULL) {
+                status = 1;
+                break;
             }
+            options.input = options.inputs[i];
+            options.output = derived;
+            if (compile_one(&options, &sink) != 0) status = 1;
+            free(derived);
         }
+        diagnostic_sink_destroy(&sink);
+        free_options(&options);
+        return status;
     }
-    print_diagnostics(&sink);
-    size_t errors = sink.count;
-    token_list_free(&tokens);
-    ir_program_free(&program);
-    translation_unit_free(&unit);
-    diagnostic_sink_destroy(&sink);
-    free_options(&options);
-    arena_destroy(arena);
-    return good && errors == 0U ? 0 : 1;
+    {
+        int status = compile_one(&options, &sink);
+        diagnostic_sink_destroy(&sink);
+        free_options(&options);
+        return status;
+    }
 }
 
 int main(int argc, char **argv)
