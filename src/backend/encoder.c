@@ -1510,6 +1510,14 @@ static bool runtime_function_info(const char *name, RuntimeFunction *function)
  * the cursor, R8 the argument count, and R10 the process prefix. */
 #define CC64_START_ARGUMENTS 16
 #define CC64_START_TAIL 144
+/* The invocation name is copied to the frame immediately below the tail copy
+   and separated from it by one space, so the tokenizer that splits the tail
+   also yields the name as the first argument. The control block stores the name
+   as eight stem bytes followed by three extension bytes, both space padded, so
+   the stem is copied alone: the padding then separates it from the extension
+   and from the tail, and the tokenizer trims the padding for free. */
+#define CC64_START_NAME 9
+#define CC64_START_NAME_AT (-0xa0 - CC64_START_NAME)
 /* Frame layout below the frame pointer: the command tail copy occupies the
    upper part and the argument vector the lower part, so neither can overwrite
    the other or the saved frame pointer. */
@@ -1524,6 +1532,11 @@ static bool runtime_function_info(const char *name, RuntimeFunction *function)
 #define CC64_START_DONE 6U
 #define CC64_START_COPY 7U
 #define CC64_START_COPIED 8U
+#define CC64_START_NAME_COPY 9U
+#define CC64_START_NAME_COPIED 10U
+#define CC64_START_NO_NAME 11U
+#define CC64_START_CALL 12U
+#define CC64_START_SKIP_DELIMITER 13U
 
 static void emit_startup_body(Encoder *encoder, Symbol *main_symbol)
 {
@@ -1566,9 +1579,37 @@ static void emit_startup_body(Encoder *encoder, Symbol *main_symbol)
     define_label(encoder, CC64_START_COPIED);
     emit8(encoder, 0xc6U); emit8(encoder, 0x04U);
     emit8(encoder, 0x06U); emit8(encoder, 0x00U);       /* byte [rsi+rax] = 0 */
+    /* Copy the invocation name from the first file control block in the
+       process prefix and terminate it directly below the tail copy. */
+    emit_lea_mem(encoder, 5U, 6U, CC64_START_NAME_AT);   /* lea rsi, name */
+    emit_lea_mem(encoder, 10U, 7U, 0x61U);              /* lea rdi, name */
+    emit_mov_reg_imm(encoder, 1U, CC64_START_NAME - 1U, 8U);
+    define_label(encoder, CC64_START_NAME_COPY);
+    emit8(encoder, 0x48U); emit8(encoder, 0x85U); emit8(encoder, 0xc9U);
+    emit_conditional_jump(encoder, 4U, CC64_START_NAME_COPIED);
+    emit8(encoder, 0x8aU); emit8(encoder, 0x07U);       /* mov al, [rdi] */
+    emit8(encoder, 0x88U); emit8(encoder, 0x06U);       /* mov [rsi], al */
+    emit8(encoder, 0x48U); emit8(encoder, 0xffU); emit8(encoder, 0xc7U);
+    emit8(encoder, 0x48U); emit8(encoder, 0xffU); emit8(encoder, 0xc6U);
+    emit8(encoder, 0x48U); emit8(encoder, 0xffU); emit8(encoder, 0xc9U);
+    emit_jump(encoder, CC64_START_NAME_COPY);
+    define_label(encoder, CC64_START_NAME_COPIED);
+    /* A separator follows the name, because the tail copy starts immediately
+       after it and the two would otherwise run together. The pass below then
+       tokenizes the name and the arguments as one string. */
+    emit8(encoder, 0xc6U); emit8(encoder, 0x06U);
+    emit8(encoder, 0x20U);                              /* byte [rsi] = ' ' */
+    /* An empty name means the caller supplied no invocation name. The vector
+       is then passed empty rather than shifted, so a program that expects a
+       name observes the missing argument instead of a wrong one. */
+    emit8(encoder, 0x40U); emit8(encoder, 0x0fU); emit8(encoder, 0xb6U);
+    emit8(encoder, 0x85U);
+    emit32(encoder, (uint32_t)(int32_t)CC64_START_NAME_AT);
+    emit8(encoder, 0x84U); emit8(encoder, 0xc0U);       /* test al, al */
+    emit_conditional_jump(encoder, 4U, CC64_START_NO_NAME);
     emit_lea_mem(encoder, 5U, 2U, CC64_START_VECTOR_AT);  /* lea rdx */
     emit8(encoder, 0x45U); emit8(encoder, 0x31U); emit8(encoder, 0xc0U);
-    emit_lea_mem(encoder, 5U, 11U, CC64_START_TAIL_AT);   /* lea r11 */
+    emit_lea_mem(encoder, 5U, 11U, CC64_START_NAME_AT);   /* lea r11, name */
     /* Split the copy in place. The terminating NUL ends the scan, so no
        length is tracked and no read can pass the end of the buffer. */
     define_label(encoder, CC64_START_SKIP_SPACE);
@@ -1577,10 +1618,11 @@ static void emit_startup_body(Encoder *encoder, Symbol *main_symbol)
     emit_conditional_jump(encoder, 4U, CC64_START_DONE);
     emit8(encoder, 0x41U); emit8(encoder, 0x80U); emit8(encoder, 0x3bU);
     emit8(encoder, 0x20U);                              /* cmp byte [r11], ' ' */
-    emit_conditional_jump(encoder, 5U, CC64_START_RECORD);
+    emit_conditional_jump(encoder, 4U, CC64_START_SKIP_DELIMITER);
     emit8(encoder, 0x41U); emit8(encoder, 0x80U); emit8(encoder, 0x3bU);
     emit8(encoder, 0x09U);                              /* cmp byte [r11], tab */
     emit_conditional_jump(encoder, 5U, CC64_START_RECORD);
+    define_label(encoder, CC64_START_SKIP_DELIMITER);
     emit8(encoder, 0x49U); emit8(encoder, 0xffU); emit8(encoder, 0xc3U);
     emit_jump(encoder, CC64_START_SKIP_SPACE);
     define_label(encoder, CC64_START_RECORD);
@@ -1615,6 +1657,11 @@ static void emit_startup_body(Encoder *encoder, Symbol *main_symbol)
     emit8(encoder, 0x4cU); emit8(encoder, 0x89U); emit8(encoder, 0xc7U);
     emit8(encoder, 0x48U); emit8(encoder, 0x89U); emit8(encoder, 0xd6U);
     emit8(encoder, 0x31U); emit8(encoder, 0xd2U);
+    emit_jump(encoder, CC64_START_CALL);
+    define_label(encoder, CC64_START_NO_NAME);
+    emit8(encoder, 0x31U); emit8(encoder, 0xffU);        /* xor edi, edi */
+    emit8(encoder, 0x45U); emit8(encoder, 0x31U); emit8(encoder, 0xc0U);
+    define_label(encoder, CC64_START_CALL);
     emit8(encoder, 0xe8U);                             /* call main */
     size_t field = encoder->code_size;
     emit32(encoder, 0U);

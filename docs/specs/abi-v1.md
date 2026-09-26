@@ -87,13 +87,17 @@ The startup routine is emitted into every image that defines `main`; the linker
 trampoline hands it the process prefix address. The routine reads the one-byte
 tail length at `PSP+0xa0`, copies at most 143 tail bytes from `PSP+0xa1` into
 its own frame, terminates the copy, and splits it in place on spaces and tabs.
-`argc` is the number of tokens, `argv` points into that copy and is
-null-terminated after the last entry, and `envp` is a null pointer because
-version 1 has no environment block. A tail of more than 143 bytes is truncated
-rather than rejected, and a tail longer than the loader's 127-byte field cannot
-occur. With the pinned target shell an application is started with an empty
-tail, so it observes `argc == 0`; tokenization is only observable when a caller
-supplies a tail. The application
+`argv[0]` is the program's own name: the eight stem bytes of the first file
+control block at `PSP+0x61`, which the control block stores space padded, so a
+space separates the stem from the extension and from the tail that follows it in
+the startup's own buffer and the tokenizer trims the padding. The tail tokens
+follow, `argc` counts the name plus the tokens, `argv` is null-terminated after
+the last entry, and `envp` is a null pointer because version 1 has no
+environment block. A tail of more than 143 bytes is truncated rather than
+rejected, and a tail longer than the loader's 127-byte field cannot occur. If
+the name field is empty the startup passes `argc == 0` and a null `argv`, so a
+caller that did not supply a program name observes a missing argument vector
+instead of a silently misparsed one; the application
 receives at least 64 KiB of loader-owned stack below its entry stack top; the
 startup routine aligns that stack before calling `main`. It passes the `int`
 return to the target exit boundary. A bare `RET` from a raw image returns to

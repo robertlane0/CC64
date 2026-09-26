@@ -10,12 +10,13 @@ matrix is measured with compiler-produced images against MS-DOS64 revision
 image case successfully.
 
 One target change is active and is recorded in
-`docs/provenance-ledger.md`: MS-DOS64 `edit` revision `8b989fb` keeps the
-shell's command-tail pointer in a callee-saved register so a started program
-receives its arguments. Integration against that branch is deliberate and
-prints the edit revision, its ancestry from the pinned reference, and the file
-it changes; `tools/target_revision.py` is the single place that decision lives,
-and strict release mode refuses an edit-branch run.
+`docs/provenance-ledger.md`: MS-DOS64 `edit` revision `f36e84c` (over `8b989fb`)
+keeps the shell's command-tail pointer in a callee-saved register and records
+the invocation name in the child's first file control block, so a started
+program receives both its name and its arguments. Integration against that
+branch is deliberate and prints the edit revision, its ancestry from the pinned
+reference, and the file it changes; `tools/target_revision.py` is the single
+place that decision lives, and strict release mode refuses an edit-branch run.
 
 | Milestone | State | Evidence |
 |---|---|---|
@@ -26,7 +27,7 @@ and strict release mode refuses an edit-branch run.
 | M4 linker, loader image, runtime | partial | independent CC64O validation, section/symbol merge, PC-relative relocation checks, deterministic raw `.COM`, target entry/exit trampoline, freestanding target headers, and QEMU/Bochs smoke; full runtime I/O coverage remains open |
 | M5 language and MS-DOS64 compatibility | partial | pointers, arrays, nested initializers, structs/unions, enums, switch/short-circuit control flow, increments/compound assignment, stack arguments, scalar/aggregate copies, basic binary32/binary64, target runtime service stubs, seven QEMU cases, and one Bochs raw case; full corpus/runtime/file/process coverage remains open |
 | M6 `MZ64`, diagnostics, hardening | partial | MZ64 header/table emission, image-relative data fixups, BSS sizing, full-file/section CRC validation, bounded relocation/object records, malformed-image rejection, deterministic raw/MZ links, and QEMU data-pointer execution; broad negative/load-bias and Bochs MZ64 coverage remain open |
-| M7 self-hosting | partial | all 14 production translation units and the 6-file target C library compile with the target header profile; the complete compiler links with no unresolved symbols into a roughly 400 KB `MZ64` image and boots and executes on QEMU; target heap, streams, strings, `strcmp`/`strlen`, and formatted output are verified by a linked target-library case, so the compiler's own diagnostics can run on target; a program now receives a real argument vector, which removes the last obstacle to a self-hosted compile; comparing stage-two and stage-three objects still has to be run, so the milestone stays partial |
+| M7 self-hosting | partial | all 14 production translation units and the 6-file target C library compile with the target header profile; the complete compiler links with no unresolved symbols into a roughly 400 KB `MZ64` image, boots on the target, compiles a project-authored source with its own front end, links the result with its own linker, and reproduces the bootstrap compiler's object and image byte for byte, with the linked image executing and returning its expected code; the fixed point is demonstrated for one translation unit, so compiling the compiler's own sources on the target, which needs the include tree on the volume, and comparing all 14 stage-two objects still has to run |
 | M8 release quality | partial | path-independent clean-build hash comparison, deterministic malformed source/object/image smoke, automated provenance/source-origin audit, QEMU/Bochs target evidence, and aggregate release gate run; human review and full self-hosting remain open |
 
 A milestone is marked complete only after its tests and required target runs
