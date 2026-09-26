@@ -268,18 +268,22 @@ COMPARE_PROGRAM = (
     "}\n"
 )
 
+# The command tail is everything the shell was given after the program name,
+# and the name itself arrives in argv[0] from the process control block, so
+# "C64H AA BB" starts the program with three arguments. This case is the
+# observable check of the startup contract: the name, the tail copy, the
+# in-place split, and the null terminator after the last entry.
 ARGUMENT_PROGRAM = (
     "int cc64_write(int, const void *, unsigned long);\n"
     "int main(int argc, char **argv) {\n"
-    "  cc64_write(1, \"argc=\", 5);\n"
-    "  if (argc != 2) return 1;\n"
-    "  cc64_write(1, (const char *)\"2\", 1);\n"
-    "  cc64_write(1, \" a0=\", 4);\n"
-    "  cc64_write(1, argv[0], 2);\n"
-    "  cc64_write(1, \" a1=\", 4);\n"
-    "  cc64_write(1, argv[1], 2);\n"
+    "  if (argc != 3) return 1;\n"
+    "  if (argv[0][0] != \'C\' || argv[0][1] != \'6\' || argv[0][2] != \'4\'\n"
+    "      || argv[0][3] != \'H\' || argv[0][4] != 0) return 5;\n"
+    "  cc64_write(1, \"a0=\", 3); cc64_write(1, argv[0], 4);\n"
+    "  cc64_write(1, \" a1=\", 4); cc64_write(1, argv[1], 2);\n"
+    "  cc64_write(1, \" a2=\", 4); cc64_write(1, argv[2], 2);\n"
     "  cc64_write(1, \"\\n\", 1);\n"
-    "  if (argv[2] != 0) return 2;\n"
+    "  if (argv[3] != 0) return 2;\n"
     "  return 9;\n"
     "}\n"
 )
@@ -311,8 +315,11 @@ def main() -> int:
             ("C64F", "int cc64_open(const char*); int cc64_read(int,void*,unsigned long); int cc64_close(int); int main(void){char b[4]; int h=cc64_open(\"HELLO.TXT\"); if(h<0)return 1; cc64_read(h,b,4); cc64_close(h); return b[0]==72?7:2;}", "raw", 7, None),
             ("C64B", "int zero_global; int main(void){zero_global=9; return zero_global;}", "raw", 9, None),
             ("C64Z", "int zero_global; int main(void){zero_global=9; return zero_global;}", "mz64", 9, None),
-            ("C64G", "int main(int argc, char **argv){return argc;}", "raw", 0, None),
-            ("C64H", ARGUMENT_PROGRAM, "raw", 9, "argc=2 a0=AA a1=BB",
+            # With no command tail the vector still holds the program name, so argc is
+            # one rather than zero.
+            ("C64G", "int main(int argc, char **argv){return argc == 1 ? 9 : 1;}",
+             "raw", 9, None),
+            ("C64H", ARGUMENT_PROGRAM, "raw", 9, "a0=C64H a1=AA a2=BB",
              "C64H AA BB"),
             ("C64W", FILE_WRITE_PROGRAM, "raw", 7, None),
             ("C64K", SEEK_PROGRAM, "raw", 7, None),

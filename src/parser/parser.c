@@ -1579,6 +1579,10 @@ static AstNode *parse_conditional(Parser *parser)
     (void)expect(parser, ":");
     AstNode *no = parse_conditional(parser);
     if (condition != NULL && !type_is_scalar(condition->type)) semantic_error(parser, 2092U, token, "conditional condition must be scalar");
+    /* Both operands undergo the usual conversions, so an array or function
+       operand is converted to a pointer before the result type is chosen. */
+    yes = decay_value(parser, yes, token);
+    no = decay_value(parser, no, token);
     Type *type = NULL;
     if (yes != NULL && no != NULL) {
         if (type_is_arithmetic(yes->type) && type_is_arithmetic(no->type)) type = type_usual_arithmetic(parser->arena, type_unqualified(yes->type), type_unqualified(no->type));
