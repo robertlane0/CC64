@@ -45,6 +45,43 @@ Maintain a provenance ledger and run a source-origin audit before every
 release. No external source archive or compiler-generated artifact may be
 required to build CC64.
 
+### Editing the MS-DOS64 target repository
+
+The MS-DOS64 checkout is an interface reference and a test platform. The
+default is that it is not modified. An edit is permitted **only** when all of
+the following hold, and every one of them is auditable:
+
+- The edit is made in the MS-DOS64 repository on a branch named exactly `edit`
+  or beginning with `edit/`. No other branch may carry target changes, and
+  `main` in that repository is the pinned, unmodified reference revision.
+- The change is *required to make CC64 operational*. That means it either fixes
+  a target defect that CC64 has reproduced with an original test, or it supplies
+  a behavior that the pinned CC64 target contract in `docs/specs/` already
+  requires and the target does not yet provide. Anything else is out of scope.
+- The change is minimal, independently designed from the target's own behavior
+  and written documentation, and carries no code or design from CC64 into the
+  target. Symmetrically, no target code may be moved into CC64, and the
+  originality rules above continue to apply in both directions.
+- The change is committed and pushed with the same discipline as CC64 work:
+  small commits, no generated artifacts, no build output, and a test or an
+  observed before/after behavior that demonstrates the fix.
+- Every target change is recorded in `docs/provenance-ledger.md` with the
+  reason, the observed defect, and the observable effect, and is named in
+  `docs/status.md` while CC64 depends on it.
+- The pinned reference revision stays in the repository so a CC64 build can
+  always be compared against the unmodified target. Integration evidence must
+  state which revision was used.
+
+A dependency on an `edit`-branch behavior must be visible, not implicit: the
+CC64 change that needs it states the requirement in its own contract, and the
+unmodified target must fail that case in an identifiable way rather than
+silently. When the target change is later folded upstream, the CC64 side keeps
+working against the same contract.
+
+Target edits are for making the compiler operational, not for adding features
+to the operating system. If a change can be avoided by implementing the
+behavior in CC64's own runtime or library, it belongs in CC64.
+
 ## 2. Target contract
 
 The first compatibility target is the existing MS-DOS64 x86-64 long-mode
@@ -113,8 +150,10 @@ after the semantic and ABI test suites pass.
 
 ## 4. Proposed repository structure
 
-Create the implementation under the tracked `CC64` repository - do not modify the MS-DOS64 OS target until the interfaces are
-stable:
+Create the implementation under the tracked `CC64` repository. The MS-DOS64 OS
+target is not modified by default; an edit there is permitted only on an
+`edit` branch and only to make the compiler operational, under the rules in
+section 1:
 
 ```text
 src/
