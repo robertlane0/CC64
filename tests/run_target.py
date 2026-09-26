@@ -238,6 +238,30 @@ VARARG_PROGRAM = (
 # comparisons itself. This case pins every signed and unsigned relation, plus
 # the loop shape that an unsigned ">" drives, so a wrong condition code shows up
 # as a wrong exit code rather than as a silent hang.
+# The conditional operator converts both operands, so a choice between two
+# string literals, between a literal and a pointer, and between an array and a
+# pointer all have to work at run time and not only survive the front end.
+CONDITIONAL_PROGRAM = (
+    "int cc64_write(int, const void *, unsigned long);\n"
+    "static const char *pick(int flag)\n"
+    "{\n"
+    "    return flag ? \"yes\" : \"no\";\n"
+    "}\n"
+    "int main(void)\n"
+    "{\n"
+    "    const char *a = 1 ? \"alpha\" : \"beta\";\n"
+    "    char local[4] = \"xy\";\n"
+    "    const char *b = 0 ? local : \"gamma\";\n"
+    "    cc64_write(1, a, 2);\n"
+    "    cc64_write(1, b, 2);\n"
+    "    cc64_write(1, pick(1), 3);\n"
+    "    cc64_write(1, \"\\n\", 1);\n"
+    "    if (a[0] != 'a' || b[0] != 'g') return 1;\n"
+    "    if (pick(0)[1] != 'o') return 2;\n"
+    "    return 9;\n"
+    "}\n"
+)
+
 COMPARE_PROGRAM = (
     "int cc64_write(int, const void *, unsigned long);\n"
     "static void count_down(unsigned long value, unsigned long base)\n"
@@ -325,6 +349,7 @@ def main() -> int:
             ("C64K", SEEK_PROGRAM, "raw", 7, None),
             ("C64V", VARARG_PROGRAM, "raw", 9, "s=10 n=138"),
             ("C64C", COMPARE_PROGRAM, "raw", 9, "42\nK="),
+            ("C64Q", CONDITIONAL_PROGRAM, "raw", 9, "algayes"),
         ]
         library_objects = target_library_objects(work)
         for entry in cases:
