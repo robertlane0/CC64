@@ -203,6 +203,31 @@ def main() -> int:
                 "multi-declarator declaration produced an external reference:\n"
                 + unresolved.stdout)
 
+        # A multi-dimensional declarator is written outermost first, so the
+        # element type is the inner suffix; the sizes and the initializer
+        # placement both depend on getting that order right.
+        matrix_source = directory / "matrix.c"
+        matrix_object = directory / "matrix.cc64o"
+        matrix_source.write_text(
+            "static int nested[2][3] = {{1, 2, 3}, {4, 5, 6}};\n"
+            "static int cube[2][2][2] = {{{1, 2}, {3, 4}}, {{5, 6}, {7, 8}}};\n"
+            "int main(void) {\n"
+            "  int local[2][2] = {{9, 8}, {7, 6}};\n"
+            "  if (sizeof(int[2][3]) / sizeof(int) != 6) return 1;\n"
+            "  if (sizeof(int[2][2][2]) != 32) return 2;\n"
+            "  if (nested[0][2] != 3 || nested[1][0] != 4) return 3;\n"
+            "  if (nested[1][2] != 6) return 4;\n"
+            "  if (cube[1][0][1] != 6 || cube[0][1][0] != 3) return 5;\n"
+            "  if (local[0][1] != 8 || local[1][0] != 7) return 6;\n"
+            "  return 9;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        run([str(ROOT / "cc64"), "-c", str(matrix_source),
+             "-o", str(matrix_object)])
+        run([str(ROOT / "cc64"), "--link", str(matrix_object),
+             "-o", str(directory / "matrix.com")])
+
         conditional_source = directory / "conditional.c"
         conditional_object = directory / "conditional.cc64o"
         # The conditional operator converts its operands, so a conditional over
