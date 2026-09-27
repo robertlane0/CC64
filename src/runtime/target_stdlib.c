@@ -14,9 +14,14 @@
 
 #define CC64_LONG_MAX 0x7FFFFFFFFFFFFFFFUL
 #define CC64_LONG_MIN 0x8000000000000000UL
+#define CC64_ULONG_MAX 0xFFFFFFFFFFFFFFFFUL
 
+/* `ceiling` is the largest value the caller's type can hold. An unsigned
+   conversion has to reach the whole unsigned range: clamping at the signed
+   maximum reports overflow for a value such as 18446744073709551615, which is
+   an ordinary unsigned constant. */
 static unsigned long convert_unsigned(const char *text, char **end, int base,
-                                      bool *overflow)
+                                      unsigned long ceiling, bool *overflow)
 {
     const char *cursor = text;
     unsigned long value = 0UL;
@@ -38,7 +43,7 @@ static unsigned long convert_unsigned(const char *text, char **end, int base,
         else if (byte >= 'a' && byte <= 'z') digit = (int)(byte - 'a') + 10;
         else if (byte >= 'A' && byte <= 'Z') digit = (int)(byte - 'A') + 10;
         if (digit < 0 || (unsigned)digit >= limit_base) break;
-        if (value > (CC64_LONG_MAX - (unsigned long)digit) /
+        if (value > (ceiling - (unsigned long)digit) /
                         (unsigned long)limit_base) {
             *overflow = true;
         }
@@ -52,7 +57,8 @@ static unsigned long convert_unsigned(const char *text, char **end, int base,
 unsigned long strtoul(const char *text, char **end, int base)
 {
     bool overflow = false;
-    unsigned long value = convert_unsigned(text, end, base, &overflow);
+    unsigned long value = convert_unsigned(text, end, base, CC64_ULONG_MAX,
+                                           &overflow);
     if (overflow) errno = ERANGE;
     return value;
 }
@@ -72,7 +78,10 @@ long strtol(const char *text, char **end, int base)
         ++cursor;
     }
     bool overflow = false;
-    unsigned long magnitude = convert_unsigned(text, end, base, &overflow);
+    /* The magnitude of a signed conversion reaches one past the signed
+       maximum, so that the most negative value is representable. */
+    unsigned long magnitude = convert_unsigned(text, end, base,
+                                               CC64_LONG_MAX + 1UL, &overflow);
     if (overflow) {
         errno = ERANGE;
         return negative ? (long)CC64_LONG_MIN : (long)CC64_LONG_MAX;

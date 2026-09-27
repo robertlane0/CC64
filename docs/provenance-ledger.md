@@ -93,6 +93,7 @@ still be compared against the reference target.
 | D-055 | `fclose` releases any handle the stream owns, not only a writable one | the target keeps thirteen handles for a whole process, so an unreleased read handle is still holding a slot; a program that opened several files in sequence ran out of handles and every later create failed |
 | D-056 | A current directory contributes no prefix to a joined include candidate, so the candidate is the bare name | the target's name parser is DOS-strict and refuses any name containing a separator, so a `./name` candidate could never be opened there while a host accepts both spellings as the same file |
 | D-057 | `fread` and `fwrite` satisfy a request in as many service calls as it needs, each at most 0xFFFF bytes | the target's read and write services carry the byte count in a sixteen-bit register field, so one call cannot move a source-sized file; a single call silently moved a short prefix and the caller saw a truncated transfer |
+| D-058 | The target's integer conversion saturates at the ceiling of the type it is converting to: the unsigned maximum for an unsigned conversion, one past the signed maximum for the magnitude of a signed one | clamping an unsigned conversion at the signed maximum reports overflow for 18446744073709551615, so `SIZE_MAX` and every constant above the signed maximum were rejected by the front end that runs on the target, while a host library accepted them |
 
 ## Review rule
 

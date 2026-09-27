@@ -101,7 +101,9 @@ def target_library_objects(work: pathlib.Path) -> list[str]:
 
 
 LIBRARY_PROGRAM = (
+    "#include <errno.h>\n"
     "#include <stdarg.h>\n"
+    "#include <stdint.h>\n"
     "#include <stdio.h>\n"
     "#include <stdlib.h>\n"
     "#include <string.h>\n"
@@ -173,6 +175,15 @@ LIBRARY_PROGRAM = (
     "  if (fread(block, 1, sizeof block, source) != sizeof block) return 20;\n"
     "  if (fclose(source) != 0) return 21;\n"
     "  if (block[0] != 'a' || block[sizeof block - 1] != 'f') return 22;\n"
+    # An unsigned conversion has to reach the whole unsigned range, and the
+    # most negative signed value has to parse (D-058).
+    "  errno = 0;\n"
+    "  if (strtoul(\"18446744073709551615\", 0, 10) != 18446744073709551615UL)\n"
+    "    return 23;\n"
+    "  if (errno != 0) return 24;\n"
+    "  if (SIZE_MAX != 18446744073709551615UL) return 25;\n"
+    "  if (strtol(\"-9223372036854775808\", 0, 10) >= 0L) return 26;\n"
+    "  if (errno != 0) return 27;\n"
     "  free(copy);\n"
     "  cc64_write(1, \"E\", 1);\n"
     "  return 9;\n"
