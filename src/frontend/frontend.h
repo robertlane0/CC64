@@ -29,16 +29,18 @@ typedef struct Hideset {
    and a 64-bit field for each would cost a third of the record. */
 typedef struct Token {
     TokenKind kind;
+    uint32_t flags;              /* bit 0 at beginning of line, bit 1 preceded by space */
     const Source *source;
     uint32_t start;
     uint32_t end;
     uint32_t line;
     uint32_t column;
-    bool at_bol;
-    bool has_space;
     char *text;
     Hideset *hideset;
 } Token;
+
+#define TOKEN_FLAG_BOL 1U
+#define TOKEN_FLAG_SPACE 2U
 
 typedef struct TokenList {
     Token *items;
@@ -53,6 +55,7 @@ typedef struct Lexer {
     size_t line;
     size_t column;
     DiagnosticSink *diagnostics;
+    bool keep_newlines;
     /* One reused buffer builds a token's text, which is then copied into the
        arena. A token that owned a heap block would cost the target one block
        header per token, and a large unit has tens of thousands of tokens. */
@@ -99,6 +102,7 @@ typedef struct Preprocessor {
 } Preprocessor;
 
 void token_list_init(TokenList *list);
+bool token_list_reserve(TokenList *list, size_t capacity);
 void token_list_free(TokenList *list);
 bool token_list_push(TokenList *list, const Token *token);
 Token *token_list_last(TokenList *list);
@@ -111,6 +115,11 @@ void lexer_destroy(Lexer *lexer);
 bool lexer_next(Lexer *lexer, Token *token);
 bool lex_source(Arena *arena, const Source *source,
                 DiagnosticSink *diagnostics, TokenList *list);
+/* Newline tokens are only produced when the caller needs them: a caller that
+   drops them afterwards would hold a third more tokens than it uses. */
+bool lex_source_marked(Arena *arena, const Source *source,
+                       DiagnosticSink *diagnostics, TokenList *list,
+                       bool keep_newlines);
 
 Preprocessor *preprocessor_create(Arena *arena, SourceManager *sources,
                                   DiagnosticSink *diagnostics,

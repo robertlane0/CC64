@@ -1532,7 +1532,7 @@ static bool runtime_function_info(const char *name, RuntimeFunction *function)
  * the cursor, R8 the argument count, and R10 the process prefix. */
 #define CC64_VARIADIC_COPY 14U
 #define CC64_VARIADIC_COPIED 15U
-#define CC64_START_ARGUMENTS 16
+#define CC64_START_ARGUMENTS 32
 #define CC64_START_TAIL 144
 /* The invocation name is copied to the frame immediately below the tail copy
    and separated from it by one space, so the tokenizer that splits the tail
@@ -1548,8 +1548,8 @@ static bool runtime_function_info(const char *name, RuntimeFunction *function)
    argument limit, because the terminator is written past the last entry, and it
    is placed far enough below the name that a full vector still ends below it. */
 #define CC64_START_TAIL_AT (-0xa0)
-#define CC64_START_VECTOR_AT (-0x140)
-#define CC64_START_FRAME 0x150
+#define CC64_START_VECTOR_AT (-0x200)
+#define CC64_START_FRAME 0x210
 #define CC64_START_SKIP_LENGTH 1U
 #define CC64_START_SKIP_SPACE 2U
 #define CC64_START_RECORD 3U

@@ -171,8 +171,7 @@ static void copy_token(Token *result, const Token *token)
     result->end = token->end;
     result->line = token->line;
     result->column = token->column;
-    result->at_bol = token->at_bol;
-    result->has_space = token->has_space;
+    result->flags = token->flags;
     result->text = token->text;
     result->hideset = token->hideset;
 }
@@ -326,7 +325,7 @@ static char *stringize_arguments(const TokenList *list)
     text[used++] = '"';
     for (size_t i = 0U; i < list->count; ++i) {
         const char *value = list->items[i].text;
-        if (i != 0U && list->items[i].has_space) {
+        if (i != 0U && (list->items[i].flags & TOKEN_FLAG_SPACE) != 0U) {
             text[used++] = ' ';
         }
         for (size_t j = 0U; value[j] != '\0'; ++j) {
@@ -647,7 +646,7 @@ static bool parse_macro_definition(Preprocessor *pp, const Token *body,
     macro->next = pp->macros;
     size_t position = 1U;
     if (position < count && token_is(&body[position], "(") &&
-        !body[position].has_space) {
+        (body[position].flags & TOKEN_FLAG_SPACE) == 0U) {
         macro->function_like = true;
         ++position;
         while (position < count && !token_is(&body[position], ")")) {
@@ -1098,8 +1097,12 @@ static bool process_directive(Preprocessor *pp, const Source *source,
 static bool process_source(Preprocessor *pp, const Source *source,
                            TokenList *output)
 {
+    if (!token_list_reserve(output, output->capacity + source->length / 3U + 64U)) {
+        return false;
+    }
     TokenList raw;
-    if (!lex_source(pp->arena, source, pp->diagnostics, &raw)) {
+    if (!lex_source_marked(pp->arena, source, pp->diagnostics, &raw,
+                           pp->options.preserve_newlines)) {
         return false;
     }
     CondState *conditions = NULL;
@@ -1126,7 +1129,7 @@ static bool process_source(Preprocessor *pp, const Source *source,
             ++position;
             continue;
         }
-        if (token->at_bol && token_is(token, "#")) {
+        if (((token->flags & TOKEN_FLAG_BOL) != 0U) && token_is(token, "#")) {
             size_t begin = position + 1U;
             size_t end = begin;
             while (end < raw.count && raw.items[end].kind != TOKEN_NEWLINE) {
@@ -1670,7 +1673,8 @@ void preprocessor_define_text(Preprocessor *pp, const char *definition)
     free(name);
     free(expanded);
     TokenList tokens;
-    if (!lex_source(pp->arena, source, pp->diagnostics, &tokens)) {
+    if (!lex_source_marked(pp->arena, source, pp->diagnostics, &tokens,
+                           pp->options.preserve_newlines)) {
         return;
     }
     size_t definition_count = tokens.count;

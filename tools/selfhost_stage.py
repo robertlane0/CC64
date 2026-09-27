@@ -73,10 +73,17 @@ def compile_unit(source: pathlib.Path, output: pathlib.Path,
                          f"{result.stdout}{result.stderr}")
 
 
-def build_stage1(work: pathlib.Path) -> tuple[pathlib.Path, dict[str, pathlib.Path]]:
-    """Build the target image of the compiler and the reference objects."""
+def build_stage1(work: pathlib.Path) -> tuple[pathlib.Path, dict[str, pathlib.Path],
+                                             list[pathlib.Path]]:
+    """Build the target image of the compiler and the reference objects.
+
+    The runtime library objects are returned as well: the self-hosted linker
+    resolves the runtime's own symbols from them, exactly as the bootstrap
+    link does.
+    """
     objects: dict[str, pathlib.Path] = {}
     stage_objects: list[pathlib.Path] = []
+    library_objects: list[pathlib.Path] = []
     for source in production_sources():
         output = work / f"reference-{source.stem}.cc64o"
         compile_unit(source, output, work, "reference")
@@ -86,6 +93,7 @@ def build_stage1(work: pathlib.Path) -> tuple[pathlib.Path, dict[str, pathlib.Pa
         output = work / f"library-{source.stem}.cc64o"
         compile_unit(source, output, work, "library")
         stage_objects.append(output)
+        library_objects.append(output)
     image = work / "stage1.mz64"
     command = [str(ROOT / "cc64"), "--link", "--format", "mz64"]
     command += [str(path) for path in stage_objects]
@@ -94,7 +102,7 @@ def build_stage1(work: pathlib.Path) -> tuple[pathlib.Path, dict[str, pathlib.Pa
     if result.returncode != 0:
         raise SystemExit(f"self-host stage cannot link stage1:\n"
                          f"{result.stdout}{result.stderr}")
-    return image, objects
+    return image, objects, library_objects
 
 
 def check_volume(image: pathlib.Path) -> None:
@@ -184,6 +192,13 @@ def batches(sources: list[pathlib.Path], sizes: dict[str, int],
 
 
 def volume_names(sources: list[pathlib.Path]) -> dict[str, str]:
+    """Short staged names.
+
+    A command tail is bounded to 143 bytes on the target, so a link of every
+    object has to fit on one line: twenty objects plus the format and output
+    options leave only four characters per name. The mapping is fixed for a
+    given source list, so a given source is always staged under the same name.
+    """
     """Volume names for the staged sources.
 
     The volume holds bare 8.3 names, and two production sources have a stem
@@ -194,15 +209,9 @@ def volume_names(sources: list[pathlib.Path]) -> dict[str, str]:
     """
     names: dict[str, str] = {}
     used: set[str] = set()
-    for source in sources:
-        stem = source.stem.upper()
-        if not 0 < len(stem) <= 8 or not stem.isalnum() or stem in used:
-            base = "".join(c for c in stem if c.isalnum())[:7] or "UNIT"
-            index = 1
-            while f"{base}{index}" in used:
-                index += 1
-            stem = f"{base}{index}"
-        if len(stem) > 8:
+    for index, source in enumerate(sources):
+        stem = f"A{index}"
+        if len(stem) > 8 or not stem.isalnum() or stem in used:
             raise SystemExit(f"self-host stage cannot name {source.name} as 8.3")
         names[source.stem] = stem
         used.add(stem)
@@ -231,7 +240,7 @@ def main() -> int:
     names = volume_names(sources)
     with tempfile.TemporaryDirectory(prefix="cc64-self-host-stage-") as temp:
         work = pathlib.Path(temp)
-        stage1, reference = build_stage1(work)
+        stage1, reference, library_objects = build_stage1(work)
         tree: list[tuple[str, pathlib.Path]] = [(IMAGE_NAME, stage1)]
         for source in sources:
             tree.append((f"{names[source.stem]}.C", source))
@@ -281,8 +290,16 @@ def main() -> int:
                             str(disk), str(produced[source.stem]),
                             f"{name}.O"], cwd=ROOT, check=True,
                            stdout=subprocess.DEVNULL)
+        library_names: list[str] = []
+        for index, library_object in enumerate(library_objects):
+            name = f"LIB{index}.O"
+            library_names.append(name)
+            subprocess.run(["python3", str(ROOT / "tests/embed_fat12.py"),
+                            str(disk), str(library_object), name], cwd=ROOT,
+                           check=True, stdout=subprocess.DEVNULL)
         check_volume(disk)
-        inputs = " ".join(f"{names[source.stem]}.O" for source in sources)
+        inputs = " ".join([f"{names[source.stem]}.O" for source in sources] +
+                          library_names)
         boot(disk, f"CC64S --link --format mz64 {inputs} -o STAGE2.COM")
         check_volume(disk)
         stage2 = work / "stage2.mz64"

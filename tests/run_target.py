@@ -438,7 +438,7 @@ LONG_ARGUMENT_PROGRAM = (
     # the command text are separate regions, and the count is bounded (D-059).
     "  int i;\n"
     "  int length;\n"
-    "  if (argc != 16) return 1;\n"
+    "  if (argc != 32) return 1;\n"
     "  if (argv[0][0] != 'C' || argv[0][1] != '6' || argv[0][2] != '4'\n"
     "      || argv[0][3] != 'I' || argv[0][4] != 0) return 2;\n"
     "  for (i = 1; i < argc; ++i) {\n"
@@ -493,8 +493,9 @@ def main() -> int:
              "raw", 9, None),
             ("C64H", ARGUMENT_PROGRAM, "raw", 9, "a0=C64H a1=AA a2=BB",
              "C64H AA BB"),
-            ("C64I", LONG_ARGUMENT_PROGRAM, "raw", 9, "argc=16",
-             "C64I a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15"),
+            ("C64I", LONG_ARGUMENT_PROGRAM, "raw", 9, "argc=32",
+             "C64I a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15 "
+             "a16 a17 a18 a19 a20 a21 a22 a23 a24 a25 a26 a27 a28 a29 a30 a31"),
             ("C64W", FILE_WRITE_PROGRAM, "raw", 7, None),
             ("C64K", SEEK_PROGRAM, "raw", 7, None),
             ("C64V", VARARG_PROGRAM, "raw", 9, "s=10 n=138"),

@@ -2061,25 +2061,6 @@ void parser_destroy(Parser *parser)
    as in `int a, b;`, so the call reports the half-open range it appended.
    Error recovery stays inside the call: a declaration that cannot be parsed is
    skipped up to its terminator and the next call continues after it. */
-/* The parser owns the token array and releases it from the front as it is
-   consumed: a large unit holds tens of thousands of tokens, and the lowered
-   program grows while the parse is still in progress, so keeping the whole
-   stream alive until the end would add its whole size to the peak. */
-static void parser_release_consumed(Parser *parser)
-{
-    size_t position = parser->position;
-    if (position < 4096U || position * 2U < parser->count) return;
-    size_t remaining = parser->count - position;
-    if (remaining != 0U) {
-        memmove(parser->tokens, parser->tokens + position,
-                remaining * sizeof(*parser->tokens));
-    }
-    parser->count = remaining;
-    parser->position = 0U;
-    size_t capacity = remaining == 0U ? 1U : remaining;
-    parser->tokens = cc64_xrealloc(parser->tokens, capacity * sizeof(*parser->tokens));
-}
-
 bool parser_next(Parser *parser, size_t *first, size_t *last)
 {
     if (first != NULL) *first = 0U;
@@ -2096,7 +2077,6 @@ bool parser_next(Parser *parser, size_t *first, size_t *last)
         }
         size_t before = parser->unit->count;
         parse_global_declaration(parser, &spec);
-        parser_release_consumed(parser);
         if (parser->failed) return false;
         if (parser->unit->count == before) continue;
         if (first != NULL) *first = before;

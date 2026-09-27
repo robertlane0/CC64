@@ -222,8 +222,8 @@ static void finish_token(Lexer *lexer, Token *token, size_t start,
     token->end = (uint32_t)lexer->position;
     token->line = (uint32_t)line;
     token->column = (uint32_t)column;
-    token->at_bol = at_bol;
-    token->has_space = has_space;
+    token->flags = (at_bol ? TOKEN_FLAG_BOL : 0U) |
+                   (has_space ? TOKEN_FLAG_SPACE : 0U);
     token->text = text;
     token->hideset = NULL;
 }
@@ -287,6 +287,7 @@ void lexer_create(Arena *arena, const Source *source,
     lexer->scratch = NULL;
     lexer->scratch_length = 0U;
     lexer->scratch_capacity = 0U;
+    lexer->keep_newlines = true;
 }
 
 void lexer_destroy(Lexer *lexer)
@@ -316,6 +317,7 @@ bool lexer_next(Lexer *lexer, Token *token)
     unsigned char byte = lexer->source->bytes[lexer->position];
     if (byte == '\r' || byte == '\n') {
         skip_line_end(lexer);
+        if (!lexer->keep_newlines) return lexer_next(lexer, token);
         scratch_begin(lexer);
         append_text(lexer, (unsigned char)'\n');
         finish_token(lexer, token, start, line, column, true, has_space,
@@ -457,10 +459,33 @@ void token_list_free(TokenList *list)
     token_list_init(list);
 }
 
+/* Reserving up front keeps a large source's list from being copied repeatedly
+   on the way up, which is the expensive part on a small heap. */
+bool token_list_reserve(TokenList *list, size_t capacity)
+{
+    if (list == NULL) return false;
+    if (capacity <= list->capacity) return true;
+    if (capacity > SIZE_MAX / sizeof(*list->items)) return false;
+    Token *items = cc64_xrealloc(list->items, capacity * sizeof(*list->items));
+    list->items = items;
+    list->capacity = capacity;
+    return true;
+}
+
+/* A growing list adds a fixed number of entries once it is large instead of
+   doubling. A doubling step has to hold the old and the new array at the same
+   time, and for a large unit that is several megabytes of contiguous space,
+   which the target's first-fit heap cannot always provide in one piece. A
+   fixed step keeps every request small enough to satisfy, at the cost of a few
+   more copies. */
+#define CC64_LIST_STEP 4096U
+
 bool token_list_push(TokenList *list, const Token *token)
 {
     if (list->count == list->capacity) {
-        size_t next = list->capacity == 0U ? 32U : list->capacity * 2U;
+        size_t next = list->capacity == 0U ? 32U
+                       : list->capacity < 4096U ? list->capacity * 2U
+                       : list->capacity + CC64_LIST_STEP;
         if (next > SIZE_MAX / sizeof(*list->items)) {
             return false;
         }
@@ -475,8 +500,7 @@ bool token_list_push(TokenList *list, const Token *token)
     slot->end = token->end;
     slot->line = token->line;
     slot->column = token->column;
-    slot->at_bol = token->at_bol;
-    slot->has_space = token->has_space;
+    slot->flags = token->flags;
     slot->text = token->text;
     slot->hideset = token->hideset;
     return true;
@@ -490,9 +514,20 @@ Token *token_list_last(TokenList *list)
 bool lex_source(Arena *arena, const Source *source,
                 DiagnosticSink *diagnostics, TokenList *list)
 {
+    return lex_source_marked(arena, source, diagnostics, list, true);
+}
+
+bool lex_source_marked(Arena *arena, const Source *source,
+                       DiagnosticSink *diagnostics, TokenList *list,
+                       bool keep_newlines)
+{
     token_list_init(list);
+    /* A source of n bytes produces well under n/3 tokens for ordinary C, so
+       the list is sized from the source once and rarely has to grow. */
+    if (!token_list_reserve(list, source->length / 3U + 64U)) return false;
     Lexer lexer;
     lexer_create(arena, source, diagnostics, &lexer);
+    lexer.keep_newlines = keep_newlines;
     for (;;) {
         Token token;
         bool good = lexer_next(&lexer, &token);

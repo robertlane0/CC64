@@ -28,7 +28,7 @@ place that decision lives, and strict release mode refuses an edit-branch run.
 | M4 linker, loader image, runtime | partial | independent CC64O validation, section/symbol merge, PC-relative relocation checks, deterministic raw `.COM`, target entry/exit trampoline, freestanding target headers, and QEMU/Bochs smoke; full runtime I/O coverage remains open |
 | M5 language and MS-DOS64 compatibility | partial | pointers, arrays, nested and multi-dimensional initializers, structs/unions, enums, switch/short-circuit control flow, increments/compound assignment, stack arguments, scalar/aggregate copies, basic binary32/binary64, the target runtime service set, formatted output, relational operators and the conditional operator, twenty-one QEMU cases, and Bochs raw and `MZ64` cases; a conformance corpus and full runtime/file/process coverage remain open |
 | M6 `MZ64`, diagnostics, hardening | partial | MZ64 header/table emission, image-relative data fixups, BSS sizing, full-file/section CRC validation, bounded relocation/object records, malformed-image rejection, deterministic raw/MZ links, and QEMU data-pointer execution; broad negative/load-bias and Bochs MZ64 coverage remain open |
-| M7 self-hosting | partial | all 14 production translation units and the 6-file target C library compile with the target header profile; the complete compiler links with no unresolved symbols into a roughly 400 KB `MZ64` image, boots on the target, compiles a project-authored source with its own front end, links the result with its own linker, and reproduces the bootstrap compiler's object and image byte for byte, with the linked image executing and returning its expected code; the fixed point is demonstrated for one translation unit, so compiling the compiler's own sources on the target, which needs the include tree on the volume, and comparing all 14 stage-two objects still has to run |
+| M7 self-hosting | partial | a target-built compiler reproduces the bootstrap object, image, and exit code byte for byte for a project-authored source, and seven production translation units now compile on the target to objects that are byte-identical to the bootstrap compiler's. The self-hosted linker links the runtime objects and the compiler's own units, and the whole target library, startup, ABI, and conformance suites pass. Two defects block the remaining units and are recorded below: a runaway in the preprocessor's macro handling that appears only when the compiler is itself built for the target and depends on how that build lays out its code, and a peak of about five megabytes of live heap for the largest unit against a target heap of about six, so the two largest units do not yet fit. |
 | M8 release quality | partial | path-independent clean-build hash comparison, deterministic malformed source/object/image smoke, automated provenance/source-origin audit, QEMU/Bochs target evidence, and aggregate release gate run; human review and full self-hosting remain open |
 
 A milestone is marked complete only after its tests and required target runs
@@ -41,6 +41,23 @@ QEMU, Bochs, deterministic source/object/image smoke, reproducibility, and
 provenance checks. The measured clean bootstrap build manifest digest is
 `b85252e35eb7c22539231f975a041a3776c0737ed6b9c119abae973264e24321`
 across 42 generated files and deterministic target artifacts.
+
+### Open work recorded for M7
+
+1. The target-built preprocessor produces an unbounded token stream for some
+   inputs, which ends in a clean out-of-memory report rather than a wrong
+   object. The same input preprocesses correctly when the compiler is built
+   for the host, and the runaway appears in different inputs for builds that
+   differ only in instrumentation, so it is a code-generation defect in the
+   macro-expansion path rather than a defect in the preprocessor's rules. The
+   next step is to reduce the expansion loop to a case small enough to compare
+   against the host build instruction by instruction.
+2. The largest translation units need about five megabytes of live heap and the
+   target's whole heap is about six, so they do not fit once the image, the
+   BSS, and the operating system's own allocations are counted. The measured
+   reductions so far took the largest unit from about twelve megabytes to about
+   five; the next reductions have to come from encoding each function as it is
+   lowered, so the lowered program for a whole unit is never resident at once.
 
 This is a validation checkpoint, not a releasable M7/M8 claim. Full
 self-hosting, target-hosted compiler I/O and formatting, complete argv/envp
