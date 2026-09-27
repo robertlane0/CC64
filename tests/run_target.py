@@ -55,7 +55,7 @@ def stop_process(process: subprocess.Popen) -> None:
 
 
 def execute(qemu: str, disk: pathlib.Path, name: str, command: str,
-            expected: int) -> str:
+            expected: int, timeout: float = 15.0) -> str:
     transcript = disk.with_suffix(".log")
     process = None
     with transcript.open("w", encoding="utf-8") as stream:
@@ -68,7 +68,7 @@ def execute(qemu: str, disk: pathlib.Path, name: str, command: str,
         process.stdin.write(command + "\n")
         process.stdin.close()
         marker = f"Exit {expected}"
-        deadline = time.monotonic() + 15.0
+        deadline = time.monotonic() + timeout
         complete = False
         while time.monotonic() < deadline:
             text = transcript.read_text(encoding="utf-8", errors="replace")
@@ -107,6 +107,7 @@ LIBRARY_PROGRAM = (
     "#include <string.h>\n"
     "int cc64_write(int, const void *, unsigned long);\n"
     "int cc64_putc(int);\n"
+    "static char block[65552];\n"
     # Eight unnamed arguments: the seventh and eighth arrive on the stack, so
     # this fails unless the variadic walk reaches past the argument registers
     # (D-053).
@@ -156,6 +157,22 @@ LIBRARY_PROGRAM = (
     "  if (made == 0) return 13;\n"
     "  if (fwrite(\"x\", 1, 1, made) != 1) return 14;\n"
     "  if (fclose(made) != 0) return 15;\n"
+    # A transfer past the sixteen-bit service count: the target's read and
+    # write services carry the byte count in a sixteen-bit field, so stdio has
+    # to satisfy a request that large in steps (D-057). 65551 % 26 is 5.
+    "  size_t index;\n"
+    "  for (index = 0; index < sizeof block; ++index)\n"
+    "    block[index] = (char)('a' + (int)(index % 26));\n"
+    "  FILE *bulk = fopen(\"C64L.BIN\", \"wb\");\n"
+    "  if (bulk == 0) return 16;\n"
+    "  if (fwrite(block, 1, sizeof block, bulk) != sizeof block) return 17;\n"
+    "  if (fclose(bulk) != 0) return 18;\n"
+    "  for (index = 0; index < sizeof block; ++index) block[index] = 0;\n"
+    "  FILE *source = fopen(\"C64L.BIN\", \"rb\");\n"
+    "  if (source == 0) return 19;\n"
+    "  if (fread(block, 1, sizeof block, source) != sizeof block) return 20;\n"
+    "  if (fclose(source) != 0) return 21;\n"
+    "  if (block[0] != 'a' || block[sizeof block - 1] != 'f') return 22;\n"
     "  free(copy);\n"
     "  cc64_write(1, \"E\", 1);\n"
     "  return 9;\n"
@@ -460,7 +477,9 @@ def main() -> int:
         shutil.copy2(TARGET / "build/dos64-lean.img", library_disk)
         run(["python3", str(ROOT / "tests/embed_fat12.py"), str(library_disk),
              str(library_image), "C64L"], ROOT)
-        text = execute(qemu, library_disk, "C64L", "C64L", 9)
+        # The library case moves a file larger than the target's sixteen-bit
+        # service count, which is slow in the emulator.
+        text = execute(qemu, library_disk, "C64L", "C64L", 9, timeout=240.0)
         if "Exit 9" not in text:
             raise SystemExit("C64L: target library case did not return 9")
         if "A4BZCDk=42:-7E" not in text:

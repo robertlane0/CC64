@@ -36,6 +36,12 @@ and `va_arg` walks the whole area eight bytes per slot. A call that passes more
 than six unnamed arguments therefore works. The copy is bounded at eight stack
 slots, and a slot the caller did not fill is copied but never read.
 
+A stdio request is larger than one service call whenever it exceeds 0xFFFF
+bytes, because the target's read and write services carry the byte count in a
+sixteen-bit register field. `fread` and `fwrite` therefore satisfy a request in
+as many calls as it needs; `cc64_read` and `cc64_write` are single-call service
+wrappers and move at most that much in one call.
+
 The target keeps thirteen file handles for a whole process. Every handle a
 stream owns is released by `fclose`, readable or writable, because a retained
 read handle is invisible to the program that leaked it and still occupies a

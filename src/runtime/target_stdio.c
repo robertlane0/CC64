@@ -81,6 +81,12 @@ int fclose(FILE *stream)
     return result;
 }
 
+/* The target's read and write services carry the byte count in a sixteen-bit
+   register field, so one service call moves at most 0xFFFF bytes. A stdio
+   request is satisfied in as many calls as it needs, and a request that
+   reaches the end of the file stops there. */
+#define CC64_SERVICE_LIMIT 0xFFFFUL
+
 size_t fread(void *buffer, size_t size, size_t count, FILE *stream)
 {
     if (stream == NULL || size == 0U || count == 0U) return 0U;
@@ -90,13 +96,20 @@ size_t fread(void *buffer, size_t size, size_t count, FILE *stream)
         return 0U;
     }
     size_t want = size * count;
-    int moved = cc64_read(file->handle, buffer, (unsigned long)want);
-    if (moved <= 0) {
-        file->flags |= CC64_STREAM_EOF;
-        return 0U;
+    size_t done = 0U;
+    while (done < want) {
+        size_t left = want - done;
+        unsigned long ask = left > CC64_SERVICE_LIMIT ? CC64_SERVICE_LIMIT
+                                                       : (unsigned long)left;
+        int moved = cc64_read(file->handle, (char *)buffer + done, ask);
+        if (moved <= 0) {
+            file->flags |= CC64_STREAM_EOF;
+            break;
+        }
+        file->position += (long)moved;
+        done += (size_t)moved;
     }
-    file->position += (long)moved;
-    return (size_t)moved / size;
+    return done / size;
 }
 
 size_t fwrite(const void *buffer, size_t size, size_t count, FILE *stream)
@@ -109,13 +122,21 @@ size_t fwrite(const void *buffer, size_t size, size_t count, FILE *stream)
         return 0U;
     }
     size_t want = size * count;
-    int moved = cc64_write(file->handle, buffer, (unsigned long)want);
-    if (moved < 0) {
-        file->flags |= CC64_STREAM_ERROR;
-        return 0U;
+    size_t done = 0U;
+    while (done < want) {
+        size_t left = want - done;
+        unsigned long ask = left > CC64_SERVICE_LIMIT ? CC64_SERVICE_LIMIT
+                                                       : (unsigned long)left;
+        int moved = cc64_write(file->handle, (const char *)buffer + done, ask);
+        if (moved < 0) {
+            file->flags |= CC64_STREAM_ERROR;
+            return 0U;
+        }
+        file->position += (long)moved;
+        done += (size_t)moved;
+        if (moved == 0) break;
     }
-    file->position += (long)moved;
-    return (size_t)moved / size;
+    return done / size;
 }
 
 int fseek(FILE *stream, long offset, int origin)

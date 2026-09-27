@@ -183,6 +183,32 @@ def batches(sources: list[pathlib.Path], sizes: dict[str, int],
     return groups
 
 
+def volume_names(sources: list[pathlib.Path]) -> dict[str, str]:
+    """Volume names for the staged sources.
+
+    The volume holds bare 8.3 names, and two production sources have a stem
+    longer than eight characters, so a long stem is staged truncated with a
+    one-digit discriminator. Nothing else about a name changes, and the
+    mapping is derived only from the source list, so a given source is always
+    staged and read back under the same name.
+    """
+    names: dict[str, str] = {}
+    used: set[str] = set()
+    for source in sources:
+        stem = source.stem.upper()
+        if not 0 < len(stem) <= 8 or not stem.isalnum() or stem in used:
+            base = "".join(c for c in stem if c.isalnum())[:7] or "UNIT"
+            index = 1
+            while f"{base}{index}" in used:
+                index += 1
+            stem = f"{base}{index}"
+        if len(stem) > 8:
+            raise SystemExit(f"self-host stage cannot name {source.name} as 8.3")
+        names[source.stem] = stem
+        used.add(stem)
+    return names
+
+
 def main() -> int:
     if shutil.which("qemu-system-x86_64") is None or not TARGET.is_dir():
         message = "self-host stage: skipped (QEMU or target checkout unavailable)"
@@ -202,12 +228,13 @@ def main() -> int:
     if not sources:
         raise SystemExit("self-host stage found no production sources")
     headers = include_tree()
+    names = volume_names(sources)
     with tempfile.TemporaryDirectory(prefix="cc64-self-host-stage-") as temp:
         work = pathlib.Path(temp)
         stage1, reference = build_stage1(work)
         tree: list[tuple[str, pathlib.Path]] = [(IMAGE_NAME, stage1)]
         for source in sources:
-            tree.append((f"{source.stem.upper()}.C", source))
+            tree.append((f"{names[source.stem]}.C", source))
         for header in headers:
             tree.append((header.name.upper(), header))
         # The volume is 1440 KiB and must hold the image, the tree, and one
@@ -226,11 +253,11 @@ def main() -> int:
             embed(disk, manifest)
             check_volume(disk)
             for source in group:
-                name = source.stem.upper()
+                name = names[source.stem]
                 boot(disk, f"CC64S -c {name}.C -o {name}.O")
             check_volume(disk)
             for source in group:
-                name = source.stem.upper()
+                name = names[source.stem]
                 output = work / f"produced-{source.stem}.cc64o"
                 payload = extract(disk, f"{name}.O", output)
                 if payload != reference[source.stem].read_bytes():
@@ -249,13 +276,13 @@ def main() -> int:
         write_manifest(link_manifest, [(IMAGE_NAME, stage1)])
         embed(disk, link_manifest)
         for source in sources:
-            name = source.stem.upper()
+            name = names[source.stem]
             subprocess.run(["python3", str(ROOT / "tests/embed_fat12.py"),
                             str(disk), str(produced[source.stem]),
                             f"{name}.O"], cwd=ROOT, check=True,
                            stdout=subprocess.DEVNULL)
         check_volume(disk)
-        inputs = " ".join(f"{source.stem.upper()}.O" for source in sources)
+        inputs = " ".join(f"{names[source.stem]}.O" for source in sources)
         boot(disk, f"CC64S --link --format mz64 {inputs} -o STAGE2.COM")
         check_volume(disk)
         stage2 = work / "stage2.mz64"
