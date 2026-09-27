@@ -132,20 +132,11 @@ typedef struct IrRelocation {
     struct IrRelocation *next;
 } IrRelocation;
 
-typedef struct IrEncodedFunction {
-    Symbol *symbol;
-    unsigned char *code;
-    size_t code_size;
-    IrRelocation *relocations;
-    size_t frame_size;
-    struct IrEncodedFunction *next;
-} IrEncodedFunction;
-
-bool lower_translation_unit(Arena *arena, const TranslationUnit *unit,
-                            DiagnosticSink *diagnostics, IrProgram *program);
 /* One declaration at a time, so the caller can release a lowered declaration's
-   syntax tree before the next one is parsed. */
-bool lower_declaration(Arena *arena, const TranslationUnit *unit,
+   syntax tree and its lowered form before the next one is parsed. The lowered
+   form is built in ir and everything that has to outlive it, such as a symbol
+   or a copy of a string literal, is built in arena. */
+bool lower_declaration(Arena *arena, Arena *ir, const TranslationUnit *unit,
                        AstNode *declaration, DiagnosticSink *diagnostics,
                        IrProgram *program);
 void ir_program_free(IrProgram *program);

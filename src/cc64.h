@@ -14,6 +14,10 @@ typedef struct Arena {
     ArenaBlock *head;
     size_t total;
     size_t limit;
+    /* Every arena is given its own number. A released arena's address can be
+       handed out again, so anything that remembers a pointer into an arena has
+       to be able to tell the new arena from the old one. */
+    size_t generation;
 } Arena;
 
 /* A mark records an allocation point so the space taken since then can be

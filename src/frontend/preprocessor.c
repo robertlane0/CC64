@@ -1097,9 +1097,6 @@ static bool process_directive(Preprocessor *pp, const Source *source,
 static bool process_source(Preprocessor *pp, const Source *source,
                            TokenList *output)
 {
-    if (!token_list_reserve(output, output->capacity + source->length / 3U + 64U)) {
-        return false;
-    }
     TokenList raw;
     if (!lex_source_marked(pp->arena, source, pp->diagnostics, &raw,
                            pp->options.preserve_newlines)) {
@@ -1715,6 +1712,12 @@ bool preprocess_source(Arena *arena, SourceManager *sources,
 {
     Preprocessor *pp = preprocessor_create(arena, sources, diagnostics, options);
     if (pp == NULL) {
+        return false;
+    }
+    /* The output list is sized once, from the main source, and not once per
+       included source: a per-source reservation accumulates, and a unit with
+       twenty includes would reserve several times the tokens it produces. */
+    if (!token_list_reserve(output, source->length / 3U + 1024U)) {
         return false;
     }
     return preprocessor_run(pp, source, output);

@@ -27,6 +27,42 @@ static Type *type_alloc(Arena *arena, TypeKind kind, size_t size, size_t alignme
     return type;
 }
 
+/* The types a unit builds most of are shared.
+ *
+ * A type record is never changed after it is built: a qualified version is a
+ * copy made by type_copy and nothing writes a field of a type that is already
+ * in use. Two requests for `int` can therefore be given the same record, and a
+ * large unit would otherwise hold thousands of identical ones: a unit of ten
+ * thousand tokens builds about as many types as it has expressions.
+ *
+ * The table below holds the records for one arena at a time. It is checked
+ * against the arena's own number, so a new arena starts empty even when it is
+ * built at the address a released one had. */
+#define TYPE_TABLE_SLOTS 32U
+
+typedef struct TypeTable {
+    Arena *arena;
+    size_t generation;
+    Type *basics[TYPE_TABLE_SLOTS];
+    Type *pointers[TYPE_TABLE_SLOTS];
+} TypeTable;
+
+static TypeTable type_table;
+
+static bool type_table_uses(const Arena *arena)
+{
+    return arena != NULL && type_table.arena == arena &&
+           type_table.generation == arena->generation;
+}
+
+static void type_table_select(Arena *arena)
+{
+    if (type_table_uses(arena)) return;
+    memset(&type_table, 0, sizeof(type_table));
+    type_table.arena = arena;
+    type_table.generation = arena->generation;
+}
+
 Type *type_basic(Arena *arena, TypeKind kind)
 {
     size_t size = 0U;
@@ -53,9 +89,22 @@ Type *type_basic(Arena *arena, TypeKind kind)
     case TYPE_VOID_EXPR: size = 0U; break;
     default: return NULL;
     }
+    /* A structure or union record is a placeholder that the parser fills in
+       once its members are known, so those are never shared. */
+    if ((size_t)kind >= TYPE_TABLE_SLOTS || kind == TYPE_STRUCT ||
+        kind == TYPE_UNION) {
+        return type_alloc(arena, kind, size, alignment);
+    }
+    type_table_select(arena);
+    if (type_table.basics[kind] != NULL) {
+        return type_table.basics[kind];
+    }
     Type *type = type_alloc(arena, kind, size, alignment);
     if (type != NULL && (kind == TYPE_STRUCT || kind == TYPE_UNION)) {
         type->incomplete = true;
+    }
+    if (type != NULL) {
+        type_table.basics[kind] = type;
     }
     return type;
 }
@@ -65,12 +114,27 @@ Type *type_pointer(Arena *arena, Type *base, TypeQualifiers qualifiers)
     if (base == NULL) {
         return NULL;
     }
+    /* Only a pointer to a basic type is shared. A pointer to anything else keeps
+       its own record, because its size and alignment come from the type it
+       points at and there is no bound on how many such types a unit has. */
+    bool shared = qualifiers == 0U && base->kind < TYPE_TABLE_SLOTS &&
+                  base->kind != TYPE_STRUCT && base->kind != TYPE_UNION;
+    if (shared) {
+        type_table_select(arena);
+        Type *existing = type_table.pointers[base->kind];
+        if (existing != NULL && existing->base == base) {
+            return existing;
+        }
+    }
     Type *type = type_alloc(arena, TYPE_POINTER, 8U, 8U);
     if (type == NULL) {
         return NULL;
     }
     type->base = base;
     type->qualifiers = qualifiers;
+    if (shared && type_table.pointers[base->kind] == NULL) {
+        type_table.pointers[base->kind] = type;
+    }
     return type;
 }
 

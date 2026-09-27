@@ -25,7 +25,12 @@ typedef struct StringLiteral {
 } StringLiteral;
 
 typedef struct LowerContext {
+    /* Two arenas. Names, types, symbols, and the durable copies of literal text
+       live in the arena that lasts the whole compile. The lowered form of one
+       declaration lives in the arena that is released once that declaration has
+       been encoded, so a large unit is never lowered all at once. */
     Arena *arena;
+    Arena *ir;
     DiagnosticSink *diagnostics;
     const TranslationUnit *unit;
     IrProgram *program;
@@ -44,7 +49,7 @@ typedef struct LowerContext {
 static IrInst *ir_new(LowerContext *context, IrOp op, Type *type,
                       const AstNode *origin)
 {
-    IrInst *inst = arena_alloc(context->arena, sizeof(*inst));
+    IrInst *inst = arena_alloc(context->ir, sizeof(*inst));
     if (inst == NULL) {
         context->failed = true;
         return NULL;
@@ -288,7 +293,7 @@ static void assign_frame(LowerContext *context, Symbol *function, AstNode *body)
     } else {
         frame = align_up(frame, 16U);
     }
-    IrFunction *function_ir = arena_alloc(context->arena, sizeof(*function_ir));
+    IrFunction *function_ir = arena_alloc(context->ir, sizeof(*function_ir));
     if (function_ir == NULL) {
         context->failed = true;
         return;
@@ -641,7 +646,7 @@ static LabelEntry *find_label(LowerContext *context, const char *name, bool crea
         if (strcmp(entry->name, name) == 0) return entry;
     }
     if (!create) return NULL;
-    LabelEntry *entry = arena_alloc(context->arena, sizeof(*entry));
+    LabelEntry *entry = arena_alloc(context->ir, sizeof(*entry));
     if (entry == NULL) return NULL;
     entry->name = cc64_xstrdup(name);
     entry->id = new_label(context);
@@ -771,7 +776,7 @@ static void collect_cases(LowerContext *context, AstNode *node,
                     }
                 }
             }
-            CaseLabel *entry = arena_alloc(context->arena, sizeof(*entry));
+            CaseLabel *entry = arena_alloc(context->ir, sizeof(*entry));
             if (entry == NULL) {
                 context->failed = true;
                 return;
@@ -1031,7 +1036,7 @@ static void lower_one_statement(LowerContext *context, AstNode *node,
             IrCase *case_tail_ir = NULL;
             for (CaseLabel *entry = case_head; entry != NULL; entry = entry->next) {
                 if (entry->node == NULL || entry->node->kind != NODE_CASE) continue;
-                IrCase *item = arena_alloc(context->arena, sizeof(*item));
+                IrCase *item = arena_alloc(context->ir, sizeof(*item));
                 if (item == NULL) { context->failed = true; break; }
                 item->value = normalize_case_value(node->a == NULL ? NULL : node->a->type,
                                                      entry->value);
@@ -1106,14 +1111,14 @@ static void lower_statement_list(LowerContext *context, AstNode *node,
    time. The order is the source order: a function body can only refer to
    declarations that precede it, which is what C requires, so nothing has to be
    collected in a separate pass over the whole unit. */
-bool lower_declaration(Arena *arena, const TranslationUnit *unit,
+bool lower_declaration(Arena *arena, Arena *ir, const TranslationUnit *unit,
                        AstNode *declaration, DiagnosticSink *diagnostics,
                        IrProgram *program)
 {
     if (declaration == NULL) return true;
     if (program->globals == NULL) program->globals = unit->globals;
     LowerContext context = {
-        arena, diagnostics, unit, program, NULL, 0U, 0U, 0U, 0U,
+        arena, ir, diagnostics, unit, program, NULL, 0U, 0U, 0U, 0U,
         NULL, NULL, NULL, 0U, false
     };
     if (declaration->kind == NODE_FUNCTION_DEFINITION) {
@@ -1138,20 +1143,6 @@ bool lower_declaration(Arena *arena, const TranslationUnit *unit,
     collect_literals(&context, declaration);
     collect_static_symbols(&context, declaration);
     return !context.failed;
-}
-
-bool lower_translation_unit(Arena *arena, const TranslationUnit *unit,
-                            DiagnosticSink *diagnostics, IrProgram *program)
-{
-    memset(program, 0, sizeof(*program));
-    program->globals = unit->globals;
-    for (size_t i = 0U; i < unit->count; ++i) {
-        if (!lower_declaration(arena, unit, unit->declarations[i], diagnostics,
-                               program)) {
-            return false;
-        }
-    }
-    return true;
 }
 
 void ir_program_free(IrProgram *program)

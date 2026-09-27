@@ -2027,6 +2027,15 @@ Parser *parser_create(Arena *arena, Arena *node_arena, TokenList *tokens,
         if (kept != i) items[kept] = items[i];
         ++kept;
     }
+    /* The list was sized from the source text and the compaction dropped both
+       ends of every line, so the array is now longer than the stream it holds.
+       Handing the tail back matters on the target, where the array is a large
+       part of what a unit has to fit in, and a smaller request is served from
+       the same block. */
+    if (kept != count) {
+        Token *shrunk = realloc(items, kept * sizeof(*items));
+        if (shrunk != NULL) items = shrunk;
+    }
     Parser *parser = arena_alloc(arena, sizeof(*parser));
     if (parser == NULL) return NULL;
     memset(parser, 0, sizeof(*parser));

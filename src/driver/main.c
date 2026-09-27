@@ -296,21 +296,23 @@ static char *derive_output_name(const char *input, const char *extension)
    options block, so several inputs share every setting and differ only in the
    input path and the output path derived from it. Diagnostics accumulate in the
    shared sink, and the return value reports only what this input produced. */
-/* Parse, lower, and release one declaration at a time.
+/* Parse, lower, encode, and release one declaration at a time.
  *
- * A function's syntax tree is dead once its body has been lowered, so it goes
- * back to the node arena before the next declaration is parsed. A declaration
- * of an object is kept: the encoder reads its initializer to emit the data
- * after every function has been lowered. */
-static bool compile_declarations(Arena *arena, Arena *nodes, Parser *parser,
-                                 DiagnosticSink *sink, TranslationUnit *unit,
-                                 IrProgram *program)
+ * A function's syntax tree and its lowered form are both dead once the encoder
+ * has emitted the function, so they go back to their arenas before the next
+ * declaration is parsed. A declaration of an object is kept: the encoder reads
+ * its initializer to emit the data after every function has been encoded. */
+static bool compile_declarations(Arena *arena, Arena *ir, Arena *nodes,
+                                 Parser *parser, DiagnosticSink *sink,
+                                 TranslationUnit *unit, IrProgram *program,
+                                 IrEncoder *encoder)
 {
     if (parser == NULL) return false;
     bool good = true;
     size_t first = 0U;
     size_t last = 0U;
     ArenaMark mark;
+    ArenaMark irmark;
     arena_mark(nodes, &mark);
     while (good && parser_next(parser, &first, &last)) {
         bool function = false;
@@ -318,8 +320,20 @@ static bool compile_declarations(Arena *arena, Arena *nodes, Parser *parser,
             if (unit->declarations[i]->kind == NODE_FUNCTION_DEFINITION) {
                 function = true;
             }
-            good = lower_declaration(arena, unit, unit->declarations[i], sink,
+            IrFunction *before = program->function_tail;
+            arena_mark(ir, &irmark);
+            good = lower_declaration(arena, ir, unit, unit->declarations[i], sink,
                                      program);
+            if (good && program->function_tail != before) {
+                good = ir_encoder_add_function(encoder, program->function_tail);
+                if (before != NULL) {
+                    before->next = NULL;
+                } else {
+                    program->functions = NULL;
+                }
+                program->function_tail = before;
+            }
+            arena_release(ir, &irmark);
         }
         if (good && function) {
             arena_release(nodes, &mark);
@@ -347,6 +361,10 @@ static int compile_one(Options *options, DiagnosticSink *sink)
         return 1;
     }
 
+    /* Newline tokens are not only for the dumping actions: a preprocessing
+       directive ends at the end of its line, so the token stream has to carry
+       line boundaries through the whole preprocessor. The parser drops them
+       again when it compacts the stream in place. */
     PreprocessorOptions pp_options = {
         options->include_paths, options->include_path_count,
         options->predefines, options->predefine_count, options->preserve_newlines
@@ -375,27 +393,36 @@ static int compile_one(Options *options, DiagnosticSink *sink)
         } else if (options->action == ACTION_DUMP_AST) {
             good = print_ast(&unit);
         } else {
-            /* A declaration is parsed, lowered, and then released, so the front
-               end never holds every function's syntax tree at once. That is
-               what keeps a large translation unit inside the target's memory:
-               names, types, and literal text live in the durable arena, and so
-               does the lowered program. */
+            /* A declaration is parsed, lowered, encoded, and then released, so
+               neither the front end nor the middle end ever holds every
+               function's syntax tree or its lowered form at once. That is what
+               keeps a large translation unit inside the target's memory: names,
+               types, and literal text live in the durable arena, and the only
+               long-lived copy of a function is the machine code emitted from
+               it. */
             Arena *nodes = arena_create(64U * 1024U * 1024U);
-            Parser *parser = nodes == NULL
-                                 ? NULL
-                                 : parser_create(arena, nodes, &tokens, sink, &unit);
-            /* The parser keeps its own compact copy of the token stream, so
-               the preprocessed list is released here instead of being held for
-               the whole compile. */
-            good = compile_declarations(arena, nodes, parser, sink, &unit, &program);
+            Arena *ir = arena_create(64U * 1024U * 1024U);
+            ObjectBuilder builder;
+            object_builder_init(&builder, arena);
+            IrEncoder *encoder = nodes == NULL || ir == NULL
+                                     ? NULL
+                                     : ir_encoder_create(arena, &builder, sink);
+            /* The parser keeps its own compact copy of the token stream, so the
+               preprocessed list is released here instead of being held for the
+               whole compile. */
+            good = encoder != NULL &&
+                   compile_declarations(arena, ir, nodes,
+                                        nodes == NULL ? NULL
+                                                      : parser_create(arena, nodes,
+                                                                      &tokens, sink,
+                                                                      &unit),
+                                        sink, &unit, &program, encoder) &&
+                   ir_encoder_finish(encoder, &program) &&
+                   object_write_cc64o(&builder, options->output, sink);
+            ir_encoder_destroy(encoder);
+            object_builder_destroy(&builder);
+            arena_destroy(ir);
             arena_destroy(nodes);
-            if (good) {
-                ObjectBuilder builder;
-                object_builder_init(&builder, arena);
-                good = encode_ir_program(arena, &program, &builder, sink) &&
-                       object_write_cc64o(&builder, options->output, sink);
-                object_builder_destroy(&builder);
-            }
         }
     }
     print_diagnostics(sink);

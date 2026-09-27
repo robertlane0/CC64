@@ -41,12 +41,15 @@ static bool size_mul(size_t left, size_t right, size_t *result)
     return true;
 }
 
+static size_t arena_generation = 0U;
+
 Arena *arena_create(size_t limit)
 {
     Arena *arena = cc64_xmalloc(sizeof(*arena));
     arena->head = NULL;
     arena->total = 0U;
     arena->limit = limit;
+    arena->generation = ++arena_generation;
     return arena;
 }
 

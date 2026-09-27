@@ -15,7 +15,7 @@ typedef struct LabelFixup {
     size_t label;
 } LabelFixup;
 
-typedef struct Encoder {
+struct IrEncoder {
     Arena *arena;
     DiagnosticSink *diagnostics;
     ObjectBuilder *builder;
@@ -26,7 +26,7 @@ typedef struct Encoder {
     size_t code_size;
     size_t code_capacity;
     size_t function_offset;
-    IrFunction *function;
+    const IrFunction *function;
     Symbol *main_symbol;
     size_t stack_depth;
     LabelSlot *labels;
@@ -36,11 +36,11 @@ typedef struct Encoder {
     size_t fixup_count;
     size_t fixup_capacity;
     bool failed;
-} Encoder;
+};
 
 static const unsigned char argument_registers[6] = {7U, 6U, 2U, 1U, 8U, 9U};
 
-static void encoder_error(Encoder *encoder, unsigned id, const SourceLocation *location,
+static void encoder_error(IrEncoder *encoder, unsigned id, const SourceLocation *location,
                           const char *message)
 {
     diagnostic_emit(encoder->diagnostics, id, DIAG_BACKEND,
@@ -50,7 +50,7 @@ static void encoder_error(Encoder *encoder, unsigned id, const SourceLocation *l
     encoder->failed = true;
 }
 
-static bool ensure_code(Encoder *encoder, size_t extra)
+static bool ensure_code(IrEncoder *encoder, size_t extra)
 {
     if (extra > SIZE_MAX - encoder->code_size) return false;
     size_t needed = encoder->code_size + extra;
@@ -66,34 +66,34 @@ static bool ensure_code(Encoder *encoder, size_t extra)
     return true;
 }
 
-static void emit8(Encoder *encoder, unsigned char value)
+static void emit8(IrEncoder *encoder, unsigned char value)
 {
     if (!ensure_code(encoder, 1U)) { encoder->failed = true; return; }
     encoder->code[encoder->code_size++] = value;
 }
 
-static void emit32(Encoder *encoder, uint32_t value)
+static void emit32(IrEncoder *encoder, uint32_t value)
 {
     for (unsigned i = 0U; i < 4U; ++i) emit8(encoder, (unsigned char)(value >> (i * 8U)));
 }
 
-static void emit64(Encoder *encoder, uint64_t value)
+static void emit64(IrEncoder *encoder, uint64_t value)
 {
     for (unsigned i = 0U; i < 8U; ++i) emit8(encoder, (unsigned char)(value >> (i * 8U)));
 }
 
-static void emit_rex(Encoder *encoder, bool w, unsigned reg, unsigned rm)
+static void emit_rex(IrEncoder *encoder, bool w, unsigned reg, unsigned rm)
 {
     unsigned value = (w ? 8U : 0U) | ((reg >= 8U) ? 4U : 0U) | ((rm >= 8U) ? 1U : 0U);
     if (value != 0U) emit8(encoder, (unsigned char)(0x40U | value));
 }
 
-static void emit_modrm_reg(Encoder *encoder, unsigned reg, unsigned rm)
+static void emit_modrm_reg(IrEncoder *encoder, unsigned reg, unsigned rm)
 {
     emit8(encoder, (unsigned char)(0xc0U | ((reg & 7U) << 3) | (rm & 7U)));
 }
 
-static void emit_mem_reg(Encoder *encoder, unsigned base, unsigned reg,
+static void emit_mem_reg(IrEncoder *encoder, unsigned base, unsigned reg,
                          int64_t displacement)
 {
     if (displacement < INT32_MIN || displacement > INT32_MAX) {
@@ -110,14 +110,14 @@ static void emit_mem_reg(Encoder *encoder, unsigned base, unsigned reg,
     }
 }
 
-static void emit_mem_rip(Encoder *encoder, unsigned reg)
+static void emit_mem_rip(IrEncoder *encoder, unsigned reg)
 {
     emit8(encoder, (unsigned char)(((reg & 7U) << 3) | 5U));
 }
 
 /* LEA reg, [base + displacement]. emit_mem_reg only writes the addressing
    bytes, so the REX prefix and opcode are emitted here. */
-static void emit_lea_mem(Encoder *encoder, unsigned base, unsigned reg,
+static void emit_lea_mem(IrEncoder *encoder, unsigned base, unsigned reg,
                          int64_t displacement)
 {
     emit_rex(encoder, true, reg, base);
@@ -125,14 +125,14 @@ static void emit_lea_mem(Encoder *encoder, unsigned base, unsigned reg,
     emit_mem_reg(encoder, base, reg, displacement);
 }
 
-static void emit_mov_reg_reg(Encoder *encoder, unsigned dst, unsigned src)
+static void emit_mov_reg_reg(IrEncoder *encoder, unsigned dst, unsigned src)
 {
     emit_rex(encoder, true, src, dst);
     emit8(encoder, 0x89U);
     emit_modrm_reg(encoder, src, dst);
 }
 
-static void emit_mov_reg32_reg(Encoder *encoder, unsigned dst, unsigned src)
+static void emit_mov_reg32_reg(IrEncoder *encoder, unsigned dst, unsigned src)
 {
     if (src >= 8U) emit8(encoder, 0x41U);
     emit8(encoder, 0x89U);
@@ -142,14 +142,14 @@ static void emit_mov_reg32_reg(Encoder *encoder, unsigned dst, unsigned src)
 /* Opcode 88 is "MOV r/m8, r8": the destination is the r/m operand and the
    source is the reg operand, so the register arguments are passed in the
    opposite order from the 64-bit move. */
-static void emit_mov_reg8_reg(Encoder *encoder, unsigned dst, unsigned src)
+static void emit_mov_reg8_reg(IrEncoder *encoder, unsigned dst, unsigned src)
 {
     emit_rex(encoder, false, src, dst);
     emit8(encoder, 0x88U);
     emit_modrm_reg(encoder, src, dst);
 }
 
-static void emit_mov_reg_imm(Encoder *encoder, unsigned reg, uint64_t value, unsigned width)
+static void emit_mov_reg_imm(IrEncoder *encoder, unsigned reg, uint64_t value, unsigned width)
 {
     if (width == 8U) {
         emit8(encoder, (unsigned char)(0x48U | (reg >= 8U ? 1U : 0U)));
@@ -162,33 +162,33 @@ static void emit_mov_reg_imm(Encoder *encoder, unsigned reg, uint64_t value, uns
     }
 }
 
-static void emit_push(Encoder *encoder, unsigned reg)
+static void emit_push(IrEncoder *encoder, unsigned reg)
 {
     if (reg >= 8U) emit8(encoder, 0x41U);
     emit8(encoder, (unsigned char)(0x50U + (reg & 7U)));
 }
 
-static void emit_pop(Encoder *encoder, unsigned reg)
+static void emit_pop(IrEncoder *encoder, unsigned reg)
 {
     if (reg >= 8U) emit8(encoder, 0x41U);
     emit8(encoder, (unsigned char)(0x58U + (reg & 7U)));
 }
 
-static void emit_alu(Encoder *encoder, unsigned opcode, unsigned dst, unsigned src)
+static void emit_alu(IrEncoder *encoder, unsigned opcode, unsigned dst, unsigned src)
 {
     emit_rex(encoder, true, src, dst);
     emit8(encoder, (unsigned char)opcode);
     emit_modrm_reg(encoder, src, dst);
 }
 
-static void emit_test(Encoder *encoder, unsigned reg)
+static void emit_test(IrEncoder *encoder, unsigned reg)
 {
     emit_rex(encoder, true, reg, reg);
     emit8(encoder, 0x85U);
     emit_modrm_reg(encoder, reg, reg);
 }
 
-static void emit_setcc(Encoder *encoder, unsigned condition)
+static void emit_setcc(IrEncoder *encoder, unsigned condition)
 {
     emit8(encoder, 0x0fU);
     emit8(encoder, (unsigned char)(0x90U + condition));
@@ -211,7 +211,7 @@ static bool condition_code(CompareOperator compare, bool is_signed, unsigned *co
     return false;
 }
 
-static void emit_load_mem(Encoder *encoder, unsigned reg, unsigned base, int64_t displacement,
+static void emit_load_mem(IrEncoder *encoder, unsigned reg, unsigned base, int64_t displacement,
                           size_t width, bool is_signed)
 {
     if (width == 1U || width == 2U) {
@@ -229,7 +229,7 @@ static void emit_load_mem(Encoder *encoder, unsigned reg, unsigned base, int64_t
     emit_mem_reg(encoder, base, reg, displacement);
 }
 
-static void emit_store_mem(Encoder *encoder, unsigned src, unsigned base, int64_t displacement,
+static void emit_store_mem(IrEncoder *encoder, unsigned src, unsigned base, int64_t displacement,
                            size_t width)
 {
     if (width == 2U) emit8(encoder, 0x66U);
@@ -238,7 +238,7 @@ static void emit_store_mem(Encoder *encoder, unsigned src, unsigned base, int64_
     emit_mem_reg(encoder, base, src, displacement);
 }
 
-static size_t add_label(Encoder *encoder, size_t id)
+static size_t add_label(IrEncoder *encoder, size_t id)
 {
     for (size_t i = 0U; i < encoder->label_count; ++i) {
         if (encoder->labels[i].id == id) return i;
@@ -256,7 +256,7 @@ static size_t add_label(Encoder *encoder, size_t id)
     return index;
 }
 
-static void add_fixup(Encoder *encoder, size_t field, size_t label)
+static void add_fixup(IrEncoder *encoder, size_t field, size_t label)
 {
     if (encoder->fixup_count == encoder->fixup_capacity) {
         size_t next = encoder->fixup_capacity == 0U ? 32U : encoder->fixup_capacity * 2U;
@@ -269,7 +269,7 @@ static void add_fixup(Encoder *encoder, size_t field, size_t label)
     ++encoder->fixup_count;
 }
 
-static void emit_jump(Encoder *encoder, size_t label)
+static void emit_jump(IrEncoder *encoder, size_t label)
 {
     emit8(encoder, 0xe9U);
     size_t field = encoder->code_size;
@@ -277,7 +277,7 @@ static void emit_jump(Encoder *encoder, size_t label)
     add_fixup(encoder, field, label);
 }
 
-static void emit_conditional_jump(Encoder *encoder, unsigned condition, size_t label)
+static void emit_conditional_jump(IrEncoder *encoder, unsigned condition, size_t label)
 {
     emit8(encoder, 0x0fU);
     emit8(encoder, (unsigned char)(0x80U + condition));
@@ -286,7 +286,7 @@ static void emit_conditional_jump(Encoder *encoder, unsigned condition, size_t l
     add_fixup(encoder, field, label);
 }
 
-static bool resolve_labels(Encoder *encoder)
+static bool resolve_labels(IrEncoder *encoder)
 {
     for (size_t i = 0U; i < encoder->fixup_count; ++i) {
         LabelFixup *fixup = &encoder->fixups[i];
@@ -310,14 +310,14 @@ static bool resolve_labels(Encoder *encoder)
     return true;
 }
 
-static void define_label(Encoder *encoder, size_t id)
+static void define_label(IrEncoder *encoder, size_t id)
 {
     size_t index = add_label(encoder, id);
     encoder->labels[index].offset = encoder->code_size;
     encoder->labels[index].defined = true;
 }
 
-static void emit_rip_reference(Encoder *encoder, unsigned opcode, unsigned reg, Symbol *symbol)
+static void emit_rip_reference(IrEncoder *encoder, unsigned opcode, unsigned reg, Symbol *symbol)
 {
     emit_rex(encoder, true, reg, 0U);
     emit8(encoder, (unsigned char)opcode);
@@ -329,7 +329,7 @@ static void emit_rip_reference(Encoder *encoder, unsigned opcode, unsigned reg, 
                                 CC64O_REL_PC32, 0, 4U);
 }
 
-static size_t object_symbol_index(Encoder *encoder, Symbol *symbol)
+static size_t object_symbol_index(IrEncoder *encoder, Symbol *symbol)
 {
     for (size_t i = 0U; i < encoder->builder->symbol_count; ++i) {
         ObjectSymbol *entry = &encoder->builder->symbols[i];
@@ -351,12 +351,12 @@ static bool symbol_is_local(const Symbol *symbol)
            symbol->storage != STORAGE_STATIC && symbol->storage != STORAGE_EXTERN;
 }
 
-static void encode_expr(Encoder *encoder, IrInst *inst);
+static void encode_expr(IrEncoder *encoder, IrInst *inst);
 static bool is_float_type(const Type *type);
-static void emit_normalize(Encoder *encoder, size_t width, bool is_signed);
-static void emit_load_rax(Encoder *encoder, size_t width, bool is_signed);
+static void emit_normalize(IrEncoder *encoder, size_t width, bool is_signed);
+static void emit_load_rax(IrEncoder *encoder, size_t width, bool is_signed);
 
-static void emit_save_xmm0(Encoder *encoder, size_t width)
+static void emit_save_xmm0(IrEncoder *encoder, size_t width)
 {
     emit8(encoder, 0x48U); emit8(encoder, 0x83U); emit8(encoder, 0xecU); emit8(encoder, 0x08U);
     ++encoder->stack_depth;
@@ -369,7 +369,7 @@ static void emit_save_xmm0(Encoder *encoder, size_t width)
     }
 }
 
-static void emit_restore_xmm(Encoder *encoder, unsigned index, size_t width)
+static void emit_restore_xmm(IrEncoder *encoder, unsigned index, size_t width)
 {
     if (width == 4U) {
         emit8(encoder, 0xf3U); emit8(encoder, 0x0fU);
@@ -410,7 +410,7 @@ static bool call_argument_location(const IrInst *args, const IrInst *target,
     return false;
 }
 
-static void encode_call(Encoder *encoder, IrInst *inst)
+static void encode_call(IrEncoder *encoder, IrInst *inst)
 {
     size_t argument_count = 0U;
     size_t stack_argument_count = 0U;
@@ -431,7 +431,7 @@ static void encode_call(Encoder *encoder, IrInst *inst)
     if (direct && argument_count == 0U && inst->a->symbol != NULL &&
         inst->a->symbol->name != NULL &&
         strcmp(inst->a->symbol->name, "__cc64_va_start") == 0) {
-        IrFunction *current = encoder->function;
+        const IrFunction *current = encoder->function;
         if (current == NULL || !current->symbol->type->variadic ||
             current->va_area_offset == 0) {
             encoder_error(encoder, 4021U, &inst->location,
@@ -545,7 +545,7 @@ static bool is_float_type(const Type *type)
     return type != NULL && (type->kind == TYPE_FLOAT || type->kind == TYPE_DOUBLE);
 }
 
-static void emit_xmm_load_rax(Encoder *encoder, size_t width)
+static void emit_xmm_load_rax(IrEncoder *encoder, size_t width)
 {
     if (width == 4U) {
         emit8(encoder, 0xf3U); emit8(encoder, 0x0fU);
@@ -556,14 +556,14 @@ static void emit_xmm_load_rax(Encoder *encoder, size_t width)
     }
 }
 
-static void emit_xmm_move_from_rax(Encoder *encoder)
+static void emit_xmm_move_from_rax(IrEncoder *encoder)
 {
     emit8(encoder, 0x66U); emit8(encoder, 0x48U);
     emit8(encoder, 0x0fU); emit8(encoder, 0x6eU);
     emit8(encoder, 0xc0U);
 }
 
-static void emit_xmm_move_to_rax(Encoder *encoder, size_t width)
+static void emit_xmm_move_to_rax(IrEncoder *encoder, size_t width)
 {
     if (width == 4U) {
         emit8(encoder, 0xf2U); emit8(encoder, 0x0fU);
@@ -575,21 +575,21 @@ static void emit_xmm_move_to_rax(Encoder *encoder, size_t width)
     }
 }
 
-static void emit_xmm_from_stack(Encoder *encoder)
+static void emit_xmm_from_stack(IrEncoder *encoder)
 {
     emit8(encoder, 0xf2U); emit8(encoder, 0x0fU);
     emit8(encoder, 0x10U); emit8(encoder, 0x04U);
     emit8(encoder, 0x24U);
 }
 
-static void emit_xmm_to_stack(Encoder *encoder)
+static void emit_xmm_to_stack(IrEncoder *encoder)
 {
     emit8(encoder, 0xf2U); emit8(encoder, 0x0fU);
     emit8(encoder, 0x11U); emit8(encoder, 0x04U);
     emit8(encoder, 0x24U);
 }
 
-static void encode_float_constant(Encoder *encoder, IrInst *inst)
+static void encode_float_constant(IrEncoder *encoder, IrInst *inst)
 {
     if (inst->type != NULL && inst->type->kind == TYPE_FLOAT) {
         float value = (float)inst->value.floating;
@@ -605,7 +605,7 @@ static void encode_float_constant(Encoder *encoder, IrInst *inst)
     emit_xmm_move_from_rax(encoder);
 }
 
-static void encode_load(Encoder *encoder, IrInst *inst)
+static void encode_load(IrEncoder *encoder, IrInst *inst)
 {
     if (is_float_type(inst->type)) {
         if (inst->a == NULL && inst->symbol != NULL) {
@@ -667,7 +667,7 @@ static void encode_load(Encoder *encoder, IrInst *inst)
     emit_load_rax(encoder, width, (((inst->flags) & IR_FLAG_SIGNED) != 0U));
 }
 
-static void encode_store(Encoder *encoder, IrInst *inst)
+static void encode_store(IrEncoder *encoder, IrInst *inst)
 {
     if (is_float_type(inst->type)) {
         encode_expr(encoder, inst->a);
@@ -699,7 +699,7 @@ static void encode_store(Encoder *encoder, IrInst *inst)
     emit_mov_reg_reg(encoder, 0U, 1U);
 }
 
-static void encode_addr(Encoder *encoder, IrInst *inst)
+static void encode_addr(IrEncoder *encoder, IrInst *inst)
 {
     if (inst->symbol != NULL && inst->a == NULL) {
         if (symbol_is_local(inst->symbol)) {
@@ -714,7 +714,7 @@ static void encode_addr(Encoder *encoder, IrInst *inst)
     encode_expr(encoder, inst->a);
 }
 
-static void encode_member(Encoder *encoder, IrInst *inst)
+static void encode_member(IrEncoder *encoder, IrInst *inst)
 {
     encode_expr(encoder, inst->a);
     if (inst->offset == 0) return;
@@ -729,7 +729,7 @@ static void encode_member(Encoder *encoder, IrInst *inst)
     }
 }
 
-static void emit_binary_opcode(Encoder *encoder, IrOp op, bool is_signed)
+static void emit_binary_opcode(IrEncoder *encoder, IrOp op, bool is_signed)
 {
     switch (op) {
     case IR_ADD: emit_alu(encoder, 0x01U, 0U, 1U); break;
@@ -752,7 +752,7 @@ static void emit_binary_opcode(Encoder *encoder, IrOp op, bool is_signed)
     }
 }
 
-static void emit_xmm_convert_to_double(Encoder *encoder, size_t width)
+static void emit_xmm_convert_to_double(IrEncoder *encoder, size_t width)
 {
     if (width == 4U) {
         emit8(encoder, 0xf3U); emit8(encoder, 0x0fU);
@@ -760,7 +760,7 @@ static void emit_xmm_convert_to_double(Encoder *encoder, size_t width)
     }
 }
 
-static void emit_xmm_convert_from_double(Encoder *encoder, size_t width)
+static void emit_xmm_convert_from_double(IrEncoder *encoder, size_t width)
 {
     if (width == 4U) {
         emit8(encoder, 0xf2U); emit8(encoder, 0x0fU);
@@ -768,7 +768,7 @@ static void emit_xmm_convert_from_double(Encoder *encoder, size_t width)
     }
 }
 
-static void encode_float_binary(Encoder *encoder, IrInst *inst)
+static void encode_float_binary(IrEncoder *encoder, IrInst *inst)
 {
     size_t width = inst->type == NULL ? 8U : type_size(inst->type);
     encode_expr(encoder, inst->a);
@@ -792,7 +792,7 @@ static void encode_float_binary(Encoder *encoder, IrInst *inst)
     emit_xmm_convert_from_double(encoder, width);
 }
 
-static void encode_float_compare(Encoder *encoder, IrInst *inst)
+static void encode_float_compare(IrEncoder *encoder, IrInst *inst)
 {
     encode_expr(encoder, inst->a);
     emit_xmm_convert_to_double(encoder, inst->a == NULL ? 8U : type_size(inst->a->type));
@@ -819,7 +819,7 @@ static void encode_float_compare(Encoder *encoder, IrInst *inst)
     emit8(encoder, 0x0fU); emit8(encoder, 0xb6U); emit8(encoder, 0xc0U);
 }
 
-static void encode_binary(Encoder *encoder, IrInst *inst)
+static void encode_binary(IrEncoder *encoder, IrInst *inst)
 {
     encode_expr(encoder, inst->a);
     emit_push(encoder, 0U);
@@ -850,7 +850,7 @@ static IrOp compound_ir_op(BinaryOperator binary)
     }
 }
 
-static void encode_compound(Encoder *encoder, IrInst *inst)
+static void encode_compound(IrEncoder *encoder, IrInst *inst)
 {
     if (inst->a == NULL || inst->b == NULL) return;
     encode_expr(encoder, inst->a);
@@ -872,7 +872,7 @@ static void encode_compound(Encoder *encoder, IrInst *inst)
                    inst->width == 0U ? 8U : inst->width);
 }
 
-static void emit_normalize(Encoder *encoder, size_t width, bool is_signed)
+static void emit_normalize(IrEncoder *encoder, size_t width, bool is_signed)
 {
     if (width == 1U) {
         emit8(encoder, 0x48U); emit8(encoder, 0x0fU);
@@ -889,7 +889,7 @@ static void emit_normalize(Encoder *encoder, size_t width, bool is_signed)
     }
 }
 
-static void emit_load_rax(Encoder *encoder, size_t width, bool is_signed)
+static void emit_load_rax(IrEncoder *encoder, size_t width, bool is_signed)
 {
     if (width == 1U || width == 2U) {
         emit8(encoder, 0x48U); emit8(encoder, 0x0fU);
@@ -908,7 +908,7 @@ static void emit_load_rax(Encoder *encoder, size_t width, bool is_signed)
     }
 }
 
-static void emit_add_imm(Encoder *encoder, unsigned reg, int64_t value,
+static void emit_add_imm(IrEncoder *encoder, unsigned reg, int64_t value,
                          size_t width)
 {
     (void)width;
@@ -930,7 +930,7 @@ static void emit_add_imm(Encoder *encoder, unsigned reg, int64_t value,
     }
 }
 
-static void encode_logical(Encoder *encoder, IrInst *inst)
+static void encode_logical(IrEncoder *encoder, IrInst *inst)
 {
     encode_expr(encoder, inst->a);
     emit_test(encoder, 0U);
@@ -957,7 +957,7 @@ static void encode_logical(Encoder *encoder, IrInst *inst)
     }
 }
 
-static void encode_copy(Encoder *encoder, IrInst *inst)
+static void encode_copy(IrEncoder *encoder, IrInst *inst)
 {
     if (inst->a == NULL || inst->b == NULL) return;
     encode_expr(encoder, inst->a);
@@ -972,7 +972,7 @@ static void encode_copy(Encoder *encoder, IrInst *inst)
     emit_mov_reg_reg(encoder, 0U, 7U);
 }
 
-static void encode_zero(Encoder *encoder, IrInst *inst)
+static void encode_zero(IrEncoder *encoder, IrInst *inst)
 {
     if (inst->a == NULL) return;
     encode_expr(encoder, inst->a);
@@ -986,7 +986,7 @@ static void encode_zero(Encoder *encoder, IrInst *inst)
     if (encoder->stack_depth != 0U) --encoder->stack_depth;
 }
 
-static void encode_increment(Encoder *encoder, IrInst *inst)
+static void encode_increment(IrEncoder *encoder, IrInst *inst)
 {
     if (inst->a == NULL) {
         encoder_error(encoder, 4024U, &inst->location,
@@ -1007,7 +1007,7 @@ static void encode_increment(Encoder *encoder, IrInst *inst)
     if ((((inst->flags) & IR_FLAG_POST) != 0U)) emit_mov_reg_reg(encoder, 0U, 10U);
 }
 
-static void encode_switch(Encoder *encoder, IrInst *inst)
+static void encode_switch(IrEncoder *encoder, IrInst *inst)
 {
     encode_expr(encoder, inst->a);
     if (inst->a != NULL && inst->a->width == 4U) {
@@ -1027,7 +1027,7 @@ static void encode_switch(Encoder *encoder, IrInst *inst)
     emit_jump(encoder, inst->default_label);
 }
 
-static void encode_unary(Encoder *encoder, IrInst *inst)
+static void encode_unary(IrEncoder *encoder, IrInst *inst)
 {
     encode_expr(encoder, inst->a);
     switch (inst->op) {
@@ -1045,7 +1045,7 @@ static void encode_unary(Encoder *encoder, IrInst *inst)
     }
 }
 
-static void encode_conditional(Encoder *encoder, IrInst *inst)
+static void encode_conditional(IrEncoder *encoder, IrInst *inst)
 {
     encode_expr(encoder, inst->a);
     emit_test(encoder, 0U);
@@ -1057,7 +1057,7 @@ static void encode_conditional(Encoder *encoder, IrInst *inst)
     define_label(encoder, inst->end_label);
 }
 
-static void encode_cast(Encoder *encoder, IrInst *inst)
+static void encode_cast(IrEncoder *encoder, IrInst *inst)
 {
     size_t width = inst->width == 0U ? 8U : inst->width;
     if (is_float_type(inst->type)) {
@@ -1079,13 +1079,13 @@ static void encode_cast(Encoder *encoder, IrInst *inst)
     if (width != 8U) emit_normalize(encoder, width, type_is_signed(inst->type));
 }
 
-static void encode_comma(Encoder *encoder, IrInst *inst)
+static void encode_comma(IrEncoder *encoder, IrInst *inst)
 {
     encode_expr(encoder, inst->a);
     encode_expr(encoder, inst->b);
 }
 
-static void encode_expr(Encoder *encoder, IrInst *inst)
+static void encode_expr(IrEncoder *encoder, IrInst *inst)
 {
     if (inst == NULL || encoder->failed) return;
     switch (inst->op) {
@@ -1143,7 +1143,7 @@ static void encode_expr(Encoder *encoder, IrInst *inst)
     }
 }
 
-static void encode_return(Encoder *encoder, IrInst *inst)
+static void encode_return(IrEncoder *encoder, IrInst *inst)
 {
     if (inst->a != NULL) {
         encode_expr(encoder, inst->a);
@@ -1156,7 +1156,7 @@ static void encode_return(Encoder *encoder, IrInst *inst)
     emit8(encoder, 0xc3U);
 }
 
-static void encode_statement(Encoder *encoder, IrInst *inst)
+static void encode_statement(IrEncoder *encoder, IrInst *inst)
 {
     if (inst == NULL || encoder->failed) return;
     switch (inst->op) {
@@ -1172,7 +1172,7 @@ static void encode_statement(Encoder *encoder, IrInst *inst)
     }
 }
 
-static void emit_prologue(Encoder *encoder, IrFunction *function)
+static void emit_prologue(IrEncoder *encoder, const IrFunction *function)
 {
     emit_push(encoder, 5U);
     emit_mov_reg_reg(encoder, 5U, 4U);
@@ -1234,40 +1234,31 @@ static void emit_prologue(Encoder *encoder, IrFunction *function)
     }
 }
 
-static bool prepare_symbols(Encoder *encoder, IrProgram *program)
+/* A defined object needs a section, a size, and, for an object without an
+   initializer, its place in the zero-filled section. Its record may already
+   exist because a function that was encoded earlier referred to it, so the
+   record is filled in rather than appended. */
+static bool prepare_global_symbol(IrEncoder *encoder, Symbol *symbol)
 {
-    for (size_t i = 0U; i < program->global_count; ++i) {
-        Symbol *symbol = program->global_symbols[i];
-        if (symbol == NULL || symbol->name == NULL) continue;
-        if (symbol->storage == STORAGE_EXTERN && symbol->initializer == NULL) {
-            (void)object_symbol_index(encoder, symbol);
-            continue;
-        }
-        bool initialized = symbol->initializer != NULL;
-        uint32_t section_index = initialized ? 1U : 2U;
-        (void)object_add_symbol(encoder->builder, symbol->name, 0U, section_index,
-                                (unsigned char)(symbol->linkage == LINKAGE_INTERNAL ? 0U : 1U), 1U,
-                                type_size(symbol->type), true);
-        encoder->builder->symbols[encoder->builder->symbol_count - 1U].source_symbol = symbol;
-        if (!initialized) {
-            size_t alignment = type_alignment(symbol->type);
-            size_t mask = alignment == 0U ? 0U : alignment - 1U;
-            size_t offset = (encoder->bss->size + mask) & ~mask;
-            size_t size = type_size(symbol->type);
-            encoder->bss->size = offset + size;
-            encoder->builder->symbols[encoder->builder->symbol_count - 1U].value = offset;
-        }
+    if (symbol == NULL || symbol->name == NULL) return true;
+    if (symbol->storage == STORAGE_EXTERN && symbol->initializer == NULL) {
+        return object_symbol_index(encoder, symbol) != UINT32_MAX;
     }
-    for (IrFunction *function = program->functions; function != NULL; function = function->next) {
-        (void)object_symbol_index(encoder, function->symbol);
-        for (size_t i = 0U; i < encoder->builder->symbol_count; ++i) {
-            if (strcmp(encoder->builder->symbols[i].name, function->symbol->name) == 0) {
-                encoder->builder->symbols[i].section_index = 0U;
-                encoder->builder->symbols[i].kind = 2U;
-                encoder->builder->symbols[i].binding = (unsigned char)(function->symbol->linkage == LINKAGE_INTERNAL ? 0U : 1U);
-                break;
-            }
-        }
+    size_t index = object_symbol_index(encoder, symbol);
+    if (index == UINT32_MAX) return false;
+    bool initialized = symbol->initializer != NULL;
+    ObjectSymbol *entry = &encoder->builder->symbols[index];
+    entry->section_index = initialized ? 1U : 2U;
+    entry->kind = 1U;
+    entry->binding = (unsigned char)(symbol->linkage == LINKAGE_INTERNAL ? 0U : 1U);
+    entry->size = type_size(symbol->type);
+    entry->defined = true;
+    if (!initialized) {
+        size_t alignment = type_alignment(symbol->type);
+        size_t mask = alignment == 0U ? 0U : alignment - 1U;
+        size_t offset = (encoder->bss->size + mask) & ~mask;
+        entry->value = offset;
+        encoder->bss->size = offset + entry->size;
     }
     return true;
 }
@@ -1337,7 +1328,7 @@ static bool constant_integer_value(AstNode *value, uint64_t *result)
     return false;
 }
 
-static bool write_constant_initializer(Encoder *encoder, AstNode *value,
+static bool write_constant_initializer(IrEncoder *encoder, AstNode *value,
                                        Type *type, unsigned char *bytes,
                                        size_t base, size_t limit,
                                        size_t relocation_origin)
@@ -1443,7 +1434,7 @@ static size_t encoder_align_up(size_t value, size_t alignment)
     return (value + mask) & ~mask;
 }
 
-static bool append_global_data(Encoder *encoder, IrProgram *program)
+static bool append_global_data(IrEncoder *encoder, const IrProgram *program)
 {
     for (size_t i = 0U; i < program->global_count; ++i) {
         Symbol *symbol = program->global_symbols[i];
@@ -1564,7 +1555,7 @@ static bool runtime_function_info(const char *name, RuntimeFunction *function)
 #define CC64_START_CALL 12U
 #define CC64_START_SKIP_DELIMITER 13U
 
-static void emit_startup_body(Encoder *encoder, Symbol *main_symbol)
+static void emit_startup_body(IrEncoder *encoder, Symbol *main_symbol)
 {
     /* The frame holds the argument vector at the bottom and the command tail
        copy above it. Register use stays inside the call-clobbered set: RAX the
@@ -1719,7 +1710,7 @@ static void emit_startup_body(Encoder *encoder, Symbol *main_symbol)
    which is what the runtime library is written against: the service value on
    success, -1 on failure. CF survives the interrupt return in the trap frame's
    RFLAGS slot, so a forward conditional jump over the assignment is enough. */
-static void emit_service_int(Encoder *encoder)
+static void emit_service_int(IrEncoder *encoder)
 {
     emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
     emit8(encoder, 0x73U); emit8(encoder, 0x07U);   /* jnc past the assignment */
@@ -1727,7 +1718,7 @@ static void emit_service_int(Encoder *encoder)
     emit32(encoder, 0xffffffffU);                  /* mov rax, -1 */
 }
 
-static void emit_runtime_body(Encoder *encoder, RuntimeFunction function)
+static void emit_runtime_body(IrEncoder *encoder, RuntimeFunction function)
 {
     switch (function) {
     case RUNTIME_PUTC:
@@ -1814,7 +1805,7 @@ static void emit_runtime_body(Encoder *encoder, RuntimeFunction function)
     emit8(encoder, 0xc3U);
 }
 
-static bool append_runtime_functions(Encoder *encoder)
+static bool append_runtime_functions(IrEncoder *encoder)
 {
     static const char *const names[] = {
         "cc64_putc", "cc64_write", "cc64_read", "cc64_alloc",
@@ -1841,7 +1832,7 @@ static bool append_runtime_functions(Encoder *encoder)
         if (encoder->builder->symbols[symbol_index].section_index != UINT32_MAX) continue;
         RuntimeFunction function = RUNTIME_EXIT;
         (void)runtime_function_info(names[i], &function);
-        Encoder runtime = {0};
+        IrEncoder runtime = {0};
         runtime.arena = encoder->arena;
         runtime.diagnostics = encoder->diagnostics;
         runtime.builder = encoder->builder;
@@ -1869,7 +1860,7 @@ static bool append_runtime_functions(Encoder *encoder)
     return true;
 }
 
-static bool encode_function(Encoder *encoder, IrFunction *function)
+static bool encode_function(IrEncoder *encoder, const IrFunction *function)
 {
     encoder->code = NULL; encoder->code_size = 0U; encoder->code_capacity = 0U;
     encoder->stack_depth = 0U;
@@ -1895,34 +1886,67 @@ static bool encode_function(Encoder *encoder, IrFunction *function)
     return !encoder->failed;
 }
 
-bool encode_ir_program(Arena *arena, IrProgram *program, ObjectBuilder *builder,
-                       DiagnosticSink *diagnostics)
+IrEncoder *ir_encoder_create(Arena *arena, ObjectBuilder *builder,
+                             DiagnosticSink *diagnostics)
 {
-    Encoder encoder = {0};
-    encoder.arena = arena;
-    encoder.diagnostics = diagnostics;
-    encoder.builder = builder;
-    encoder.text = object_add_section(builder, ".text", 0U, 16U);
-    encoder.data = object_add_section(builder, ".data", 2U, 8U);
-    encoder.bss = object_add_section(builder, ".bss", 3U, 8U);
-    if (encoder.text == NULL || encoder.data == NULL || encoder.bss == NULL) return false;
-    encoder.text = &builder->sections[0];
-    encoder.data = &builder->sections[1];
-    encoder.bss = &builder->sections[2];
-    for (IrFunction *entry = program->functions; entry != NULL; entry = entry->next) {
-        if (entry->symbol != NULL && entry->symbol->name != NULL &&
-            strcmp(entry->symbol->name, "main") == 0) {
-            encoder.main_symbol = entry->symbol;
+    IrEncoder *encoder = cc64_xmalloc(sizeof(*encoder));
+    if (encoder == NULL) return NULL;
+    memset(encoder, 0, sizeof(*encoder));
+    encoder->arena = arena;
+    encoder->diagnostics = diagnostics;
+    encoder->builder = builder;
+    encoder->text = object_add_section(builder, ".text", 0U, 16U);
+    encoder->data = object_add_section(builder, ".data", 2U, 8U);
+    encoder->bss = object_add_section(builder, ".bss", 3U, 8U);
+    if (encoder->text == NULL || encoder->data == NULL || encoder->bss == NULL) {
+        free(encoder);
+        return NULL;
+    }
+    /* Adding a section can move the table, so the section records are read back
+       from the builder rather than kept from the calls above. No section is
+       added after this point, so the three stay put. */
+    encoder->text = &builder->sections[0];
+    encoder->data = &builder->sections[1];
+    encoder->bss = &builder->sections[2];
+    return encoder;
+}
+
+bool ir_encoder_add_function(IrEncoder *encoder, const IrFunction *function)
+{
+    if (function == NULL || function->symbol == NULL ||
+        function->symbol->name == NULL) return false;
+    Symbol *symbol = function->symbol;
+    if (strcmp(symbol->name, "main") == 0) encoder->main_symbol = symbol;
+    /* A function that an earlier function already referred to has a record
+       without a section; this is where that record becomes a definition. */
+    if (object_symbol_index(encoder, symbol) == UINT32_MAX) return false;
+    for (size_t i = 0U; i < encoder->builder->symbol_count; ++i) {
+        if (encoder->builder->symbols[i].source_symbol == symbol) {
+            encoder->builder->symbols[i].section_index = 0U;
+            encoder->builder->symbols[i].kind = 2U;
+            encoder->builder->symbols[i].binding =
+                (unsigned char)(symbol->linkage == LINKAGE_INTERNAL ? 0U : 1U);
             break;
         }
     }
-    if (!prepare_symbols(&encoder, program) || !append_global_data(&encoder, program)) return false;
-    for (IrFunction *function = program->functions; function != NULL; function = function->next) {
-        if (!encode_function(&encoder, function)) return false;
+    return encode_function(encoder, function);
+}
+
+bool ir_encoder_finish(IrEncoder *encoder, const IrProgram *program)
+{
+    for (size_t i = 0U; i < program->global_count; ++i) {
+        if (!prepare_global_symbol(encoder, program->global_symbols[i])) return false;
     }
-    if (!append_runtime_functions(&encoder)) return false;
-    free(encoder.labels);
-    free(encoder.fixups);
-    free(encoder.code);
-    return !encoder.failed;
+    if (!append_global_data(encoder, program)) return false;
+    if (!append_runtime_functions(encoder)) return false;
+    return !encoder->failed;
+}
+
+void ir_encoder_destroy(IrEncoder *encoder)
+{
+    if (encoder == NULL) return;
+    free(encoder->labels);
+    free(encoder->fixups);
+    free(encoder->code);
+    free(encoder);
 }
