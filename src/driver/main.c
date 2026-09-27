@@ -302,11 +302,10 @@ static char *derive_output_name(const char *input, const char *extension)
  * back to the node arena before the next declaration is parsed. A declaration
  * of an object is kept: the encoder reads its initializer to emit the data
  * after every function has been lowered. */
-static bool compile_declarations(Arena *arena, Arena *nodes,
-                                 const TokenList *tokens, DiagnosticSink *sink,
-                                 TranslationUnit *unit, IrProgram *program)
+static bool compile_declarations(Arena *arena, Arena *nodes, Parser *parser,
+                                 DiagnosticSink *sink, TranslationUnit *unit,
+                                 IrProgram *program)
 {
-    Parser *parser = parser_create(arena, nodes, tokens, sink, unit);
     if (parser == NULL) return false;
     bool good = true;
     size_t first = 0U;
@@ -382,8 +381,13 @@ static int compile_one(Options *options, DiagnosticSink *sink)
                names, types, and literal text live in the durable arena, and so
                does the lowered program. */
             Arena *nodes = arena_create(64U * 1024U * 1024U);
-            good = nodes != NULL && compile_declarations(arena, nodes, &tokens,
-                                                         sink, &unit, &program);
+            Parser *parser = nodes == NULL
+                                 ? NULL
+                                 : parser_create(arena, nodes, &tokens, sink, &unit);
+            /* The parser keeps its own compact copy of the token stream, so
+               the preprocessed list is released here instead of being held for
+               the whole compile. */
+            good = compile_declarations(arena, nodes, parser, sink, &unit, &program);
             arena_destroy(nodes);
             if (good) {
                 ObjectBuilder builder;

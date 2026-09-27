@@ -6,13 +6,13 @@
 
 typedef struct LabelEntry {
     char *name;
-    size_t id;
+    uint32_t id;
     struct LabelEntry *next;
 } LabelEntry;
 
 typedef struct CaseLabel {
     AstNode *node;
-    size_t id;
+    uint32_t id;
     uint64_t value;
     bool has_value;
     struct CaseLabel *next;
@@ -31,9 +31,9 @@ typedef struct LowerContext {
     IrProgram *program;
     Symbol *function;
     size_t next_label;
-    size_t break_label;
-    size_t continue_label;
-    size_t switch_end_label;
+    uint32_t break_label;
+    uint32_t continue_label;
+    uint32_t switch_end_label;
     LabelEntry *labels;
     CaseLabel *cases;
     StringLiteral *literals;
@@ -56,8 +56,9 @@ static IrInst *ir_new(LowerContext *context, IrOp op, Type *type,
     inst->location.line = origin == NULL ? 0U : origin->location.line;
     inst->location.column = origin == NULL ? 0U : origin->location.column;
     if (type != NULL) {
-        inst->width = type_size(type);
-        inst->is_signed = type_is_signed(type);
+        size_t width = type_size(type);
+        inst->width = width > UINT32_MAX ? UINT32_MAX : (uint32_t)width;
+        if (type_is_signed(type)) inst->flags |= IR_FLAG_SIGNED;
     }
     return inst;
 }
@@ -79,9 +80,15 @@ static void ir_append_list(IrInst **head, IrInst **tail,
     *tail = list_tail == NULL ? list_head : list_tail;
 }
 
-static size_t new_label(LowerContext *context)
+/* Labels are 32-bit, and the count is bounded so a pathological unit cannot
+   wrap one back onto another. */
+static uint32_t new_label(LowerContext *context)
 {
-    return ++context->next_label;
+    if (context->next_label >= UINT32_MAX) {
+        context->failed = true;
+        return 0U;
+    }
+    return (uint32_t)++context->next_label;
 }
 
 static void lower_error(LowerContext *context, unsigned id, const AstNode *node,
@@ -335,7 +342,7 @@ static IrInst *lower_address(LowerContext *context, AstNode *node)
         Type *element = node->type == NULL ? NULL : node->type;
         size_t scale = type_size(element);
         IrInst *scale_inst = ir_new(context, IR_CONST, type_basic(context->arena, TYPE_LONG), node);
-        if (scale_inst != NULL) scale_inst->immediate = scale;
+        if (scale_inst != NULL) scale_inst->value.immediate = scale;
         IrInst *scaled = ir_new(context, IR_MUL, type_basic(context->arena, TYPE_LONG), node);
         if (scaled != NULL) { scaled->a = index; scaled->b = scale_inst; }
         IrInst *add = ir_new(context, IR_ADD, type_basic(context->arena, TYPE_LONG), node);
@@ -376,12 +383,12 @@ static IrInst *lower_expr(LowerContext *context, AstNode *node)
     switch (node->kind) {
     case NODE_INTEGER: {
         IrInst *inst = ir_new(context, IR_CONST, node->type, node);
-        if (inst != NULL) inst->immediate = node->unsigned_integer;
+        if (inst != NULL) inst->value.immediate = node->unsigned_integer;
         return inst;
     }
     case NODE_FLOAT: {
         IrInst *inst = ir_new(context, IR_FLOAT_CONST, node->type, node);
-        if (inst != NULL) inst->floating = node->floating;
+        if (inst != NULL) inst->value.floating = node->floating;
         return inst;
     }
     case NODE_STRING: {
@@ -394,7 +401,7 @@ static IrInst *lower_expr(LowerContext *context, AstNode *node)
     case NODE_IDENTIFIER:
         if (node->symbol != NULL && node->symbol->class == SYMBOL_ENUM_CONSTANT) {
             IrInst *inst = ir_new(context, IR_CONST, node->type, node);
-            if (inst != NULL) inst->immediate = (uint64_t)node->symbol->enum_value;
+            if (inst != NULL) inst->value.immediate = (uint64_t)node->symbol->enum_value;
             return inst;
         }
         if (node->type->kind == TYPE_FUNCTION || node->type->kind == TYPE_ARRAY) return lower_address(context, node);
@@ -411,7 +418,7 @@ static IrInst *lower_expr(LowerContext *context, AstNode *node)
     }
     case NODE_SIZEOF: {
         IrInst *inst = ir_new(context, IR_CONST, type_basic(context->arena, TYPE_UNSIGNED_LONG), node);
-        if (inst != NULL) inst->immediate = node->unsigned_integer;
+        if (inst != NULL) inst->value.immediate = node->unsigned_integer;
         return inst;
     }
     case NODE_ADDRESS: {
@@ -463,7 +470,7 @@ static IrInst *lower_expr(LowerContext *context, AstNode *node)
                                        type_basic(context->arena, TYPE_LONG), node);
                 IrInst *scaled = ir_new(context, IR_MUL,
                                         type_basic(context->arena, TYPE_LONG), node);
-                if (scale != NULL) scale->immediate = type_size(node->type->base);
+                if (scale != NULL) scale->value.immediate = type_size(node->type->base);
                 if (scaled != NULL) { scaled->a = value; scaled->b = scale; }
                 value = scaled;
             }
@@ -484,7 +491,7 @@ static IrInst *lower_expr(LowerContext *context, AstNode *node)
             if (inst != NULL) {
                 inst->a = address;
                 inst->b = source;
-                inst->immediate = type_size(node->type);
+                inst->value.immediate = type_size(node->type);
             }
             return inst;
         }
@@ -519,7 +526,7 @@ static IrInst *lower_expr(LowerContext *context, AstNode *node)
                 IrInst *result = ir_new(context,
                                         node->binary == BINARY_ADD ? IR_ADD : IR_SUB,
                                         node->type, node);
-                if (scale != NULL) scale->immediate = type_size(pointer_type->base);
+                if (scale != NULL) scale->value.immediate = type_size(pointer_type->base);
                 if (scaled != NULL) { scaled->a = index; scaled->b = scale; }
                 if (result != NULL) {
                     result->a = base;
@@ -539,7 +546,7 @@ static IrInst *lower_expr(LowerContext *context, AstNode *node)
             IrInst *result = ir_new(context, IR_DIV,
                                     type_basic(context->arena, TYPE_LONG), node);
             if (difference != NULL) { difference->a = left; difference->b = right; }
-            if (scale != NULL) scale->immediate = type_size(node->a->type->base);
+            if (scale != NULL) scale->value.immediate = type_size(node->a->type->base);
             if (result != NULL) { result->a = difference; result->b = scale; }
             return result;
         }
@@ -565,9 +572,9 @@ static IrInst *lower_expr(LowerContext *context, AstNode *node)
             inst->a = lower_expr(context, node->a);
             inst->b = lower_expr(context, node->b);
             if (op == IR_LOGICAL_AND || op == IR_LOGICAL_OR) {
-                inst->true_label = new_label(context);
-                inst->false_label = new_label(context);
-                inst->end_label = new_label(context);
+                inst->true_label = (uint32_t)new_label(context);
+                inst->false_label = (uint32_t)new_label(context);
+                inst->end_label = (uint32_t)new_label(context);
             }
         }
         return inst;
@@ -589,9 +596,11 @@ static IrInst *lower_expr(LowerContext *context, AstNode *node)
                 if (node->unary == UNARY_PRE_DECREMENT ||
                     node->unary == UNARY_POST_DECREMENT) step = -step;
                 inst->a = address;
-                inst->immediate = (uint64_t)step;
-                inst->post = node->unary == UNARY_POST_INCREMENT ||
-                             node->unary == UNARY_POST_DECREMENT;
+                inst->value.immediate = (uint64_t)step;
+                if (node->unary == UNARY_POST_INCREMENT ||
+                    node->unary == UNARY_POST_DECREMENT) {
+                    inst->flags |= IR_FLAG_POST;
+                }
             }
             return inst;
         }
@@ -604,9 +613,9 @@ static IrInst *lower_expr(LowerContext *context, AstNode *node)
     case NODE_CONDITIONAL: {
         IrInst *inst = ir_new(context, IR_CONDITIONAL, node->type, node);
         if (inst != NULL) {
-            inst->true_label = new_label(context);
-            inst->false_label = new_label(context);
-            inst->end_label = new_label(context);
+            inst->true_label = (uint32_t)new_label(context);
+            inst->false_label = (uint32_t)new_label(context);
+            inst->end_label = (uint32_t)new_label(context);
             inst->a = lower_expr(context, node->a);
             inst->b = lower_expr(context, node->b);
             inst->c = lower_expr(context, node->c);
@@ -745,7 +754,7 @@ static uint64_t normalize_case_value(Type *type, uint64_t value)
 
 static void collect_cases(LowerContext *context, AstNode *node,
                           CaseLabel **head, CaseLabel **tail,
-                          size_t *count, size_t *default_label,
+                          uint32_t *count, uint32_t *default_label,
                           bool *has_default)
 {
     for (; node != NULL; node = node->next) {
@@ -804,7 +813,7 @@ static void lower_local_zero(LowerContext *context, Symbol *symbol,
                              NULL);
     IrInst *zero = ir_new(context, IR_ZERO, symbol->type, NULL);
     if (address != NULL) address->symbol = symbol;
-    if (zero != NULL) { zero->a = address; zero->immediate = type_size(symbol->type); }
+    if (zero != NULL) { zero->a = address; zero->value.immediate = type_size(symbol->type); }
     ir_append(head, tail, zero);
 }
 
@@ -823,8 +832,8 @@ static void lower_string_at(LowerContext *context, Symbol *symbol,
         IrInst *byte = ir_new(context, IR_CONST, type->base, value);
         IrInst *store = ir_new(context, IR_STORE, type->base, value);
         if (address != NULL) address->symbol = symbol;
-        if (constant != NULL) constant->immediate = offset + i * type_size(type->base);
-        if (byte != NULL) byte->immediate = (unsigned char)value->text[i];
+        if (constant != NULL) constant->value.immediate = offset + i * type_size(type->base);
+        if (byte != NULL) byte->value.immediate = (unsigned char)value->text[i];
         if (add != NULL) { add->a = address; add->b = constant; }
         if (store != NULL) { store->a = add; store->b = byte; }
         ir_append(head, tail, store);
@@ -875,14 +884,14 @@ static void lower_init_at(LowerContext *context, Symbol *symbol,
         IrInst *constant = ir_new(context, IR_CONST,
                                    type_basic(context->arena, TYPE_LONG), value);
         add = ir_new(context, IR_ADD, type_basic(context->arena, TYPE_LONG), value);
-        if (constant != NULL) constant->immediate = offset;
+        if (constant != NULL) constant->value.immediate = offset;
         if (add != NULL) { add->a = address; add->b = constant; }
         address_value = add;
     }
     IrInst *store = ir_new(context, IR_STORE, type, value);
     IrInst *scalar = value->kind == NODE_STRING
                          ? ir_new(context, IR_CONST, type, value) : lower_expr(context, value);
-    if (scalar != NULL && value->kind == NODE_STRING) scalar->immediate = (unsigned char)value->text[0];
+    if (scalar != NULL && value->kind == NODE_STRING) scalar->value.immediate = (unsigned char)value->text[0];
     if (address != NULL) address->symbol = symbol;
     if (store != NULL) { store->a = address_value; store->b = scalar; }
     ir_append(head, tail, store);
@@ -926,9 +935,9 @@ static void lower_one_statement(LowerContext *context, AstNode *node,
         break;
     }
     case NODE_IF: {
-        size_t then_label = new_label(context);
-        size_t else_label = new_label(context);
-        size_t end_label = new_label(context);
+        uint32_t then_label = new_label(context);
+        uint32_t else_label = new_label(context);
+        uint32_t end_label = new_label(context);
         IrInst *branch = ir_new(context, IR_BRANCH, type_basic(context->arena, TYPE_INT), node);
         if (branch != NULL) { branch->a = lower_expr(context, node->a); branch->true_label = then_label; branch->false_label = node->c == NULL ? end_label : else_label; }
         IrInst *label_then = ir_new(context, IR_LABEL, NULL, node); if (label_then != NULL) label_then->id = then_label;
@@ -950,8 +959,8 @@ static void lower_one_statement(LowerContext *context, AstNode *node,
         break;
     }
     case NODE_WHILE: {
-        size_t start = new_label(context); size_t end = new_label(context);
-        size_t old_break = context->break_label; size_t old_continue = context->continue_label;
+        uint32_t start = new_label(context); uint32_t end = new_label(context);
+        uint32_t old_break = context->break_label; uint32_t old_continue = context->continue_label;
         context->break_label = end; context->continue_label = start;
         IrInst *label_start = ir_new(context, IR_LABEL, NULL, node); if (label_start != NULL) label_start->id = start;
         IrInst *branch = ir_new(context, IR_BRANCH, type_basic(context->arena, TYPE_INT), node); if (branch != NULL) { branch->a = lower_expr(context, node->a); branch->false_label = end; }
@@ -963,8 +972,8 @@ static void lower_one_statement(LowerContext *context, AstNode *node,
         break;
     }
     case NODE_DO: {
-        size_t start = new_label(context); size_t continue_label = new_label(context); size_t end = new_label(context);
-        size_t old_break = context->break_label; size_t old_continue = context->continue_label;
+        uint32_t start = new_label(context); uint32_t continue_label = new_label(context); uint32_t end = new_label(context);
+        uint32_t old_break = context->break_label; uint32_t old_continue = context->continue_label;
         context->break_label = end; context->continue_label = continue_label;
         IrInst *label_start = ir_new(context, IR_LABEL, NULL, node); if (label_start != NULL) label_start->id = start;
         IrInst *body_head = NULL; IrInst *body_tail = NULL; lower_statement(context, node->b, &body_head, &body_tail);
@@ -977,7 +986,7 @@ static void lower_one_statement(LowerContext *context, AstNode *node,
         break;
     }
     case NODE_FOR: {
-        size_t start = new_label(context); size_t continue_label = new_label(context); size_t end = new_label(context);
+        uint32_t start = new_label(context); uint32_t continue_label = new_label(context); uint32_t end = new_label(context);
         if (node->a != NULL && node->a->kind == NODE_DECLARATION) {
             lower_statement(context, node->a, head, tail);
         } else {
@@ -990,7 +999,7 @@ static void lower_one_statement(LowerContext *context, AstNode *node,
             branch = ir_new(context, IR_BRANCH, type_basic(context->arena, TYPE_INT), node);
             if (branch != NULL) { branch->a = lower_expr(context, node->b); branch->false_label = end; }
         }
-        size_t old_break = context->break_label; size_t old_continue = context->continue_label; context->break_label = end; context->continue_label = continue_label;
+        uint32_t old_break = context->break_label; uint32_t old_continue = context->continue_label; context->break_label = end; context->continue_label = continue_label;
         IrInst *body_head = NULL; IrInst *body_tail = NULL; lower_statement(context, node->d, &body_head, &body_tail);
         IrInst *label_continue = ir_new(context, IR_LABEL, NULL, node); if (label_continue != NULL) label_continue->id = continue_label;
         IrInst *step = lower_expr(context, node->c);
@@ -1004,11 +1013,11 @@ static void lower_one_statement(LowerContext *context, AstNode *node,
         if (node->a == NULL || !type_is_integer(node->a->type)) {
             lower_error(context, 3013U, node, "switch condition must have integer type");
         }
-        size_t end_label = new_label(context);
+        uint32_t end_label = new_label(context);
         CaseLabel *case_head = NULL;
         CaseLabel *case_tail = NULL;
-        size_t case_count = 0U;
-        size_t default_label = end_label;
+        uint32_t case_count = 0U;
+        uint32_t default_label = end_label;
         bool has_default = false;
         collect_cases(context, node->b, &case_head, &case_tail, &case_count,
                       &default_label, &has_default);
@@ -1033,8 +1042,8 @@ static void lower_one_statement(LowerContext *context, AstNode *node,
                 case_tail_ir = item;
             }
         }
-        size_t old_break = context->break_label;
-        size_t old_continue = context->continue_label;
+        uint32_t old_break = context->break_label;
+        uint32_t old_continue = context->continue_label;
         CaseLabel *old_cases = context->cases;
         context->break_label = end_label;
         context->continue_label = old_continue;

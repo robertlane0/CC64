@@ -19,7 +19,7 @@ struct Parser {
     Arena *arena;
     Arena *node_arena;
     DiagnosticSink *diagnostics;
-    const Token *tokens;
+    Token *tokens;
     size_t count;
     size_t position;
     Scope *global_scope;
@@ -2011,18 +2011,21 @@ static void parse_global_declaration(Parser *parser, const DeclSpec *spec)
     (void)expect(parser, ";");
 }
 
-Parser *parser_create(Arena *arena, Arena *node_arena, const TokenList *tokens,
+Parser *parser_create(Arena *arena, Arena *node_arena, TokenList *tokens,
                       DiagnosticSink *diagnostics, TranslationUnit *unit)
 {
     if (arena == NULL || node_arena == NULL || tokens == NULL) return NULL;
     memset(unit, 0, sizeof(*unit));
-    Token *compact = arena_alloc_array(arena, tokens->count + 1U, sizeof(*compact));
-    if (compact == NULL) return NULL;
-    size_t count = 0U;
-    for (size_t i = 0U; i < tokens->count; ++i) {
-        if (tokens->items[i].kind != TOKEN_NEWLINE && tokens->items[i].kind != TOKEN_EOF) {
-            compact[count++] = tokens->items[i];
-        }
+    /* Newline and end tokens are dropped by compacting the list in place: a
+       second array of every token would cost more than the tokens themselves
+       for a large unit, and the list belongs to the caller. */
+    Token *items = tokens->items;
+    size_t count = tokens->count;
+    size_t kept = 0U;
+    for (size_t i = 0U; i < count; ++i) {
+        if (items[i].kind == TOKEN_NEWLINE || items[i].kind == TOKEN_EOF) continue;
+        if (kept != i) items[kept] = items[i];
+        ++kept;
     }
     Parser *parser = arena_alloc(arena, sizeof(*parser));
     if (parser == NULL) return NULL;
@@ -2030,8 +2033,13 @@ Parser *parser_create(Arena *arena, Arena *node_arena, const TokenList *tokens,
     parser->arena = arena;
     parser->node_arena = node_arena;
     parser->diagnostics = diagnostics;
-    parser->tokens = compact;
-    parser->count = count;
+    parser->tokens = items;
+    parser->count = kept;
+    /* The parser owns the array from here; the caller's list is emptied so its
+       own release is a no-op. */
+    tokens->items = NULL;
+    tokens->count = 0U;
+    tokens->capacity = 0U;
     parser->unit = unit;
     parser->global_scope = scope_create(arena, NULL);
     parser->scope = parser->global_scope;
@@ -2040,8 +2048,12 @@ Parser *parser_create(Arena *arena, Arena *node_arena, const TokenList *tokens,
 
 void parser_destroy(Parser *parser)
 {
-    /* The parser itself and its scopes live in the durable arena. */
-    (void)parser;
+    /* The parser itself and its scopes live in the durable arena; the token
+       array it took ownership of does not. */
+    if (parser == NULL) return;
+    free(parser->tokens);
+    parser->tokens = NULL;
+    parser->count = 0U;
 }
 
 /* One declaration per call, so the caller can lower it and release its syntax
@@ -2049,6 +2061,25 @@ void parser_destroy(Parser *parser)
    as in `int a, b;`, so the call reports the half-open range it appended.
    Error recovery stays inside the call: a declaration that cannot be parsed is
    skipped up to its terminator and the next call continues after it. */
+/* The parser owns the token array and releases it from the front as it is
+   consumed: a large unit holds tens of thousands of tokens, and the lowered
+   program grows while the parse is still in progress, so keeping the whole
+   stream alive until the end would add its whole size to the peak. */
+static void parser_release_consumed(Parser *parser)
+{
+    size_t position = parser->position;
+    if (position < 4096U || position * 2U < parser->count) return;
+    size_t remaining = parser->count - position;
+    if (remaining != 0U) {
+        memmove(parser->tokens, parser->tokens + position,
+                remaining * sizeof(*parser->tokens));
+    }
+    parser->count = remaining;
+    parser->position = 0U;
+    size_t capacity = remaining == 0U ? 1U : remaining;
+    parser->tokens = cc64_xrealloc(parser->tokens, capacity * sizeof(*parser->tokens));
+}
+
 bool parser_next(Parser *parser, size_t *first, size_t *last)
 {
     if (first != NULL) *first = 0U;
@@ -2065,6 +2096,7 @@ bool parser_next(Parser *parser, size_t *first, size_t *last)
         }
         size_t before = parser->unit->count;
         parse_global_declaration(parser, &spec);
+        parser_release_consumed(parser);
         if (parser->failed) return false;
         if (parser->unit->count == before) continue;
         if (first != NULL) *first = before;

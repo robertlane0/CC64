@@ -592,13 +592,13 @@ static void emit_xmm_to_stack(Encoder *encoder)
 static void encode_float_constant(Encoder *encoder, IrInst *inst)
 {
     if (inst->type != NULL && inst->type->kind == TYPE_FLOAT) {
-        float value = (float)inst->floating;
+        float value = (float)inst->value.floating;
         uint32_t bits = 0U;
         memcpy(&bits, &value, sizeof(bits));
         emit_mov_reg_imm(encoder, 0U, bits, 8U);
     } else {
         uint64_t bits = 0U;
-        double value = inst->floating;
+        double value = inst->value.floating;
         memcpy(&bits, &value, sizeof(bits));
         emit_mov_reg_imm(encoder, 0U, bits, 8U);
     }
@@ -635,15 +635,15 @@ static void encode_load(Encoder *encoder, IrInst *inst)
     if (inst->a == NULL && inst->symbol != NULL) {
         if (symbol_is_local(inst->symbol)) {
             emit_load_mem(encoder, 0U, 5U, (int64_t)inst->symbol->offset, width,
-                          inst->is_signed);
+                          (((inst->flags) & IR_FLAG_SIGNED) != 0U));
         } else {
             if (width == 1U || width == 2U) {
                 emit_rex(encoder, true, 0U, 0U);
                 emit8(encoder, 0x0fU);
-                emit8(encoder, inst->is_signed ? (width == 1U ? 0xbeU : 0xbfU) :
+                emit8(encoder, (((inst->flags) & IR_FLAG_SIGNED) != 0U) ? (width == 1U ? 0xbeU : 0xbfU) :
                               (width == 1U ? 0xb6U : 0xb7U));
             } else if (width == 4U) {
-                if (inst->is_signed) {
+                if ((((inst->flags) & IR_FLAG_SIGNED) != 0U)) {
                     emit_rex(encoder, true, 0U, 0U);
                     emit8(encoder, 0x63U);
                 } else {
@@ -664,7 +664,7 @@ static void encode_load(Encoder *encoder, IrInst *inst)
         return;
     }
     encode_expr(encoder, inst->a);
-    emit_load_rax(encoder, width, inst->is_signed);
+    emit_load_rax(encoder, width, (((inst->flags) & IR_FLAG_SIGNED) != 0U));
 }
 
 static void encode_store(Encoder *encoder, IrInst *inst)
@@ -828,9 +828,9 @@ static void encode_binary(Encoder *encoder, IrInst *inst)
     emit_mov_reg_reg(encoder, 1U, 0U);
     emit_pop(encoder, 0U);
     if (encoder->stack_depth != 0U) --encoder->stack_depth;
-    emit_binary_opcode(encoder, inst->op, inst->is_signed);
+    emit_binary_opcode(encoder, inst->op, (((inst->flags) & IR_FLAG_SIGNED) != 0U));
     emit_normalize(encoder, inst->width == 0U ? 8U : inst->width,
-                   inst->is_signed);
+                   (((inst->flags) & IR_FLAG_SIGNED) != 0U));
 }
 
 static IrOp compound_ir_op(BinaryOperator binary)
@@ -856,16 +856,16 @@ static void encode_compound(Encoder *encoder, IrInst *inst)
     encode_expr(encoder, inst->a);
     emit_push(encoder, 0U);
     ++encoder->stack_depth;
-    emit_load_rax(encoder, inst->width == 0U ? 8U : inst->width, inst->is_signed);
+    emit_load_rax(encoder, inst->width == 0U ? 8U : inst->width, (((inst->flags) & IR_FLAG_SIGNED) != 0U));
     emit_push(encoder, 0U);
     ++encoder->stack_depth;
     encode_expr(encoder, inst->b);
     emit_mov_reg_reg(encoder, 1U, 0U);
     emit_pop(encoder, 0U);
     if (encoder->stack_depth != 0U) --encoder->stack_depth;
-    emit_binary_opcode(encoder, compound_ir_op(inst->binary), inst->is_signed);
+    emit_binary_opcode(encoder, compound_ir_op(inst->binary), (((inst->flags) & IR_FLAG_SIGNED) != 0U));
     emit_normalize(encoder, inst->width == 0U ? 8U : inst->width,
-                   inst->is_signed);
+                   (((inst->flags) & IR_FLAG_SIGNED) != 0U));
     emit_pop(encoder, 11U);
     if (encoder->stack_depth != 0U) --encoder->stack_depth;
     emit_store_mem(encoder, 0U, 11U, 0,
@@ -967,7 +967,7 @@ static void encode_copy(Encoder *encoder, IrInst *inst)
     emit_mov_reg_reg(encoder, 6U, 0U);
     emit_pop(encoder, 7U);
     if (encoder->stack_depth != 0U) --encoder->stack_depth;
-    emit_mov_reg_imm(encoder, 1U, inst->immediate, 8U);
+    emit_mov_reg_imm(encoder, 1U, inst->value.immediate, 8U);
     emit8(encoder, 0xf3U); emit8(encoder, 0xa4U);
     emit_mov_reg_reg(encoder, 0U, 7U);
 }
@@ -979,7 +979,7 @@ static void encode_zero(Encoder *encoder, IrInst *inst)
     emit_push(encoder, 0U);
     ++encoder->stack_depth;
     emit_mov_reg_reg(encoder, 7U, 0U);
-    emit_mov_reg_imm(encoder, 1U, inst->immediate, 8U);
+    emit_mov_reg_imm(encoder, 1U, inst->value.immediate, 8U);
     emit8(encoder, 0x31U); emit8(encoder, 0xc0U);
     emit8(encoder, 0xf3U); emit8(encoder, 0xaaU);
     emit_pop(encoder, 0U);
@@ -997,21 +997,21 @@ static void encode_increment(Encoder *encoder, IrInst *inst)
     encode_expr(encoder, inst->a);
     emit_push(encoder, 0U);
     ++encoder->stack_depth;
-    emit_load_rax(encoder, width, inst->is_signed);
+    emit_load_rax(encoder, width, (((inst->flags) & IR_FLAG_SIGNED) != 0U));
     emit_mov_reg_reg(encoder, 10U, 0U);
-    emit_add_imm(encoder, 0U, (int64_t)inst->immediate, width);
-    emit_normalize(encoder, width, inst->is_signed);
+    emit_add_imm(encoder, 0U, (int64_t)inst->value.immediate, width);
+    emit_normalize(encoder, width, (((inst->flags) & IR_FLAG_SIGNED) != 0U));
     emit_pop(encoder, 11U);
     if (encoder->stack_depth != 0U) --encoder->stack_depth;
     emit_store_mem(encoder, 0U, 11U, 0, width);
-    if (inst->post) emit_mov_reg_reg(encoder, 0U, 10U);
+    if ((((inst->flags) & IR_FLAG_POST) != 0U)) emit_mov_reg_reg(encoder, 0U, 10U);
 }
 
 static void encode_switch(Encoder *encoder, IrInst *inst)
 {
     encode_expr(encoder, inst->a);
     if (inst->a != NULL && inst->a->width == 4U) {
-        if (inst->a->is_signed) {
+        if ((inst->a->flags & IR_FLAG_SIGNED) != 0U) {
             emit8(encoder, 0x48U); emit8(encoder, 0x63U); emit8(encoder, 0xc0U);
         } else {
             emit8(encoder, 0x89U); emit8(encoder, 0xc0U);
@@ -1041,7 +1041,7 @@ static void encode_unary(Encoder *encoder, IrInst *inst)
     }
     if (inst->op == IR_NEG || inst->op == IR_BIT_NOT) {
         emit_normalize(encoder, inst->width == 0U ? 8U : inst->width,
-                       inst->is_signed);
+                       (((inst->flags) & IR_FLAG_SIGNED) != 0U));
     }
 }
 
@@ -1091,11 +1091,11 @@ static void encode_expr(Encoder *encoder, IrInst *inst)
     switch (inst->op) {
     case IR_CONST: {
         unsigned width = inst->width == 0U ? 8U : (unsigned)inst->width;
-        if (width < 8U && inst->is_signed) {
-            int64_t signed_value = (int64_t)inst->immediate;
+        if (width < 8U && (((inst->flags) & IR_FLAG_SIGNED) != 0U)) {
+            int64_t signed_value = (int64_t)inst->value.immediate;
             emit_mov_reg_imm(encoder, 0U, (uint64_t)signed_value, 8U);
         } else {
-            emit_mov_reg_imm(encoder, 0U, inst->immediate, width);
+            emit_mov_reg_imm(encoder, 0U, inst->value.immediate, width);
         }
         break;
     }

@@ -60,36 +60,45 @@ typedef struct IrInst IrInst;
 typedef struct IrCase IrCase;
 struct IrCase {
     uint64_t value;
-    size_t label;
+    uint32_t label;
     struct IrCase *next;
 };
 
+/* One lowered instruction. The record is the largest per-instruction structure
+   in the compiler and a large unit lowers to tens of thousands of them, so
+   every counter and label is 32-bit, the flags share one word, and the
+   immediate, the floating value, and the switch table are alternatives that
+   only one kind of instruction uses. */
 struct IrInst {
     IrOp op;
     Type *type;
-    size_t width;
-    bool is_signed;
-    uint64_t immediate;
-    double floating;
+    uint32_t width;
+    uint32_t compare;
+    uint32_t binary;
+    uint32_t flags;               /* bit 0 signed, bit 1 postfix */
+    uint32_t id;
+    uint32_t true_label;
+    uint32_t false_label;
+    uint32_t end_label;
+    uint32_t default_label;
+    uint32_t case_count;
     Symbol *symbol;
     int64_t offset;
-    CompareOperator compare;
-    bool post;
-    BinaryOperator binary;
+    union {
+        uint64_t immediate;
+        double floating;
+    } value;
     IrCase *cases;
-    size_t case_count;
-    size_t default_label;
     IrInst *a;
     IrInst *b;
     IrInst *c;
     IrInst *args;
     IrInst *next;
-    size_t id;
-    size_t true_label;
-    size_t false_label;
-    size_t end_label;
     SourceLocation location;
 };
+
+#define IR_FLAG_SIGNED 1U
+#define IR_FLAG_POST 2U
 
 typedef struct IrFunction {
     Symbol *symbol;

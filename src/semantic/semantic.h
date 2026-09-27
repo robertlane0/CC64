@@ -114,10 +114,13 @@ struct Scope {
     Binding *bindings;
 };
 
+/* A source position is 32-bit, like the token positions it comes from, which
+   keeps the location out of every syntax-tree node and every lowered
+   instruction at eight bytes apiece. */
 typedef struct SourceLocation {
     const Source *source;
-    size_t line;
-    size_t column;
+    uint32_t line;
+    uint32_t column;
 } SourceLocation;
 
 typedef enum NodeKind {
@@ -257,7 +260,7 @@ bool parse_tokens(Arena *arena, TokenList *tokens, DiagnosticSink *diagnostics,
    declaration and release its syntax tree before parsing the next one. Nodes
    come from `node_arena`; names, types, and literal text come from `arena` and
    outlive every release. */
-Parser *parser_create(Arena *arena, Arena *node_arena, const TokenList *tokens,
+Parser *parser_create(Arena *arena, Arena *node_arena, TokenList *tokens,
                       DiagnosticSink *diagnostics, TranslationUnit *unit);
 bool parser_next(Parser *parser, size_t *first, size_t *last);
 bool parser_finish(Parser *parser);

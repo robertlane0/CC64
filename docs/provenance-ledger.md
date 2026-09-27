@@ -101,6 +101,8 @@ still be compared against the reference target.
 | D-063 | A token's positions and offsets are 32-bit, and a source past that bound is diagnosed rather than truncated | the token record is the front end's largest per-word structure and a large unit holds tens of thousands of them; a truncated position would silently misplace a later diagnostic |
 | D-064 | The lexer builds each token's text in one reused buffer and copies the finished text into the arena | a token that owned a heap block cost the target one block header per token, which for the largest unit was over a megabyte of pure per-block overhead |
 | D-065 | No interface takes or returns a structure by value; a mark is passed by address | version 1 has no aggregate calling convention, so a by-value structure parameter is a construct the compiler cannot lower, and the compiler's own sources are the first program that has to compile them |
+| D-066 | The parser compacts the preprocessed token stream in place and releases it from the front as it is consumed | a second array of every token costs more than the tokens themselves for a large unit, and holding the whole stream while the lowered program grows adds its full size to the peak |
+| D-067 | A lowered instruction keeps its counters, labels, and case count in 32-bit words, packs its two flags into one word, and holds the immediate and the floating value as alternatives | the instruction record is the largest structure the lowerer produces and a large unit lowers to tens of thousands of them, so the record's size sets the peak directly |
 
 ## Review rule
 
