@@ -28,7 +28,7 @@ place that decision lives, and strict release mode refuses an edit-branch run.
 | M4 linker, loader image, runtime | partial | independent CC64O validation, section/symbol merge, PC-relative relocation checks, deterministic raw `.COM`, target entry/exit trampoline, freestanding target headers, and QEMU/Bochs smoke; full runtime I/O coverage remains open |
 | M5 language and MS-DOS64 compatibility | partial | pointers, arrays, nested and multi-dimensional initializers, structs/unions, enums, switch/short-circuit control flow, increments/compound assignment, stack arguments, scalar/aggregate copies, basic binary32/binary64, the target runtime service set, formatted output, relational operators and the conditional operator, twenty-one QEMU cases, and Bochs raw and `MZ64` cases; a conformance corpus and full runtime/file/process coverage remain open |
 | M6 `MZ64`, diagnostics, hardening | partial | MZ64 header/table emission, image-relative data fixups, BSS sizing, full-file/section CRC validation, bounded relocation/object records, malformed-image rejection, deterministic raw/MZ links, and QEMU data-pointer execution; broad negative/load-bias and Bochs MZ64 coverage remain open |
-| M7 self-hosting | partial | a target-built compiler reproduces the bootstrap object, image, and exit code byte for byte for a project-authored source, and seven production translation units now compile on the target to objects that are byte-identical to the bootstrap compiler's. The self-hosted linker links the runtime objects and the compiler's own units, and the whole target library, startup, ABI, and conformance suites pass. Two defects block the remaining units and are recorded below: a runaway in the preprocessor's macro handling that appears only when the compiler is itself built for the target and depends on how that build lays out its code, and a peak of about five megabytes of live heap for the largest unit against a target heap of about six, so the two largest units do not yet fit. |
+| M7 self-hosting | partial | all fourteen production translation units compile on the target to objects that are byte-identical to the bootstrap compiler's, and the self-hosted linker then links those objects into a compiler image that is byte-identical to the bootstrap image, so the compiler builds itself and the product is the same compiler. `make check-release` runs the whole stage. The milestone's other half is still open: the conformance corpus has not been compiled *with* a target-built compiler, so the self-host evidence covers the compiler's own source and not the language suite. |
 | M8 release quality | partial | path-independent clean-build hash comparison, deterministic malformed source/object/image smoke, automated provenance/source-origin audit, QEMU/Bochs target evidence, and aggregate release gate run; human review and full self-hosting remain open |
 
 A milestone is marked complete only after its tests and required target runs
@@ -44,26 +44,27 @@ across 42 generated files and deterministic target artifacts.
 
 ### Open work recorded for M7
 
-1. The target-built preprocessor produces an unbounded token stream for some
-   inputs, which ends in a clean out-of-memory report rather than a wrong
-   object. The same input preprocesses correctly when the compiler is built
-   for the host, and the runaway appears in different inputs for builds that
-   differ only in instrumentation, so it is a code-generation defect in the
-   macro-expansion path rather than a defect in the preprocessor's rules. The
-   next step is to reduce the expansion loop to a case small enough to compare
-   against the host build instruction by instruction.
-2. The largest translation units need about five megabytes of live heap and the
-   target's whole heap is about six, so they do not fit once the image, the
-   BSS, and the operating system's own allocations are counted. The measured
-   reductions so far took the largest unit from about twelve megabytes to about
-   five; the next reductions have to come from encoding each function as it is
-   lowered, so the lowered program for a whole unit is never resident at once.
+1. The two blockers that were recorded here are closed. There was no runaway in
+   the preprocessor: a preprocessed-output comparison showed the target-built
+   preprocessor's output was byte-identical to the host's for every input that
+   fit in memory, so the failures were the compiler asking for more memory than
+   the target has. The measured live set for the largest unit went from 4.63 MiB
+   to 1.90 MiB, and the largest unit's durable arena from 2.08 MiB to 0.70 MiB,
+   by encoding each function as it is lowered, by sharing basic types, and by
+   sizing the token lists from the translation unit rather than from each
+   included source.
+2. The self-host stage now runs from `make check-release` and reports per
+   translation unit.
 
-This is a validation checkpoint, not a releasable M7/M8 claim. Full
-self-hosting, target-hosted compiler I/O and formatting, complete argv/envp
-construction, aggregate-by-value parameters, and the full QEMU/Bochs
-conformance matrix remain open. A release must record those limitations
-rather than treating a successful local aggregate command as completion.
+Remaining before M7 is complete: the conformance corpus has not yet been run
+*with* a target-built compiler, so the stage proves the compiler builds itself
+and not that a self-hosted build passes the language suite.
+
+This is a validation checkpoint, not a releasable M7/M8 claim. Target-hosted
+compiler I/O and formatting, complete argv/envp construction,
+aggregate-by-value parameters, and the full QEMU/Bochs conformance matrix
+remain open. A release must record those limitations rather than treating a
+successful local aggregate command as completion.
 `make check-release-strict` now enforces the clean-tree and emulator
 requirements, but it does not convert partial language/self-hosting coverage
 into release approval.
