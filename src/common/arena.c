@@ -114,11 +114,11 @@ void arena_mark(const Arena *arena, ArenaMark *mark)
 /* Only the allocations made after the mark are released, so every mark must be
    released before the mark that precedes it, and nothing allocated after a mark
    may still be reachable when the mark is released. */
-void arena_release(Arena *arena, ArenaMark mark)
+void arena_release(Arena *arena, const ArenaMark *mark)
 {
-    if (arena == NULL) return;
+    if (arena == NULL || mark == NULL) return;
     ArenaBlock *block = arena->head;
-    while (block != NULL && block != mark.block) {
+    while (block != NULL && block != mark->block) {
         ArenaBlock *next = block->next;
         free(block->data);
         free(block);
@@ -126,10 +126,10 @@ void arena_release(Arena *arena, ArenaMark mark)
     }
     arena->head = block;
     if (block != NULL) {
-        block->used = mark.used;
+        block->used = mark->used;
         block->next = NULL;
     }
-    arena->total = mark.total;
+    arena->total = mark->total;
 }
 
 void arena_destroy(Arena *arena)

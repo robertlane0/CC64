@@ -77,8 +77,10 @@ bool cc64_write_file(const char *path, const void *data, size_t size);
 Arena *arena_create(size_t limit);
 void *arena_alloc(Arena *arena, size_t size);
 void *arena_alloc_array(Arena *arena, size_t count, size_t size);
+/* The mark is passed by address: version 1 has no aggregate calling
+   convention, so no interface may take or return a structure by value. */
 void arena_mark(const Arena *arena, ArenaMark *mark);
-void arena_release(Arena *arena, ArenaMark mark);
+void arena_release(Arena *arena, const ArenaMark *mark);
 void arena_destroy(Arena *arena);
 
 SourceManager *source_manager_create(Arena *arena);

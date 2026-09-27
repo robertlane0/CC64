@@ -100,6 +100,7 @@ still be compared against the reference target.
 | D-062 | A repeated string-table entry takes the offset of the earlier entry as the sum of the lengths of all entries before it, each counting its terminator | the sum started at one, which counts the empty first entry twice and yields an offset one byte into a name, so every symbol after a repeated name pointed into the middle of another name |
 | D-063 | A token's positions and offsets are 32-bit, and a source past that bound is diagnosed rather than truncated | the token record is the front end's largest per-word structure and a large unit holds tens of thousands of them; a truncated position would silently misplace a later diagnostic |
 | D-064 | The lexer builds each token's text in one reused buffer and copies the finished text into the arena | a token that owned a heap block cost the target one block header per token, which for the largest unit was over a megabyte of pure per-block overhead |
+| D-065 | No interface takes or returns a structure by value; a mark is passed by address | version 1 has no aggregate calling convention, so a by-value structure parameter is a construct the compiler cannot lower, and the compiler's own sources are the first program that has to compile them |
 
 ## Review rule
 

@@ -323,7 +323,7 @@ static bool compile_declarations(Arena *arena, Arena *nodes,
                                      program);
         }
         if (good && function) {
-            arena_release(nodes, mark);
+            arena_release(nodes, &mark);
             for (size_t i = first; i < last; ++i) unit->declarations[i] = NULL;
         }
         arena_mark(nodes, &mark);
