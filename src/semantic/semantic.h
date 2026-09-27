@@ -253,6 +253,15 @@ Type *scope_lookup_tag(Scope *scope, const char *name);
 
 bool parse_tokens(Arena *arena, TokenList *tokens, DiagnosticSink *diagnostics,
                   TranslationUnit *unit);
+/* The incremental interface: one declaration per call, so a caller can lower a
+   declaration and release its syntax tree before parsing the next one. Nodes
+   come from `node_arena`; names, types, and literal text come from `arena` and
+   outlive every release. */
+Parser *parser_create(Arena *arena, Arena *node_arena, const TokenList *tokens,
+                      DiagnosticSink *diagnostics, TranslationUnit *unit);
+bool parser_next(Parser *parser, size_t *first, size_t *last);
+bool parser_finish(Parser *parser);
+void parser_destroy(Parser *parser);
 void translation_unit_free(TranslationUnit *unit);
 const char *ast_node_kind_name(NodeKind kind);
 

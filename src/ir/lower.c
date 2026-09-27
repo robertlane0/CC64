@@ -128,14 +128,31 @@ static Symbol *literal_symbol(LowerContext *context, AstNode *node)
     }
     memset(symbol, 0, sizeof(*symbol));
     char name[32];
-    (void)snprintf(name, sizeof(name), ".Lstr.%zu", context->literal_count++);
+    (void)snprintf(name, sizeof(name), ".Lstr.%zu",
+                   context->program->literal_count++);
     symbol->name = cc64_xstrdup(name);
     symbol->type = node->type;
     symbol->class = SYMBOL_VARIABLE;
     symbol->storage = STORAGE_STATIC;
     symbol->linkage = LINKAGE_INTERNAL;
     symbol->defined = true;
-    symbol->initializer = node;
+    /* The encoder emits a literal's bytes from its initializer after lowering,
+       and a lowered declaration's syntax tree is released, so the literal is
+       copied into the durable arena. Only the fields the data emitter reads
+       are needed, and the copy keeps the text where the lexer put it. */
+    AstNode *durable = arena_alloc(context->arena, sizeof(*durable));
+    if (durable == NULL) {
+        context->failed = true;
+        return NULL;
+    }
+    *durable = *node;
+    durable->a = NULL;
+    durable->b = NULL;
+    durable->c = NULL;
+    durable->d = NULL;
+    durable->next = NULL;
+    durable->literal_symbol = NULL;
+    symbol->initializer = durable;
     node->literal_symbol = symbol;
     if (!program_add_global(context, symbol)) {
         context->failed = true;
@@ -1076,44 +1093,54 @@ static void lower_statement_list(LowerContext *context, AstNode *node,
     lower_statement(context, node, head, tail);
 }
 
-bool lower_translation_unit(Arena *arena, const TranslationUnit *unit,
-                            DiagnosticSink *diagnostics, IrProgram *program)
+/* One declaration, so the caller can lower and release declarations one at a
+   time. The order is the source order: a function body can only refer to
+   declarations that precede it, which is what C requires, so nothing has to be
+   collected in a separate pass over the whole unit. */
+bool lower_declaration(Arena *arena, const TranslationUnit *unit,
+                       AstNode *declaration, DiagnosticSink *diagnostics,
+                       IrProgram *program)
 {
-    memset(program, 0, sizeof(*program));
-    program->globals = unit->globals;
-    LowerContext globals = {
+    if (declaration == NULL) return true;
+    if (program->globals == NULL) program->globals = unit->globals;
+    LowerContext context = {
         arena, diagnostics, unit, program, NULL, 0U, 0U, 0U, 0U,
         NULL, NULL, NULL, 0U, false
     };
-    for (size_t i = 0U; i < unit->count; ++i) {
-        AstNode *declaration = unit->declarations[i];
-        if (declaration == NULL) continue;
-        if (declaration->kind == NODE_DECLARATION && declaration->symbol != NULL &&
-            declaration->symbol->class == SYMBOL_VARIABLE) {
-            if (!program_add_global(&globals, declaration->symbol)) return false;
-        }
-        collect_literals(&globals, declaration);
-        collect_static_symbols(&globals, declaration);
-    }
-    if (globals.failed) return false;
-    for (size_t i = 0U; i < unit->count; ++i) {
-        AstNode *declaration = unit->declarations[i];
-        if (declaration == NULL || declaration->kind != NODE_FUNCTION_DEFINITION) continue;
-        LowerContext context = {
-            arena, diagnostics, unit, program, declaration->symbol, 0U, 0U, 0U,
-            0U, NULL, NULL, NULL, 0U, false
-        };
+    if (declaration->kind == NODE_FUNCTION_DEFINITION) {
+        context.function = declaration->symbol;
         collect_static_symbols(&context, declaration->a);
         collect_literals(&context, declaration->a);
         assign_frame(&context, declaration->symbol, declaration->a);
         if (context.failed) return false;
         IrFunction *function = program->functions;
-        while (function != NULL && function->symbol != declaration->symbol) function = function->next;
+        while (function != NULL && function->symbol != declaration->symbol)
+            function = function->next;
         IrInst *head = NULL;
         IrInst *tail = NULL;
         lower_statement_list(&context, declaration->a->a, &head, &tail);
         if (function != NULL) function->body = head;
-        if (context.failed) return false;
+        return !context.failed;
+    }
+    if (declaration->kind == NODE_DECLARATION && declaration->symbol != NULL &&
+        declaration->symbol->class == SYMBOL_VARIABLE) {
+        if (!program_add_global(&context, declaration->symbol)) return false;
+    }
+    collect_literals(&context, declaration);
+    collect_static_symbols(&context, declaration);
+    return !context.failed;
+}
+
+bool lower_translation_unit(Arena *arena, const TranslationUnit *unit,
+                            DiagnosticSink *diagnostics, IrProgram *program)
+{
+    memset(program, 0, sizeof(*program));
+    program->globals = unit->globals;
+    for (size_t i = 0U; i < unit->count; ++i) {
+        if (!lower_declaration(arena, unit, unit->declarations[i], diagnostics,
+                               program)) {
+            return false;
+        }
     }
     return true;
 }

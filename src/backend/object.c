@@ -194,7 +194,11 @@ static bool string_add(StringTable *table, const char *text, uint32_t *offset)
 {
     for (size_t i = 0U; i < table->count; ++i) {
         if (strcmp(table->names[i], text) == 0) {
-            uint32_t current = 1U;
+            /* The offset of an earlier entry is the sum of the lengths of every
+               entry before it, each including its terminator. Starting the sum
+               at one would count the empty first entry twice and hand out an
+               offset in the middle of a name. */
+            uint32_t current = 0U;
             for (size_t j = 0U; j < i; ++j) current += (uint32_t)strlen(table->names[j]) + 1U;
             *offset = current;
             return true;

@@ -170,40 +170,58 @@ static void skip_space(Lexer *lexer, bool *has_space, bool *at_bol)
         }
 }
 
-static void append_text(char **text, size_t *length, size_t *capacity,
-                        unsigned char byte)
+static void scratch_begin(Lexer *lexer)
 {
-    if (*length + 1U >= *capacity) {
-        size_t next = *capacity == 0U ? 32U : *capacity * 2U;
-        char *grown = cc64_xrealloc(*text, next);
-        *text = grown;
-        *capacity = next;
-    }
-    (*text)[(*length)++] = (char)byte;
+    lexer->scratch_length = 0U;
 }
 
-static void append_spliced(Lexer *lexer, char **text, size_t *length,
-                           size_t *capacity)
+static void append_text(Lexer *lexer, unsigned char byte)
+{
+    if (lexer->scratch_length + 1U >= lexer->scratch_capacity) {
+        size_t next = lexer->scratch_capacity == 0U ? 64U
+                                                     : lexer->scratch_capacity * 2U;
+        char *grown = cc64_xrealloc(lexer->scratch, next);
+        lexer->scratch = grown;
+        lexer->scratch_capacity = next;
+    }
+    lexer->scratch[lexer->scratch_length++] = (char)byte;
+}
+
+static void append_spliced(Lexer *lexer)
 {
     skip_splices(lexer);
     if (lexer->position < lexer->source->length) {
-        append_text(text, length, capacity, lexer->source->bytes[lexer->position]);
+        append_text(lexer, lexer->source->bytes[lexer->position]);
         advance_byte(lexer, lexer->source->bytes[lexer->position]);
     }
 }
 
+/* A token's positions are 32-bit, which bounds a source at four gigabytes. The
+   limit is diagnosed rather than truncated, because a truncated position would
+   silently misplace a later diagnostic. */
 static void finish_token(Lexer *lexer, Token *token, size_t start,
                          size_t line, size_t column, bool at_bol,
-                         bool has_space, TokenKind kind, char *text,
-                         size_t length)
+                         bool has_space, TokenKind kind)
 {
+    if (start > UINT32_MAX || lexer->position > UINT32_MAX || line > UINT32_MAX ||
+        column > UINT32_MAX) {
+        lexer_emit(lexer, 1004U, line, column, "source is too large for 32-bit token positions");
+        return;
+    }
+    size_t length = lexer->scratch_length;
+    char *text = arena_alloc(lexer->arena, length + 1U);
+    if (text == NULL) {
+        lexer_emit(lexer, 1004U, line, column, "cannot store token text");
+        return;
+    }
+    memcpy(text, lexer->scratch, length);
     text[length] = '\0';
     token->kind = kind;
     token->source = lexer->source;
-    token->start = start;
-    token->end = lexer->position;
-    token->line = line;
-    token->column = column;
+    token->start = (uint32_t)start;
+    token->end = (uint32_t)lexer->position;
+    token->line = (uint32_t)line;
+    token->column = (uint32_t)column;
     token->at_bol = at_bol;
     token->has_space = has_space;
     token->text = text;
@@ -215,10 +233,8 @@ static bool lex_quoted(Lexer *lexer, Token *token, size_t start,
                        bool has_space, unsigned char quote,
                        TokenKind kind)
 {
-    char *text = NULL;
-    size_t length = 0U;
-    size_t capacity = 0U;
-    append_text(&text, &length, &capacity, quote);
+    scratch_begin(lexer);
+    append_text(lexer, quote);
     advance_byte(lexer, quote);
     bool closed = false;
     while (lexer->position < lexer->source->length) {
@@ -231,17 +247,17 @@ static bool lex_quoted(Lexer *lexer, Token *token, size_t start,
             break;
         }
         if (byte == '\\') {
-            append_text(&text, &length, &capacity, byte);
+            append_text(lexer, byte);
             advance_byte(lexer, byte);
             skip_splices(lexer);
             if (lexer->position < lexer->source->length &&
                 lexer->source->bytes[lexer->position] != '\r' &&
                 lexer->source->bytes[lexer->position] != '\n') {
-                append_spliced(lexer, &text, &length, &capacity);
+                append_spliced(lexer);
             }
             continue;
         }
-        append_text(&text, &length, &capacity, byte);
+        append_text(lexer, byte);
         advance_byte(lexer, byte);
         if (byte == quote) {
             closed = true;
@@ -255,8 +271,7 @@ static bool lex_quoted(Lexer *lexer, Token *token, size_t start,
         }
         lexer_emit(lexer, 1002U, line, column, message);
     }
-    finish_token(lexer, token, start, line, column, at_bol, has_space, kind,
-                 text, length);
+    finish_token(lexer, token, start, line, column, at_bol, has_space, kind);
     return closed;
 }
 
@@ -269,6 +284,18 @@ void lexer_create(Arena *arena, const Source *source,
     lexer->line = 1U;
     lexer->column = 1U;
     lexer->diagnostics = diagnostics;
+    lexer->scratch = NULL;
+    lexer->scratch_length = 0U;
+    lexer->scratch_capacity = 0U;
+}
+
+void lexer_destroy(Lexer *lexer)
+{
+    if (lexer == NULL) return;
+    free(lexer->scratch);
+    lexer->scratch = NULL;
+    lexer->scratch_length = 0U;
+    lexer->scratch_capacity = 0U;
 }
 
 bool lexer_next(Lexer *lexer, Token *token)
@@ -281,38 +308,37 @@ bool lexer_next(Lexer *lexer, Token *token)
     size_t line = lexer->line;
     size_t column = lexer->column;
     if (lexer->position >= lexer->source->length) {
+        scratch_begin(lexer);
         finish_token(lexer, token, start, line, column, at_bol, has_space,
-                     TOKEN_EOF, cc64_xstrdup(""), 0U);
+                     TOKEN_EOF);
         return true;
     }
     unsigned char byte = lexer->source->bytes[lexer->position];
     if (byte == '\r' || byte == '\n') {
         skip_line_end(lexer);
+        scratch_begin(lexer);
+        append_text(lexer, (unsigned char)'\n');
         finish_token(lexer, token, start, line, column, true, has_space,
-                     TOKEN_NEWLINE, cc64_xstrdup("\n"), 1U);
+                     TOKEN_NEWLINE);
         return true;
     }
     if (is_ident_start(byte)) {
-        char *text = NULL;
-        size_t length = 0U;
-        size_t capacity = 0U;
+        scratch_begin(lexer);
         while (lexer->position < lexer->source->length) {
             skip_splices(lexer);
             if (lexer->position >= lexer->source->length ||
                 !is_ident_continue(lexer->source->bytes[lexer->position])) {
                 break;
             }
-            append_spliced(lexer, &text, &length, &capacity);
+            append_spliced(lexer);
         }
         finish_token(lexer, token, start, line, column, at_bol, has_space,
-                     TOKEN_IDENTIFIER, text, length);
+                     TOKEN_IDENTIFIER);
         return true;
     }
     if (is_digit(byte) || (byte == '.' && lexer->position + 1U < lexer->source->length &&
                            is_digit(lexer->source->bytes[lexer->position + 1U]))) {
-        char *text = NULL;
-        size_t length = 0U;
-        size_t capacity = 0U;
+        scratch_begin(lexer);
         while (lexer->position < lexer->source->length) {
             skip_splices(lexer);
             if (lexer->position >= lexer->source->length) {
@@ -320,20 +346,21 @@ bool lexer_next(Lexer *lexer, Token *token)
             }
             unsigned char current = lexer->source->bytes[lexer->position];
             if (!is_ident_continue(current) && current != '.') {
-                if ((current == '+' || current == '-') && length != 0U) {
-                    char previous = text[length - 1U];
+                if ((current == '+' || current == '-') &&
+                    lexer->scratch_length != 0U) {
+                    char previous = lexer->scratch[lexer->scratch_length - 1U];
                     if (previous == 'e' || previous == 'E' || previous == 'p' ||
                         previous == 'P') {
-                        append_spliced(lexer, &text, &length, &capacity);
+                        append_spliced(lexer);
                         continue;
                     }
                 }
                 break;
             }
-            append_spliced(lexer, &text, &length, &capacity);
+            append_spliced(lexer);
         }
         finish_token(lexer, token, start, line, column, at_bol, has_space,
-                     TOKEN_NUMBER, text, length);
+                     TOKEN_NUMBER);
         return true;
     }
     if (byte == '\'' || byte == '"') {
@@ -355,8 +382,9 @@ bool lexer_next(Lexer *lexer, Token *token)
             ++probe;
         }
         if (matches) {
-            char *text = cc64_xstrdup(punctuators[i]);
+            scratch_begin(lexer);
             for (size_t j = 0U; j < length; ++j) {
+                append_text(lexer, (unsigned char)punctuators[i][j]);
                 skip_splices(lexer);
                 if (lexer->position >= lexer->source->length) {
                     break;
@@ -364,17 +392,15 @@ bool lexer_next(Lexer *lexer, Token *token)
                 advance_byte(lexer, lexer->source->bytes[lexer->position]);
             }
             finish_token(lexer, token, start, line, column, at_bol, has_space,
-                         TOKEN_PUNCTUATOR, text, length);
+                         TOKEN_PUNCTUATOR);
             return true;
         }
     }
     lexer_emit(lexer, 1003U, line, column, "invalid input byte");
-    char *text = NULL;
-    size_t length = 0U;
-    size_t capacity = 0U;
-    append_spliced(lexer, &text, &length, &capacity);
+    scratch_begin(lexer);
+    append_spliced(lexer);
     finish_token(lexer, token, start, line, column, at_bol, has_space,
-                 TOKEN_PUNCTUATOR, text, length);
+                 TOKEN_PUNCTUATOR);
     return false;
 }
 
@@ -471,9 +497,11 @@ bool lex_source(Arena *arena, const Source *source,
         Token token;
         bool good = lexer_next(&lexer, &token);
         if (!token_list_push(list, &token)) {
+            lexer_destroy(&lexer);
             return false;
         }
         if (!good || token.kind == TOKEN_EOF) {
+            lexer_destroy(&lexer);
             return true;
         }
     }

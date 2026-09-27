@@ -23,13 +23,17 @@ typedef struct Hideset {
     const char **names;
 } Hideset;
 
+/* A token is the front end's largest per-word structure and the preprocessed
+   list of a large unit holds tens of thousands of them, so the positions are
+   32-bit: a source position, an offset into a source, and two flags all fit,
+   and a 64-bit field for each would cost a third of the record. */
 typedef struct Token {
     TokenKind kind;
     const Source *source;
-    size_t start;
-    size_t end;
-    size_t line;
-    size_t column;
+    uint32_t start;
+    uint32_t end;
+    uint32_t line;
+    uint32_t column;
     bool at_bol;
     bool has_space;
     char *text;
@@ -49,6 +53,12 @@ typedef struct Lexer {
     size_t line;
     size_t column;
     DiagnosticSink *diagnostics;
+    /* One reused buffer builds a token's text, which is then copied into the
+       arena. A token that owned a heap block would cost the target one block
+       header per token, and a large unit has tens of thousands of tokens. */
+    char *scratch;
+    size_t scratch_length;
+    size_t scratch_capacity;
 } Lexer;
 
 typedef struct MacroParameter {
@@ -97,6 +107,7 @@ void token_list_classify_keywords(TokenList *list);
 
 void lexer_create(Arena *arena, const Source *source,
                  DiagnosticSink *diagnostics, Lexer *lexer);
+void lexer_destroy(Lexer *lexer);
 bool lexer_next(Lexer *lexer, Token *token);
 bool lex_source(Arena *arena, const Source *source,
                 DiagnosticSink *diagnostics, TokenList *list);

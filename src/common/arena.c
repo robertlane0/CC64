@@ -97,6 +97,41 @@ void *arena_alloc_array(Arena *arena, size_t count, size_t size)
     return arena_alloc(arena, bytes);
 }
 
+void arena_mark(const Arena *arena, ArenaMark *mark)
+{
+    if (mark == NULL) return;
+    if (arena == NULL || arena->head == NULL) {
+        mark->block = NULL;
+        mark->used = 0U;
+        mark->total = arena == NULL ? 0U : arena->total;
+        return;
+    }
+    mark->block = arena->head;
+    mark->used = arena->head->used;
+    mark->total = arena->total;
+}
+
+/* Only the allocations made after the mark are released, so every mark must be
+   released before the mark that precedes it, and nothing allocated after a mark
+   may still be reachable when the mark is released. */
+void arena_release(Arena *arena, ArenaMark mark)
+{
+    if (arena == NULL) return;
+    ArenaBlock *block = arena->head;
+    while (block != NULL && block != mark.block) {
+        ArenaBlock *next = block->next;
+        free(block->data);
+        free(block);
+        block = next;
+    }
+    arena->head = block;
+    if (block != NULL) {
+        block->used = mark.used;
+        block->next = NULL;
+    }
+    arena->total = mark.total;
+}
+
 void arena_destroy(Arena *arena)
 {
     if (arena == NULL) {

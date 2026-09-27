@@ -16,6 +16,15 @@ typedef struct Arena {
     size_t limit;
 } Arena;
 
+/* A mark records an allocation point so the space taken since then can be
+   released. A bump allocator can only do this for the allocations made last,
+   which is why a mark names the block and the offset inside it. */
+typedef struct ArenaMark {
+    ArenaBlock *block;
+    size_t used;
+    size_t total;
+} ArenaMark;
+
 typedef struct Source {
     const char *path;
     unsigned char *bytes;
@@ -68,6 +77,8 @@ bool cc64_write_file(const char *path, const void *data, size_t size);
 Arena *arena_create(size_t limit);
 void *arena_alloc(Arena *arena, size_t size);
 void *arena_alloc_array(Arena *arena, size_t count, size_t size);
+void arena_mark(const Arena *arena, ArenaMark *mark);
+void arena_release(Arena *arena, ArenaMark mark);
 void arena_destroy(Arena *arena);
 
 SourceManager *source_manager_create(Arena *arena);

@@ -17,6 +17,7 @@ typedef struct DeclSpec {
 
 struct Parser {
     Arena *arena;
+    Arena *node_arena;
     DiagnosticSink *diagnostics;
     const Token *tokens;
     size_t count;
@@ -120,7 +121,10 @@ static void location_of(const Token *token, SourceLocation *location)
 static AstNode *node_new(Parser *parser, NodeKind kind, Type *type,
                          const Token *token)
 {
-    AstNode *node = arena_alloc(parser->arena, sizeof(*node));
+    /* Nodes come from the node arena, which the caller releases once a
+       declaration has been lowered. Names, types, and literal text stay in the
+       durable arena, because the back end refers to them after lowering. */
+    AstNode *node = arena_alloc(parser->node_arena, sizeof(*node));
     if (node == NULL) {
         parser->failed = true;
         return NULL;
@@ -130,6 +134,26 @@ static AstNode *node_new(Parser *parser, NodeKind kind, Type *type,
     node->type = type;
     location_of(token, &node->location);
     return node;
+}
+
+/* A copy of a node tree in the durable arena, for the few values the back end
+   still needs after the tree they were parsed from has been released. The
+   `next` chain is a sibling list, so it is copied as well. */
+static AstNode *copy_tree(Parser *parser, AstNode *node)
+{
+    if (node == NULL) return NULL;
+    AstNode *copy = arena_alloc(parser->arena, sizeof(*copy));
+    if (copy == NULL) {
+        parser->failed = true;
+        return NULL;
+    }
+    *copy = *node;
+    copy->a = copy_tree(parser, node->a);
+    copy->b = copy_tree(parser, node->b);
+    copy->c = copy_tree(parser, node->c);
+    copy->d = copy_tree(parser, node->d);
+    copy->next = copy_tree(parser, node->next);
+    return copy;
 }
 
 static bool append_node(AstNode ***items, size_t *count, size_t *capacity,
@@ -1797,6 +1821,13 @@ static AstNode *parse_local_declaration(Parser *parser)
             if (accept(parser, "=")) {
                 symbol->initializer = parse_initializer(parser, type);
                 complete_initializer_array(type, symbol->initializer);
+                if (spec.storage == STORAGE_STATIC) {
+                    /* The back end reads a static object's initializer after the
+                       function it appears in has been lowered and its syntax
+                       tree released, so the initializer is copied into the
+                       durable arena. */
+                    symbol->initializer = copy_tree(parser, symbol->initializer);
+                }
             }
             AstNode *declaration = node_new(parser, NODE_DECLARATION, type, peek(parser));
             if (declaration != NULL) { declaration->symbol = symbol; declaration->a = symbol->initializer; if (first == NULL) first = declaration; else tail->next = declaration; tail = declaration; }
@@ -1963,6 +1994,11 @@ static void parse_global_declaration(Parser *parser, const DeclSpec *spec)
                 symbol->initializer = parse_initializer(parser, type);
                 complete_initializer_array(type, symbol->initializer);
                 symbol->defined = true;
+                /* The back end emits an object's data from its initializer
+                   after the whole unit has been parsed and lowered, by which
+                   time the node arena is gone, so the initializer is copied
+                   into the durable arena. */
+                symbol->initializer = copy_tree(parser, symbol->initializer);
                 AstNode *declaration = node_new(parser, NODE_DECLARATION, type, peek(parser));
                 if (declaration != NULL) { declaration->symbol = symbol; declaration->a = symbol->initializer; (void)append_declaration(parser->unit, declaration); }
             } else if (is_definition) {
@@ -1975,33 +2011,90 @@ static void parse_global_declaration(Parser *parser, const DeclSpec *spec)
     (void)expect(parser, ";");
 }
 
-bool parse_tokens(Arena *arena, TokenList *tokens, DiagnosticSink *diagnostics,
-                  TranslationUnit *unit)
+Parser *parser_create(Arena *arena, Arena *node_arena, const TokenList *tokens,
+                      DiagnosticSink *diagnostics, TranslationUnit *unit)
 {
+    if (arena == NULL || node_arena == NULL || tokens == NULL) return NULL;
     memset(unit, 0, sizeof(*unit));
     Token *compact = arena_alloc_array(arena, tokens->count + 1U, sizeof(*compact));
-    if (compact == NULL) return false;
+    if (compact == NULL) return NULL;
     size_t count = 0U;
     for (size_t i = 0U; i < tokens->count; ++i) {
         if (tokens->items[i].kind != TOKEN_NEWLINE && tokens->items[i].kind != TOKEN_EOF) {
             compact[count++] = tokens->items[i];
         }
     }
-    Parser parser = {arena, diagnostics, compact, count, 0U, NULL, NULL, unit,
-                      false, NULL, NULL, 0U, 0U, 0U};
-    parser.global_scope = scope_create(arena, NULL);
-    parser.scope = parser.global_scope;
-    if (parser.global_scope == NULL) return false;
-    while (parser.position < parser.count && !parser.failed) {
-        if (accept(&parser, ";")) continue;
+    Parser *parser = arena_alloc(arena, sizeof(*parser));
+    if (parser == NULL) return NULL;
+    memset(parser, 0, sizeof(*parser));
+    parser->arena = arena;
+    parser->node_arena = node_arena;
+    parser->diagnostics = diagnostics;
+    parser->tokens = compact;
+    parser->count = count;
+    parser->unit = unit;
+    parser->global_scope = scope_create(arena, NULL);
+    parser->scope = parser->global_scope;
+    return parser->global_scope == NULL ? NULL : parser;
+}
+
+void parser_destroy(Parser *parser)
+{
+    /* The parser itself and its scopes live in the durable arena. */
+    (void)parser;
+}
+
+/* One declaration per call, so the caller can lower it and release its syntax
+   tree before the next one is parsed. A declaration can produce several nodes,
+   as in `int a, b;`, so the call reports the half-open range it appended.
+   Error recovery stays inside the call: a declaration that cannot be parsed is
+   skipped up to its terminator and the next call continues after it. */
+bool parser_next(Parser *parser, size_t *first, size_t *last)
+{
+    if (first != NULL) *first = 0U;
+    if (last != NULL) *last = 0U;
+    if (parser == NULL || parser->failed) return false;
+    while (parser->position < parser->count && !parser->failed) {
+        if (accept(parser, ";")) continue;
         DeclSpec spec;
-        if (!parse_decl_specs(&parser, &spec)) {
-            while (peek(&parser) != NULL && !token_text(peek(&parser), ";")) (void)take(&parser);
-            (void)accept(&parser, ";");
+        if (!parse_decl_specs(parser, &spec)) {
+            while (peek(parser) != NULL && !token_text(peek(parser), ";"))
+                (void)take(parser);
+            (void)accept(parser, ";");
             continue;
         }
-        parse_global_declaration(&parser, &spec);
+        size_t before = parser->unit->count;
+        parse_global_declaration(parser, &spec);
+        if (parser->failed) return false;
+        if (parser->unit->count == before) continue;
+        if (first != NULL) *first = before;
+        if (last != NULL) *last = parser->unit->count;
+        return true;
     }
-    unit->globals = parser.global_scope->bindings == NULL ? NULL : parser.global_scope->bindings->symbol;
-    return !parser.failed;
+    return false;
+}
+
+bool parser_finish(Parser *parser)
+{
+    if (parser == NULL) return false;
+    if (parser->unit->globals == NULL && parser->global_scope != NULL &&
+        parser->global_scope->bindings != NULL) {
+        parser->unit->globals = parser->global_scope->bindings->symbol;
+    }
+    return !parser->failed;
+}
+
+bool parse_tokens(Arena *arena, TokenList *tokens, DiagnosticSink *diagnostics,
+                  TranslationUnit *unit)
+{
+    /* One arena for both, which is what a caller that wants the whole syntax
+       tree expects: nothing is released before the tree is finished. */
+    Parser *parser = parser_create(arena, arena, tokens, diagnostics, unit);
+    if (parser == NULL) return false;
+    size_t first = 0U;
+    size_t last = 0U;
+    while (parser_next(parser, &first, &last)) continue;
+    bool good = parser_finish(parser);
+    parser_destroy(parser);
+    return good;
 }

@@ -237,8 +237,9 @@ static bool print_tokens(const TokenList *tokens)
         if (token->kind == TOKEN_EOF) {
             break;
         }
-        printf("%zu:%zu:%s:%s\n", token->line, token->column,
-               token_kind_name(token->kind), token->text);
+        printf("%lu:%lu:%s:%s\n", (unsigned long)token->line,
+               (unsigned long)token->column, token_kind_name(token->kind),
+               token->text);
     }
     return !ferror(stdout);
 }
@@ -295,6 +296,43 @@ static char *derive_output_name(const char *input, const char *extension)
    options block, so several inputs share every setting and differ only in the
    input path and the output path derived from it. Diagnostics accumulate in the
    shared sink, and the return value reports only what this input produced. */
+/* Parse, lower, and release one declaration at a time.
+ *
+ * A function's syntax tree is dead once its body has been lowered, so it goes
+ * back to the node arena before the next declaration is parsed. A declaration
+ * of an object is kept: the encoder reads its initializer to emit the data
+ * after every function has been lowered. */
+static bool compile_declarations(Arena *arena, Arena *nodes,
+                                 const TokenList *tokens, DiagnosticSink *sink,
+                                 TranslationUnit *unit, IrProgram *program)
+{
+    Parser *parser = parser_create(arena, nodes, tokens, sink, unit);
+    if (parser == NULL) return false;
+    bool good = true;
+    size_t first = 0U;
+    size_t last = 0U;
+    ArenaMark mark;
+    arena_mark(nodes, &mark);
+    while (good && parser_next(parser, &first, &last)) {
+        bool function = false;
+        for (size_t i = first; i < last && good; ++i) {
+            if (unit->declarations[i]->kind == NODE_FUNCTION_DEFINITION) {
+                function = true;
+            }
+            good = lower_declaration(arena, unit, unit->declarations[i], sink,
+                                     program);
+        }
+        if (good && function) {
+            arena_release(nodes, mark);
+            for (size_t i = first; i < last; ++i) unit->declarations[i] = NULL;
+        }
+        arena_mark(nodes, &mark);
+    }
+    if (good) good = parser_finish(parser);
+    parser_destroy(parser);
+    return good;
+}
+
 static int compile_one(Options *options, DiagnosticSink *sink)
 {
     size_t errors_before = sink->count;
@@ -323,8 +361,7 @@ static int compile_one(Options *options, DiagnosticSink *sink)
     }
     TranslationUnit unit = {0};
     IrProgram program = {0};
-    if (good && (options->action == ACTION_COMPILE ||
-                 options->action == ACTION_DUMP_AST)) {
+    if (good && options->action == ACTION_DUMP_AST) {
         size_t parse_before = sink->count;
         good = parse_tokens(arena, &tokens, sink, &unit);
         if (sink->count != parse_before) {
@@ -339,9 +376,15 @@ static int compile_one(Options *options, DiagnosticSink *sink)
         } else if (options->action == ACTION_DUMP_AST) {
             good = print_ast(&unit);
         } else {
-            size_t lower_before = sink->count;
-            good = lower_translation_unit(arena, &unit, sink, &program);
-            if (sink->count != lower_before) good = false;
+            /* A declaration is parsed, lowered, and then released, so the front
+               end never holds every function's syntax tree at once. That is
+               what keeps a large translation unit inside the target's memory:
+               names, types, and literal text live in the durable arena, and so
+               does the lowered program. */
+            Arena *nodes = arena_create(64U * 1024U * 1024U);
+            good = nodes != NULL && compile_declarations(arena, nodes, &tokens,
+                                                         sink, &unit, &program);
+            arena_destroy(nodes);
             if (good) {
                 ObjectBuilder builder;
                 object_builder_init(&builder, arena);

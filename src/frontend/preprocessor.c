@@ -1734,7 +1734,7 @@ bool write_token_list(FILE *stream, const TokenList *list, bool line_markers)
             if (previous != NULL) {
                 (void)fputc('\n', stream);
             }
-            (void)fprintf(stream, "# %zu \"%s\"\n", token->line,
+            (void)fprintf(stream, "# %lu \"%s\"\n", (unsigned long)token->line,
                           token->source == NULL ? "<unknown>" : token->source->path);
         } else if (previous != NULL) {
             (void)fputc(' ', stream);

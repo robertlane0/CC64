@@ -14,10 +14,18 @@ void *cc64_xmalloc(size_t size)
     return ptr;
 }
 
+/* The target allocator reports a refusal as -1, and a host allocator reports it
+   as a null pointer, so both spellings have to be recognised here: a refused
+   request that was mistaken for a block would be written through. */
+static bool allocation_refused(void *pointer)
+{
+    return pointer == NULL || pointer == (void *)-1;
+}
+
 void *cc64_xrealloc(void *ptr, size_t size)
 {
     void *next = realloc(ptr, size == 0U ? 1U : size);
-    if (next == NULL) {
+    if (allocation_refused(next)) {
         fputs("cc64: out of memory\n", stderr);
         exit(2);
     }

@@ -104,6 +104,10 @@ typedef struct IrFunction {
 typedef struct IrProgram {
     IrFunction *functions;
     IrFunction *function_tail;
+    /* Literal names are numbered for the whole program, not per declaration:
+       two literals with the same number would give two symbols the same name,
+       and the object writer's string table would merge them. */
+    size_t literal_count;
     Symbol *globals;
     Symbol **global_symbols;
     size_t global_count;
@@ -130,6 +134,11 @@ typedef struct IrEncodedFunction {
 
 bool lower_translation_unit(Arena *arena, const TranslationUnit *unit,
                             DiagnosticSink *diagnostics, IrProgram *program);
+/* One declaration at a time, so the caller can release a lowered declaration's
+   syntax tree before the next one is parsed. */
+bool lower_declaration(Arena *arena, const TranslationUnit *unit,
+                       AstNode *declaration, DiagnosticSink *diagnostics,
+                       IrProgram *program);
 void ir_program_free(IrProgram *program);
 
 #endif
