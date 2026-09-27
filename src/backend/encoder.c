@@ -1544,10 +1544,12 @@ static bool runtime_function_info(const char *name, RuntimeFunction *function)
 #define CC64_START_NAME_AT (-0xa0 - CC64_START_NAME)
 /* Frame layout below the frame pointer: the command tail copy occupies the
    upper part and the argument vector the lower part, so neither can overwrite
-   the other or the saved frame pointer. */
+   the other or the saved frame pointer. The vector holds one more slot than the
+   argument limit, because the terminator is written past the last entry, and it
+   is placed far enough below the name that a full vector still ends below it. */
 #define CC64_START_TAIL_AT (-0xa0)
-#define CC64_START_VECTOR_AT (-0x100)
-#define CC64_START_FRAME 0x140
+#define CC64_START_VECTOR_AT (-0x140)
+#define CC64_START_FRAME 0x150
 #define CC64_START_SKIP_LENGTH 1U
 #define CC64_START_SKIP_SPACE 2U
 #define CC64_START_RECORD 3U
@@ -1652,8 +1654,12 @@ static void emit_startup_body(Encoder *encoder, Symbol *main_symbol)
     define_label(encoder, CC64_START_RECORD);
     emit8(encoder, 0x4eU); emit8(encoder, 0x89U); emit8(encoder, 0x1cU);
     emit8(encoder, 0xc2U);                             /* mov [rdx+r8*8], r11 */
-    emit8(encoder, 0x41U); emit8(encoder, 0x83U); emit8(encoder, 0xf8U);
-    emit8(encoder, (unsigned char)CC64_START_ARGUMENTS);
+    /* The count is bounded at the documented argument limit, so the vector can
+       never grow past its slots: the terminator is written one past the last
+       entry, and the loop stops before another entry is stored. */
+    emit8(encoder, 0x41U); emit8(encoder, 0x83U);
+    emit8(encoder, 0xf8U);
+    emit8(encoder, (unsigned char)(CC64_START_ARGUMENTS - 1U));
     emit_conditional_jump(encoder, 7U, CC64_START_DONE);
     emit8(encoder, 0x41U); emit8(encoder, 0xffU); emit8(encoder, 0xc0U);
     define_label(encoder, CC64_START_SCAN);

@@ -42,6 +42,12 @@ sixteen-bit register field. `fread` and `fwrite` therefore satisfy a request in
 as many calls as it needs; `cc64_read` and `cc64_write` are single-call service
 wrappers and move at most that much in one call.
 
+The startup frame holds the argument vector and the command text in separate
+regions, with the vector below the text and one slot spare for the terminator.
+The vector holds at most sixteen entries: a command with more arguments than
+that is truncated at the limit, and the terminator follows the last entry, so a
+program can always read `argv[argc] == 0`.
+
 The target keeps thirteen file handles for a whole process. Every handle a
 stream owns is released by `fclose`, readable or writable, because a retained
 read handle is invisible to the program that leaked it and still occupies a

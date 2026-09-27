@@ -419,6 +419,48 @@ ARGUMENT_PROGRAM = (
 )
 
 
+LONG_ARGUMENT_PROGRAM = (
+    "int cc64_write(int, const void *, unsigned long);\n"
+    "static void putnum(long value) {\n"
+    "  char digits[8];\n"
+    "  int at = 7;\n"
+    "  digits[7] = 0;\n"
+    "  if (value == 0L) digits[--at] = '0';\n"
+    "  while (value != 0L) {\n"
+    "    long rest = value / 10L;\n"
+    "    digits[--at] = (char)('0' + (int)(value - rest * 10L));\n"
+    "    value = rest;\n"
+    "  }\n"
+    "  cc64_write(1, digits + at, (unsigned long)(7 - at));\n"
+    "}\n"
+    "int main(int argc, char **argv) {\n"
+    # A full argument vector has to survive the startup frame: the vector and
+    # the command text are separate regions, and the count is bounded (D-059).
+    "  int i;\n"
+    "  int length;\n"
+    "  if (argc != 16) return 1;\n"
+    "  if (argv[0][0] != 'C' || argv[0][1] != '6' || argv[0][2] != '4'\n"
+    "      || argv[0][3] != 'I' || argv[0][4] != 0) return 2;\n"
+    "  for (i = 1; i < argc; ++i) {\n"
+    "    length = i < 10 ? 1 : 2;\n"
+    "    if (argv[i][0] != 'a') return 3;\n"
+    "    if (length == 1) {\n"
+    "      if (argv[i][1] != (char)('0' + i) || argv[i][2] != 0) return 3;\n"
+    "    } else {\n"
+    "      if (argv[i][1] != (char)('0' + i / 10)\n"
+    "          || argv[i][2] != (char)('0' + i % 10) || argv[i][3] != 0)\n"
+    "        return 3;\n"
+    "    }\n"
+    "  }\n"
+    "  if (argv[argc] != 0) return 4;\n"
+    "  cc64_write(1, \"argc=\", 5);\n"
+    "  putnum((long)argc);\n"
+    "  cc64_write(1, \"\\n\", 1);\n"
+    "  return 9;\n"
+    "}\n"
+)
+
+
 def main() -> int:
     qemu = shutil.which("qemu-system-x86_64")
     if qemu is None or not TARGET.is_dir():
@@ -451,6 +493,8 @@ def main() -> int:
              "raw", 9, None),
             ("C64H", ARGUMENT_PROGRAM, "raw", 9, "a0=C64H a1=AA a2=BB",
              "C64H AA BB"),
+            ("C64I", LONG_ARGUMENT_PROGRAM, "raw", 9, "argc=16",
+             "C64I a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15"),
             ("C64W", FILE_WRITE_PROGRAM, "raw", 7, None),
             ("C64K", SEEK_PROGRAM, "raw", 7, None),
             ("C64V", VARARG_PROGRAM, "raw", 9, "s=10 n=138"),
