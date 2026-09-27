@@ -838,7 +838,7 @@ static bool write_linked_image(const OutputSection outputs[4],
 }
 
 bool link_objects(Arena *arena, const char *const *objects, size_t object_count,
-                  const char *output, ImageFormat format,
+                  const char *output, ImageFormat format, bool release_inputs,
                   DiagnosticSink *diagnostics)
 {
     (void)arena;
@@ -868,6 +868,17 @@ bool link_objects(Arena *arena, const char *const *objects, size_t object_count,
             break;
         }
         ++loaded_count;
+        /* An object is read once and never read again, so a volume too small
+           to hold the inputs and the image at the same time needs the inputs
+           released as they are consumed. The object is already in memory, so
+           this changes nothing about the link; it is requested explicitly
+           because it destroys the caller's files. */
+        if (release_inputs && remove(objects[i]) != 0) {
+            link_error(diagnostics, 5043U, objects[i],
+                       "cannot release object after reading it");
+            good = false;
+            break;
+        }
     }
     if (good) {
         /* The trampoline hands the process prefix to the target startup

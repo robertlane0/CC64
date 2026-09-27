@@ -6,6 +6,7 @@
  * keeps the implementation small enough to audit. Input is unbuffered too, so
  * a partial read is visible to the caller as a short count. */
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,6 +17,7 @@ int cc64_open(const char *path);
 int cc64_read(int handle, void *data, unsigned long size);
 int cc64_write(int handle, const void *data, unsigned long size);
 int cc64_close(int handle);
+int cc64_delete(const void *fcb);
 int cc64_lseek(int handle, long offset, int origin);
 int cc64_putc(int character);
 
@@ -209,13 +211,56 @@ int puts(const char *text)
     return fputc('\n', stdout) == '\n' ? 0 : -1;
 }
 
+/* The target's delete service reads a file control block: a fixed record whose
+   name and extension fields hold the upper-cased, blank-padded 8.3 name and
+   whose remaining fields are zero. The record is the size the target's own
+   include/fcb.inc describes, and only the name and extension are read. */
+#define CC64_FCB_SIZE 73U
+
+static bool fill_fcb(const char *path, unsigned char *fcb)
+{
+    if (path == NULL) return false;
+    memset(fcb, 0, CC64_FCB_SIZE);
+    const char *base = path;
+    for (const char *p = path; *p != 0; ++p) {
+        if (*p == '/' || *p == '\\' || *p == ':') base = p + 1;
+    }
+    const char *dot = NULL;
+    for (const char *p = base; *p != 0; ++p) {
+        if (*p == '.') dot = p;
+    }
+    size_t name_length = dot == NULL ? strlen(base) : (size_t)(dot - base);
+    if (name_length == 0U || name_length > 8U) return false;
+    size_t extension_length = dot == NULL ? 0U : strlen(dot + 1);
+    if (extension_length > 3U) return false;
+    /* The name and extension fields are blank-padded, and the service compares
+       the record with the directory entry byte for byte, so a field padded
+       with anything else never matches. */
+    for (size_t i = 0U; i < 8U; ++i) fcb[1U + i] = (unsigned char)' ';
+    for (size_t i = 0U; i < 3U; ++i) fcb[9U + i] = (unsigned char)' ';
+    for (size_t i = 0U; i < name_length; ++i) {
+        char c = base[i];
+        fcb[1U + i] = (unsigned char)(c >= 'a' && c <= 'z' ? c - 32 : c);
+    }
+    for (size_t i = 0U; i < extension_length; ++i) {
+        char c = dot[1 + i];
+        fcb[9U + i] = (unsigned char)(c >= 'a' && c <= 'z' ? c - 32 : c);
+    }
+    return true;
+}
+
 int remove(const char *path)
 {
-    /* The pinned target dispatches no delete-file service, so a file that was
-       created cannot be unlinked. Report failure rather than pretending. */
-    (void)path;
-    errno = 22;
-    return -1;
+    unsigned char fcb[CC64_FCB_SIZE];
+    if (!fill_fcb(path, fcb)) {
+        errno = 22;
+        return -1;
+    }
+    if (cc64_delete(fcb) < 0) {
+        errno = 2;
+        return -1;
+    }
+    return 0;
 }
 
 int rename(const char *from, const char *to)

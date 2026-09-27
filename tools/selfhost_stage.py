@@ -191,30 +191,32 @@ def batches(sources: list[pathlib.Path], sizes: dict[str, int],
     return groups
 
 
-def volume_names(sources: list[pathlib.Path]) -> dict[str, str]:
-    """Short staged names.
+def staged_name(index: int) -> str:
+    """A one-letter staged base name, so a link of every object fits on one line.
 
-    A command tail is bounded to 143 bytes on the target, so a link of every
-    object has to fit on one line: twenty objects plus the format and output
-    options leave only four characters per name. The mapping is fixed for a
-    given source list, so a given source is always staged under the same name.
+    A command tail is bounded to 143 bytes on the target. A link names every
+    object, the image format, and the output, which leaves about four
+    characters per object: twenty objects plus the options need one letter each
+    and a one-letter extension. The name comes from the position in the list it
+    was drawn from, so a given object is always staged and read back under the
+    same name.
     """
+    if index >= 26:
+        raise SystemExit(f"self-host stage has no staged name for item {index}")
+    return chr(ord('A') + index)
+
+
+def volume_names(sources: list[pathlib.Path]) -> dict[str, str]:
     """Volume names for the staged sources.
 
-    The volume holds bare 8.3 names, and two production sources have a stem
-    longer than eight characters, so a long stem is staged truncated with a
-    one-digit discriminator. Nothing else about a name changes, and the
-    mapping is derived only from the source list, so a given source is always
-    staged and read back under the same name.
+    The volume holds bare 8.3 names and the link volume is even tighter, so a
+    source is staged under one letter. The mapping is derived only from the
+    source list, so a given source is always staged and read back under the
+    same name.
     """
-    names: dict[str, str] = {}
-    used: set[str] = set()
+    names: {str, str} = {}
     for index, source in enumerate(sources):
-        stem = f"A{index}"
-        if len(stem) > 8 or not stem.isalnum() or stem in used:
-            raise SystemExit(f"self-host stage cannot name {source.name} as 8.3")
-        names[source.stem] = stem
-        used.add(stem)
+        names[source.stem] = staged_name(index)
     return names
 
 
@@ -292,7 +294,7 @@ def main() -> int:
                            stdout=subprocess.DEVNULL)
         library_names: list[str] = []
         for index, library_object in enumerate(library_objects):
-            name = f"LIB{index}.O"
+            name = f"{staged_name(len(sources) + index)}.O"
             library_names.append(name)
             subprocess.run(["python3", str(ROOT / "tests/embed_fat12.py"),
                             str(disk), str(library_object), name], cwd=ROOT,
@@ -300,10 +302,15 @@ def main() -> int:
         check_volume(disk)
         inputs = " ".join([f"{names[source.stem]}.O" for source in sources] +
                           library_names)
-        boot(disk, f"CC64S --link --format mz64 {inputs} -o STAGE2.COM")
+        # The volume holds the image, the objects, and the image the link
+        # produces, and that is more than its data area. The linker reads
+        # each object once, so the stage asks it to release them as it
+        # goes; the copies it releases are the stage's own, already
+        # compared with the bootstrap objects.
+        boot(disk, f"CC64S --link --format mz64 --free {inputs} -o S2.COM")
         check_volume(disk)
         stage2 = work / "stage2.mz64"
-        extract(disk, "STAGE2.COM", stage2)
+        extract(disk, "S2.COM", stage2)
         if stage2.read_bytes() != stage1.read_bytes():
             raise SystemExit("the image the self-hosted linker produced differs "
                              "from the bootstrap image")

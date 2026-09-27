@@ -34,6 +34,7 @@ typedef struct Options {
     size_t predefine_count;
     bool line_markers;
     bool preserve_newlines;
+    bool release_inputs;
     ImageFormat format;
 } Options;
 
@@ -44,6 +45,7 @@ static void usage(FILE *stream)
             "  -c             compile and emit CC64O\n"
             "  --link         link CC64O objects\n"
             "  --format NAME  raw COM (default) or mz64\n"
+            "  --free         unlink each object after reading it\n"
             "  -E             preprocess only\n"
             "  -D NAME[=TEXT] define a macro\n"
             "  -I DIR         add an include directory\n"
@@ -100,6 +102,7 @@ static bool parse_options(int argc, char **argv, Options *options,
     options->predefine_count = 0U;
     options->line_markers = false;
     options->preserve_newlines = true;
+    options->release_inputs = false;
     for (int i = 1; i < argc; ++i) {
         const char *arg = argv[i];
         const char *value = NULL;
@@ -128,6 +131,8 @@ static bool parse_options(int argc, char **argv, Options *options,
             options->action = ACTION_DUMP_AST;
         } else if (strcmp(arg, "-P") == 0) {
             options->line_markers = false;
+        } else if (strcmp(arg, "--free") == 0) {
+            options->release_inputs = true;
         } else if (strcmp(arg, "--line-markers") == 0) {
             options->line_markers = true;
         } else if (strcmp(arg, "-o") == 0) {
@@ -461,7 +466,7 @@ int cc64_main(int argc, char **argv)
         Arena *arena = arena_create(256U * 1024U * 1024U);
         bool good = link_objects(arena, (const char *const *)options.inputs,
                                  options.input_count, options.output,
-                                 options.format, &sink);
+                                 options.format, options.release_inputs, &sink);
         print_diagnostics(&sink);
         size_t errors = sink.count;
         diagnostic_sink_destroy(&sink);

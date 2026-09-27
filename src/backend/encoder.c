@@ -1489,6 +1489,7 @@ typedef enum RuntimeFunction {
     RUNTIME_CREATE,
     RUNTIME_LSEEK,
     RUNTIME_CLOSE,
+    RUNTIME_DELETE,
     RUNTIME_EXIT,
     RUNTIME_START
 } RuntimeFunction;
@@ -1505,6 +1506,7 @@ static bool runtime_function_info(const char *name, RuntimeFunction *function)
     else if (strcmp(name, "cc64_create") == 0) *function = RUNTIME_CREATE;
     else if (strcmp(name, "cc64_lseek") == 0) *function = RUNTIME_LSEEK;
     else if (strcmp(name, "cc64_close") == 0) *function = RUNTIME_CLOSE;
+    else if (strcmp(name, "cc64_delete") == 0) *function = RUNTIME_DELETE;
     else if (strcmp(name, "cc64_exit") == 0) *function = RUNTIME_EXIT;
     else if (strcmp(name, "cc64_start") == 0) *function = RUNTIME_START;
     else return false;
@@ -1794,6 +1796,14 @@ static void emit_runtime_body(IrEncoder *encoder, RuntimeFunction function)
         emit_service_int(encoder);
         emit_pop(encoder, 3U);
         break;
+    case RUNTIME_DELETE:
+        /* cc64_delete(const void *fcb): RDX=file control block, AH=13h. The
+           target marks the directory entry and frees the cluster chain, so the
+           file's space is returned to the volume. */
+        emit_mov_reg_reg(encoder, 2U, 7U);
+        emit_mov_reg_imm(encoder, 0U, 0x1300U, 4U);
+        emit_service_int(encoder);
+        break;
     case RUNTIME_EXIT:
         emit_mov_reg32_reg(encoder, 0U, 7U);
         emit8(encoder, 0xb4U); emit8(encoder, 0x4cU);
@@ -1810,7 +1820,7 @@ static bool append_runtime_functions(IrEncoder *encoder)
     static const char *const names[] = {
         "cc64_putc", "cc64_write", "cc64_read", "cc64_alloc",
         "cc64_free", "cc64_open", "cc64_create", "cc64_lseek",
-        "cc64_close", "cc64_exit", "cc64_start"
+        "cc64_close", "cc64_delete", "cc64_exit", "cc64_start"
     };
     for (size_t i = 0U; i < sizeof(names) / sizeof(names[0]); ++i) {
         size_t symbol_index = UINT32_MAX;
