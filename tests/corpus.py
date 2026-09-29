@@ -711,6 +711,84 @@ MEMORY_AGGREGATE_PROGRAM = (
     "}\n"
 )
 
+# The 128-bit unsigned integer type. Every operation the target contract
+# gives it is checked against a value worked out by hand, so a register
+# that holds the wrong half of a result fails rather than comparing
+# equal to something.
+WIDE_INTEGER_PROGRAM = (
+    "/* The 128-bit unsigned integer type: the widest one, and the only one an\n"
+    "   object of which is two registers wide rather than one. Every operation the\n"
+    "   target contract gives it is checked here against a value worked out by hand,\n"
+    "   so a register that holds the wrong half of a result fails rather than\n"
+    "   comparing equal to something. */\n"
+    "int cc64_write(int, const void *, unsigned long);\n"
+    "typedef unsigned long long u64;\n"
+    "typedef __uint128_t u128;\n"
+    "\n"
+    "static u64 mix(u64 lhs, u64 rhs)\n"
+    "{\n"
+    "    u128 r = (u128)lhs * (u128)rhs;\n"
+    "    return (u64)(r >> 64) ^ (u64)r;\n"
+    "}\n"
+    "\n"
+    "int main(void)\n"
+    "{\n"
+    "    /* A product that fits in one eightbyte has a zero high half. */\n"
+    "    if (mix(0ULL, 0ULL) != 0ULL) return 1;\n"
+    "    if (mix(1ULL, 1ULL) != 1ULL) return 2;\n"
+    "    if (mix(3ULL, 5ULL) != 15ULL) return 3;\n"
+    "    /* 2^32 * 2^32 is 2^64, so the low half is zero and the high half is one:\n"
+    "       the carry out of the low halves is the part a 64-bit multiply drops. */\n"
+    "    if (mix(4294967296ULL, 4294967296ULL) != 1ULL) return 4;\n"
+    "    /* The same product reached with the other half carrying it. */\n"
+    "    if (mix(9223372036854775808ULL, 2ULL) != 1ULL) return 5;\n"
+    "    /* A product with both halves populated: the square of 2^64-1 is\n"
+    "       2^128 - 2^65 + 1, so the high half is 2^64-2 and the low half is 1. */\n"
+    "    if (mix(18446744073709551615ULL, 18446744073709551615ULL) !=\n"
+    "        18446744073709551615ULL) {\n"
+    "        return 6;\n"
+    "    }\n"
+    "\n"
+    "    /* A shift of a whole eightbyte moves the value across and leaves nothing\n"
+    "       in the half it came from. */\n"
+    "    u128 big = (u128)0x0123456789ABCDEFULL;\n"
+    "    big = big << 64;\n"
+    "    if ((u64)(big >> 64) != 0x0123456789ABCDEFULL) return 7;\n"
+    "    if ((u64)big != 0ULL) return 8;\n"
+    "    big = big >> 64;\n"
+    "    if ((u64)big != 0x0123456789ABCDEFULL) return 9;\n"
+    "\n"
+    "    /* A shift of less than an eightbyte moves bits between the halves. */\n"
+    "    u128 one = (u128)1ULL;\n"
+    "    one = one << 100;\n"
+    "    if ((u64)(one >> 64) != 1ULL << 36) return 10;\n"
+    "    if ((u64)one != 0ULL) return 11;\n"
+    "    one = one >> 36;\n"
+    "    if ((u64)one != 0ULL) return 12;\n"
+    "    if ((u64)(one >> 64) != 1ULL) return 13;\n"
+    "\n"
+    "    /* The bits a shift pushes past the end of a half come from the other one. */\n"
+    "    u128 dense = (u128)0xFFULL;\n"
+    "    dense = dense << 56;\n"
+    "    if ((u64)dense != 0xFF00000000000000ULL) return 14;\n"
+    "    if ((u64)(dense >> 64) != 0ULL) return 15;\n"
+    "\n"
+    "    /* A shift of no bits leaves the value alone, in both halves. */\n"
+    "    u128 stay = (u128)0x0123456789ABCDEFULL;\n"
+    "    stay = stay << 0;\n"
+    "    if ((u64)stay != 0x0123456789ABCDEFULL) return 16;\n"
+    "\n"
+    "    /* A shift of the whole width leaves nothing. */\n"
+    "    u128 gone = (u128)7ULL;\n"
+    "    gone = gone << 128;\n"
+    "    if ((u64)gone != 0ULL) return 17;\n"
+    "    if ((u64)(gone >> 64) != 0ULL) return 18;\n"
+    "\n"
+    "    cc64_write(1, \"U\", 1);\n"
+    "    return 0;\n"
+    "}\n"
+)
+
 CASES = [
 ("C64R", "int main(void) { return 7; }", "raw", 7, None),
 ("C64S", "int f(int x){int y=0; switch(x){case 7: y=9; break; default: y=3;} return y;} int main(void){return f(7);}", "raw", 9, None),
@@ -750,6 +828,7 @@ CASES = [
 ("C64R2", RETURN_CONVERSION_PROGRAM, "raw", 0, "R"),
 ("C64N2", NARROW_REGISTER_PROGRAM, "raw", 0, "N"),
 ("C64M2", MEMORY_AGGREGATE_PROGRAM, "raw", 0, "M"),
+("C64U2", WIDE_INTEGER_PROGRAM, "raw", 0, "U"),
 ]
 
 LIBRARY_CASE = "C64L"

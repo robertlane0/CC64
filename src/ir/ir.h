@@ -26,11 +26,22 @@ typedef enum IrOp {
     IR_BIT_XOR,
     IR_CAST,
     IR_MEMBER,
-    /* An expression of struct or union type. The machine has no register wide
-       enough to hold one, so the value of such an expression is the address of
-       the object, and this instruction carries the object type so that a
-       caller can pass it under the ABI without consulting the syntax tree. */
+    /* An expression of struct, union, or 128-bit integer type. The machine has
+       no register wide enough to hold one, so the value of such an expression
+       is the address of the object, and this instruction carries the object
+       type so that a caller can pass it under the ABI without consulting the
+       syntax tree. */
     IR_AGGREGATE,
+    /* A 128-bit integer operation. The operands and the result are addresses,
+       because every one of them is wider than a register. */
+    IR_WIDE_ADD,
+    IR_WIDE_SUB,
+    IR_WIDE_MUL,
+    IR_WIDE_AND,
+    IR_WIDE_OR,
+    IR_WIDE_XOR,
+    IR_WIDE_SHL,
+    IR_WIDE_SHR,
     IR_NEG,
     IR_BIT_NOT,
     IR_LOGICAL_NOT,
@@ -104,6 +115,11 @@ struct IrInst {
 
 #define IR_FLAG_SIGNED 1U
 #define IR_FLAG_POST 2U
+/* The value of this instruction's operand is the address of an object
+   of the 128-bit integer type, rather than a machine value. The
+   instruction's own type names a pointer to it, so the fact has to be
+   carried or a use that wants the value cannot see it. */
+#define IR_FLAG_WIDE_VALUE 4U
 
 typedef struct IrFunction {
     Symbol *symbol;

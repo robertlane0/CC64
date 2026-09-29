@@ -207,7 +207,7 @@ static bool token_is_type_keyword(const Token *token)
         "void", "char", "short", "int", "long", "float", "double", "signed",
         "unsigned", "_Bool", "struct", "union", "enum", "const", "volatile",
         "restrict", "typedef", "extern", "static", "auto", "register",
-        "inline", "_Noreturn", "_Alignas", "_Atomic"
+        "inline", "_Noreturn", "_Alignas", "_Atomic", "__uint128_t"
     };
     if (token == NULL || token->kind != TOKEN_KEYWORD) {
         return false;
@@ -887,6 +887,21 @@ static bool parse_decl_specs(Parser *parser, DeclSpec *spec)
             spec->has_type = true;
             continue;
         }
+        if (token_is_keyword(token, "__uint128_t")) {
+            /* The one integer type wider than the machine's own register. It
+               is spelled as one name because it is not built from the integer
+               specifiers, and a program that reaches for it says so. */
+            if (spec->has_type) {
+                semantic_error(parser, 2033U, token,
+                               "'__uint128_t' cannot be combined with another type specifier");
+                (void)take(parser);
+                continue;
+            }
+            spec->type = type_basic(parser->arena, TYPE_UINT128);
+            spec->has_type = true;
+            (void)take(parser);
+            continue;
+        }
         if (token_is_keyword(token, "void")) { if (!spec->has_type) { spec->type = type_basic(parser->arena, TYPE_VOID); spec->has_type = true; } (void)take(parser); continue; }
         if (token_is_keyword(token, "_Bool")) { saw_bool = true; (void)take(parser); continue; }
         if (token_is_keyword(token, "char")) { saw_char = true; (void)take(parser); continue; }
@@ -1052,6 +1067,21 @@ static AstNode *implicit_conversion(Parser *parser, Type *target, AstNode *value
         return make_cast(parser, target, value, token);
     }
     if (type_is_pointer(target) && type_is_integer(value->type)) {
+        return make_cast(parser, target, value, token);
+    }
+    if (type_is_integer(target) && value->type != NULL &&
+        type_is_pointer(value->type)) {
+        /* Turning a pointer into a number is how a program tests one against
+           a null or carries one across an interface that has no pointer. The
+           target's pointers and its widest integers are the same width, so the
+           conversion is exact when the integer can hold a pointer, and a
+           narrower one is refused rather than silently losing the address. */
+        Type *pointer = type_pointer(parser->arena, value->type->base, 0U);
+        if (type_size(target) < type_size(pointer)) {
+            semantic_error(parser, 2043U, token,
+                           "implicit conversion is not valid");
+            return value;
+        }
         return make_cast(parser, target, value, token);
     }
     if (type_compatible(type_unqualified(target), type_unqualified(value->type))) return value;
@@ -1471,12 +1501,6 @@ static AstNode *parse_primary(Parser *parser)
     }
     if (token_text(token, "(")) {
         (void)take(parser);
-        if (token_text(peek(parser), "{")) {
-            semantic_error(parser, 2081U, token, "compound literals are unsupported");
-            while (peek(parser) != NULL && !token_text(peek(parser), "}")) (void)take(parser);
-            (void)accept(parser, "}");
-            return NULL;
-        }
         AstNode *node = parse_expression(parser);
         (void)expect(parser, ")");
         return node;
@@ -1628,6 +1652,9 @@ static AstNode *parse_unary(Parser *parser)
     return parse_postfix(parser);
 }
 
+static AstNode *parse_compound_literal(Parser *parser, Type *type,
+                                       const Token *token);
+
 static AstNode *parse_cast(Parser *parser)
 {
     const Token *token = peek(parser);
@@ -1636,6 +1663,13 @@ static AstNode *parse_cast(Parser *parser)
         (void)take(parser);
         Type *type = parse_type_name(parser);
         (void)expect(parser, ")");
+        /* A type name in parentheses followed by a braced list is a compound
+           literal: an unnamed object the list initializes, whose value is the
+           object. Anywhere else in that position the parenthesized type name
+           is a cast. */
+        if (token_text(peek(parser), "{")) {
+            return parse_compound_literal(parser, type, token);
+        }
         if (type_is_void(type)) return make_cast(parser, type, parse_cast(parser), token);
         return make_cast(parser, type, parse_cast(parser), token);
     }
@@ -1717,7 +1751,14 @@ static AstNode *parse_conditional(Parser *parser)
         else if (type_is_pointer(yes->type) && type_is_pointer(no->type)) type = yes->type;
         else if (type_is_pointer(yes->type)) type = yes->type;
         else if (type_is_pointer(no->type)) type = no->type;
-        else semantic_error(parser, 2093U, token, "incompatible conditional branches");
+        else if (type_compatible(type_unqualified(yes->type),
+                                 type_unqualified(no->type)) &&
+                 (yes->type->kind == TYPE_STRUCT ||
+                  yes->type->kind == TYPE_UNION)) {
+            /* Two branches of the same record type are that type, the way two
+               branches of the same arithmetic type are their common type. */
+            type = yes->type;
+        } else semantic_error(parser, 2093U, token, "incompatible conditional branches");
     }
     AstNode *node = node_new(parser, NODE_CONDITIONAL, type, token);
     if (node != NULL) { node->a = condition; node->b = yes; node->c = no; }
@@ -1814,6 +1855,35 @@ static AstNode *parse_initializer(Parser *parser, Type *type)
     AstNode *initializer = node_new(parser, NODE_INITIALIZER, type, token);
     if (initializer != NULL) initializer->a = value;
     return initializer;
+}
+
+/* A compound literal is an object the initializer builds, and the expression
+   names that object. The object is unnamed, so the lowering gives it storage of
+   its own and the node carries the initializer for it; nothing else in the
+   unit can refer to it, which is what makes it different from a named object
+   with the same type. */
+static AstNode *parse_compound_literal(Parser *parser, Type *type,
+                                       const Token *token)
+{
+    if (type == NULL || type->incomplete) {
+        semantic_error(parser, 2081U, token, "compound literal has no complete type");
+        while (peek(parser) != NULL && !token_text(peek(parser), "}")) (void)take(parser);
+        (void)accept(parser, "}");
+        return NULL;
+    }
+    if (parser->scope == parser->global_scope) {
+        /* At file scope the object would outlive the run, and nothing in this
+           revision places a computed object in the data section. */
+        semantic_error(parser, 2081U, token,
+                       "a compound literal at file scope is unsupported");
+        while (peek(parser) != NULL && !token_text(peek(parser), "}")) (void)take(parser);
+        (void)accept(parser, "}");
+        return NULL;
+    }
+    AstNode *initializer = parse_initializer(parser, type);
+    AstNode *node = node_new(parser, NODE_COMPOUND_LITERAL, type, token);
+    if (node != NULL) node->a = initializer;
+    return node;
 }
 
 static AstNode *parse_compound(Parser *parser)
@@ -2169,8 +2239,27 @@ static void parse_global_declaration(Parser *parser, const DeclSpec *spec)
             return;
         }
         if (spec->storage == STORAGE_TYPEDEF) {
-            Symbol *symbol = symbol_new(parser, name, type, SYMBOL_TYPEDEF);
-            if (symbol == NULL || scope_lookup(parser->global_scope, name) != NULL || !scope_add_symbol(parser->arena, parser->global_scope, symbol)) semantic_error(parser, 2107U, peek(parser), "duplicate typedef");
+            /* A unit may repeat a typedef, which is how a header that names a
+               type and a source that includes it both declare it. The repeat
+               is accepted only when it names the same type, because a second
+               typedef of one name for a different type is a different
+               declaration that would silently replace the first. */
+            Symbol *previous = scope_lookup(parser->global_scope, name);
+            if (previous != NULL && previous->class != SYMBOL_TYPEDEF) {
+                semantic_error(parser, 2107U, peek(parser), "duplicate typedef");
+                return;
+            }
+            if (previous != NULL && !type_compatible(previous->type, type)) {
+                semantic_error(parser, 2107U, peek(parser), "duplicate typedef");
+                return;
+            }
+            if (previous == NULL) {
+                Symbol *symbol = symbol_new(parser, name, type, SYMBOL_TYPEDEF);
+                if (symbol == NULL ||
+                    !scope_add_symbol(parser->arena, parser->global_scope, symbol)) {
+                    semantic_error(parser, 2107U, peek(parser), "duplicate typedef");
+                }
+            }
         } else if (type_is_function(type) && token_text(peek(parser), "{")) {
             parse_function_definition(parser, spec, type, name, parameters, parameter_count);
             return;

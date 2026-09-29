@@ -408,6 +408,137 @@ static void collect_static_symbols(LowerContext *context, AstNode *node)
 
 static IrInst *lower_expr(LowerContext *context, AstNode *node);
 
+/* Two instructions in sequence, the first for what it does and the second for
+   what it is. A null first is the second alone. */
+static IrInst *ir_chain(LowerContext *context, IrInst *first, IrInst *second,
+                        const AstNode *origin)
+{
+    if (second == NULL) return first;
+    if (first == NULL) return second;
+    IrInst *inst = ir_new(context, IR_COMMA, second->type, origin);
+    if (inst != NULL) { inst->a = first; inst->b = second; }
+    return inst;
+}
+
+/* The address of space the lowering reserved. A compound literal has no name
+   to look up, so its storage is named by its frame offset. */
+static IrInst *temp_address(LowerContext *context, Type *type, int64_t offset)
+{
+    IrInst *inst = ir_new(context, IR_ADDR, type_pointer(context->arena, type, 0U), NULL);
+    if (inst != NULL) inst->offset = offset;
+    return inst;
+}
+
+/* The stores a compound literal's initializer performs, as a value: each store
+   is a value the next discards, so the chain of them is the object's contents
+   taking shape without a statement to do it in. */
+static IrInst *lower_init_expression(LowerContext *context, Type *type,
+                                     int64_t offset, AstNode *value)
+{
+    if (type == NULL || value == NULL) return NULL;
+    if (value->kind == NODE_INITIALIZER && !value->braced) value = value->a;
+    if (value == NULL) return NULL;
+    IrInst *result = NULL;
+    if (value->kind == NODE_INITIALIZER) {
+        if (type->kind == TYPE_ARRAY) {
+            size_t element = type_size(type->base);
+            size_t index = 0U;
+            for (AstNode *item = value->a;
+                 item != NULL && index < type->array_count;
+                 item = item->next, ++index) {
+                IrInst *step = lower_init_expression(context, type->base,
+                                                     offset + (int64_t)(index * element),
+                                                     item);
+                if (step != NULL) result = ir_chain(context, result, step, value);
+            }
+            return result;
+        }
+        if (type->kind == TYPE_STRUCT || type->kind == TYPE_UNION) {
+            Member *member = type->members;
+            for (AstNode *item = value->a; item != NULL && member != NULL;
+                 item = item->next, member = member->next) {
+                IrInst *step = lower_init_expression(context, member->type,
+                                                     offset + (int64_t)member->offset,
+                                                     item);
+                if (step != NULL) result = ir_chain(context, result, step, value);
+                if (type->kind == TYPE_UNION) break;
+            }
+            return result;
+        }
+    }
+    if (type->kind == TYPE_UINT128) {
+        /* The value is wider than a register, so the initialization is a copy
+           of the whole object rather than a store of a machine value. */
+        IrInst *address = temp_address(context, type, offset);
+        IrInst *copy = ir_new(context, IR_COPY, type, value);
+        if (copy != NULL) {
+            copy->a = address;
+            copy->b = lower_expr(context, value);
+            copy->value.immediate = type_size(type);
+        }
+        return ir_chain(context, result, copy, value);
+    }
+    IrInst *address = temp_address(context, type, offset);
+    IrInst *store = ir_new(context, IR_STORE, type, value);
+    IrInst *scalar = value->kind == NODE_STRING
+                         ? ir_new(context, IR_CONST, type, value)
+                         : lower_expr(context, value);
+    if (value->kind == NODE_STRING && scalar != NULL) {
+        scalar->value.immediate = (unsigned char)value->text[0];
+    }
+    if (store != NULL) { store->a = address; store->b = scalar; }
+    return ir_chain(context, result, store, value);
+}
+
+/* The 128-bit form of an integer operator. Every one of them is wider than a
+   register, so each is its own instruction rather than a shape the narrow
+   encoders already cover. */
+static IrOp wide_binary_op(BinaryOperator binary)
+{
+    switch (binary) {
+    case BINARY_ADD: return IR_WIDE_ADD;
+    case BINARY_SUBTRACT: return IR_WIDE_SUB;
+    case BINARY_MULTIPLY: return IR_WIDE_MUL;
+    case BINARY_LEFT_SHIFT: return IR_WIDE_SHL;
+    case BINARY_RIGHT_SHIFT: return IR_WIDE_SHR;
+    case BINARY_BITWISE_AND: return IR_WIDE_AND;
+    case BINARY_BITWISE_OR: return IR_WIDE_OR;
+    case BINARY_BITWISE_XOR: return IR_WIDE_XOR;
+    default: return IR_ADD;
+    }
+}
+
+static IrInst *lower_compound_literal(LowerContext *context, AstNode *node)
+{
+    Type *type = node->type;
+    if (type == NULL) return NULL;
+    if (type_is_scalar(type)) {
+        /* A scalar has no address to name, so the initializer is the object. */
+        AstNode *value = node->a;
+        if (value != NULL && value->kind == NODE_INITIALIZER && !value->braced) {
+            value = value->a;
+        }
+        return lower_expr(context, value);
+    }
+    int64_t offset = lower_temp(context, type);
+    IrInst *address = temp_address(context, type, offset);
+    IrInst *zero = ir_new(context, IR_ZERO, type, node);
+    if (zero != NULL) {
+        zero->a = address;
+        zero->value.immediate = type_size(type);
+    }
+    IrInst *stores = lower_init_expression(context, type, offset, node->a);
+    IrInst *sequence = ir_chain(context, zero, stores, node);
+    /* The chain computes an address, and the value of the expression is the
+       object, so the result carries the object's type rather than the type of
+       the address that names it. */
+    IrInst *value = ir_chain(context, sequence,
+                             temp_address(context, type, offset), node);
+    IrInst *inst = ir_new(context, IR_AGGREGATE, type, node);
+    if (inst != NULL) inst->a = value;
+    return inst;
+}
+
 static IrInst *lower_address(LowerContext *context, AstNode *node)
 {
     if (node == NULL) return NULL;
@@ -469,8 +600,12 @@ static IrInst *lower_call(LowerContext *context, AstNode *node)
     /* A call that returns an aggregate leaves the result in registers, so the
        encoder needs somewhere in the frame to put it; the call's value is the
        address of that space. */
+    /* A call that returns something wider than a register leaves the result in
+       storage, so the encoder needs somewhere in the frame to put it; the
+       call's value is the address of that space. */
     if (node->type != NULL && (node->type->kind == TYPE_STRUCT ||
-                               node->type->kind == TYPE_UNION)) {
+                               node->type->kind == TYPE_UNION ||
+                               node->type->kind == TYPE_UINT128)) {
         inst->offset = lower_temp(context, node->type);
     }
     return inst;
@@ -488,7 +623,9 @@ static IrInst *lower_expr(LowerContext *context, AstNode *node)
                                node->type->kind == TYPE_UNION) &&
         node->kind != NODE_ASSIGNMENT && node->kind != NODE_CALL &&
         node->kind != NODE_CONDITIONAL && node->kind != NODE_COMMA &&
-        node->kind != NODE_INITIALIZER && node->kind != NODE_STRING) {
+        node->kind != NODE_INITIALIZER && node->kind != NODE_STRING &&
+        node->kind != NODE_COMPOUND_LITERAL && node->kind != NODE_CAST &&
+        node->kind != NODE_SIZEOF) {
         IrInst *address = lower_address(context, node);
         IrInst *inst = ir_new(context, IR_AGGREGATE, node->type, node);
         if (inst != NULL) inst->a = address;
@@ -518,7 +655,8 @@ static IrInst *lower_expr(LowerContext *context, AstNode *node)
             if (inst != NULL) inst->value.immediate = (uint64_t)node->symbol->enum_value;
             return inst;
         }
-        if (node->type->kind == TYPE_FUNCTION || node->type->kind == TYPE_ARRAY) return lower_address(context, node);
+        if (node->type->kind == TYPE_FUNCTION || node->type->kind == TYPE_ARRAY ||
+            node->type->kind == TYPE_UINT128) return lower_address(context, node);
         {
             IrInst *inst = ir_new(context, IR_LOAD, node->type, node);
             if (inst != NULL) inst->symbol = node->symbol;
@@ -527,7 +665,23 @@ static IrInst *lower_expr(LowerContext *context, AstNode *node)
     case NODE_CALL: return lower_call(context, node);
     case NODE_CAST: {
         IrInst *inst = ir_new(context, IR_CAST, node->type, node);
-        if (inst != NULL) inst->a = lower_expr(context, node->a);
+        if (inst != NULL) {
+            inst->a = lower_expr(context, node->a);
+            /* A value of the 128-bit type is wider than a register, so a
+               conversion to it from a machine value needs storage of its own
+               to leave the result in. A conversion from one takes the low
+               half out of the address the value is, and a conversion between
+               two of them changes nothing but the address, so the instruction
+               records which of the two it is. */
+            if (node->a != NULL && node->a->type != NULL &&
+                node->a->type->kind == TYPE_UINT128) {
+                inst->flags |= IR_FLAG_WIDE_VALUE;
+            }
+            if (node->type != NULL && node->type->kind == TYPE_UINT128 &&
+                (inst->flags & IR_FLAG_WIDE_VALUE) == 0U) {
+                inst->offset = lower_temp(context, node->type);
+            }
+        }
         return inst;
     }
     case NODE_SIZEOF: {
@@ -543,6 +697,13 @@ static IrInst *lower_expr(LowerContext *context, AstNode *node)
     }
     case NODE_DEREFERENCE: {
         IrInst *address = lower_expr(context, node->a);
+        if (node->type != NULL && node->type->kind == TYPE_UINT128) {
+            /* The object is wider than a register, so its value is its
+               address, which the dereference already produced. */
+            IrInst *inst = ir_new(context, IR_AGGREGATE, node->type, node);
+            if (inst != NULL) inst->a = address;
+            return inst;
+        }
         IrInst *inst = ir_new(context, IR_LOAD, node->type, node);
         if (inst != NULL) inst->a = address;
         return inst;
@@ -550,7 +711,8 @@ static IrInst *lower_expr(LowerContext *context, AstNode *node)
     case NODE_INDEX: {
         if (node->type != NULL && (node->type->kind == TYPE_ARRAY ||
                                    node->type->kind == TYPE_STRUCT ||
-                                   node->type->kind == TYPE_UNION)) {
+                                   node->type->kind == TYPE_UNION ||
+                                   node->type->kind == TYPE_UINT128)) {
             return lower_address(context, node);
         }
         IrInst *address = lower_address(context, node);
@@ -560,9 +722,11 @@ static IrInst *lower_expr(LowerContext *context, AstNode *node)
     }
     case NODE_MEMBER: {
         /* An array or function member decays to its address, exactly as a
-           bare identifier of that type does. */
+           bare identifier of that type does, and so does one wider than a
+           register. */
         if (node->type != NULL &&
-            (node->type->kind == TYPE_ARRAY || node->type->kind == TYPE_FUNCTION)) {
+            (node->type->kind == TYPE_ARRAY || node->type->kind == TYPE_FUNCTION ||
+             node->type->kind == TYPE_UINT128)) {
             return lower_address(context, node);
         }
         IrInst *address = lower_address(context, node);
@@ -597,7 +761,8 @@ static IrInst *lower_expr(LowerContext *context, AstNode *node)
             return inst;
         }
         if (node->type != NULL && (node->type->kind == TYPE_STRUCT ||
-                                   node->type->kind == TYPE_UNION) &&
+                                   node->type->kind == TYPE_UNION ||
+                                   node->type->kind == TYPE_UINT128) &&
             node->b != NULL) {
             IrInst *address = lower_address(context, node->a);
             /* The right-hand side is a value, not a name, so it is lowered as
@@ -666,6 +831,37 @@ static IrInst *lower_expr(LowerContext *context, AstNode *node)
             if (scale != NULL) scale->value.immediate = type_size(node->a->type->base);
             if (result != NULL) { result->a = difference; result->b = scale; }
             return result;
+        }
+        if (node->type != NULL && node->type->kind == TYPE_UINT128) {
+            IrInst *inst = ir_new(context, wide_binary_op(node->binary),
+                                  node->type, node);
+            if (inst != NULL) {
+                /* The result is wider than a register, so it needs storage of
+                   its own in the frame. */
+                inst->offset = lower_temp(context, node->type);
+                inst->a = lower_expr(context, node->a);
+                inst->b = lower_expr(context, node->b);
+                /* A shift of a value wider than the machine's own register is
+                   only defined here for a count the compiler can see, because
+                   the machine's shift instructions count in 64-bit steps. The
+                   count reaches this point through the conversion the parser
+                   applies to the operands, so the constant is looked for
+                   under that conversion. */
+                if (inst->op == IR_WIDE_SHL || inst->op == IR_WIDE_SHR) {
+                    AstNode *count = node->b;
+                    while (count != NULL && count->kind == NODE_CAST) {
+                        count = count->a;
+                    }
+                    if (count != NULL && count->kind == NODE_INTEGER) {
+                        inst->value.immediate = count->unsigned_integer;
+                    } else {
+                        lower_error(context, 3009U, node,
+                                    "a wide shift needs a constant count");
+                        return NULL;
+                    }
+                }
+            }
+            return inst;
         }
         IrOp op;
         switch (node->binary) {
@@ -746,6 +942,8 @@ static IrInst *lower_expr(LowerContext *context, AstNode *node)
     }
     case NODE_INITIALIZER:
         return lower_expr(context, node->a);
+    case NODE_COMPOUND_LITERAL:
+        return lower_compound_literal(context, node);
     default:
         lower_error(context, 3008U, node, "expression node cannot be lowered");
         return NULL;
@@ -1019,6 +1217,21 @@ static void lower_init_at(LowerContext *context, Symbol *symbol,
                           offset + member->offset, item, head, tail);
             if (type->kind == TYPE_UNION) break;
         }
+        return;
+    }
+    if (type->kind == TYPE_UINT128) {
+        /* The value is wider than a register, so the initialization is a copy
+           of the whole object rather than a store of a machine value. */
+        IrInst *address = ir_new(context, IR_ADDR,
+                                  type_pointer(context->arena, type, 0U), value);
+        IrInst *copy = ir_new(context, IR_COPY, type, value);
+        if (address != NULL) address->symbol = symbol;
+        if (copy != NULL) {
+            copy->a = address;
+            copy->b = lower_expr(context, value);
+            copy->value.immediate = type_size(type);
+        }
+        ir_append(head, tail, copy);
         return;
     }
     IrInst *address = ir_new(context, IR_ADDR,

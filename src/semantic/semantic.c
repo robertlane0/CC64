@@ -87,6 +87,7 @@ Type *type_basic(Arena *arena, TypeKind kind)
     case TYPE_UNSIGNED_LONG_LONG: size = 8U; alignment = 8U; break;
     case TYPE_FLOAT: size = 4U; alignment = 4U; break;
     case TYPE_DOUBLE: size = 8U; alignment = 8U; break;
+    case TYPE_UINT128: size = 16U; alignment = 16U; break;
     case TYPE_VOID_EXPR: size = 0U; break;
     default: return NULL;
     }
@@ -220,6 +221,7 @@ bool type_is_integer(const Type *type)
     case TYPE_UNSIGNED_LONG:
     case TYPE_LONG_LONG:
     case TYPE_UNSIGNED_LONG_LONG:
+    case TYPE_UINT128:
     case TYPE_ENUM: return true;
     default: return false;
     }
@@ -360,6 +362,7 @@ static unsigned integer_rank(const Type *type)
     case TYPE_UNSIGNED_LONG: return 4U;
     case TYPE_LONG_LONG:
     case TYPE_UNSIGNED_LONG_LONG: return 5U;
+    case TYPE_UINT128: return 6U;
     default: return 0U;
     }
 }
@@ -448,6 +451,7 @@ const char *type_kind_name(TypeKind kind)
     case TYPE_STRUCT: return "struct";
     case TYPE_UNION: return "union";
     case TYPE_ENUM: return "enum";
+    case TYPE_UINT128: return "unsigned 128-bit integer";
     case TYPE_VOID_EXPR: return "void expression";
     }
     return "unknown";
@@ -562,6 +566,7 @@ const char *ast_node_kind_name(NodeKind kind)
     case NODE_INDEX: return "index";
     case NODE_MEMBER: return "member";
     case NODE_INITIALIZER: return "initializer";
+    case NODE_COMPOUND_LITERAL: return "compound literal";
     case NODE_COMPOUND: return "compound";
     case NODE_EXPRESSION_STATEMENT: return "expression-statement";
     case NODE_IF: return "if";

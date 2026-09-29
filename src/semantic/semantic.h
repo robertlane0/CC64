@@ -26,6 +26,10 @@ typedef enum TypeKind {
     TYPE_STRUCT,
     TYPE_UNION,
     TYPE_ENUM,
+    /* The widest unsigned integer, spelled `__uint128_t`. It is the one
+       integer type wider than the machine's own register, and the only one an
+       object of which is passed as two eightbytes. */
+    TYPE_UINT128,
     TYPE_VOID_EXPR
 } TypeKind;
 
@@ -149,6 +153,9 @@ typedef enum NodeKind {
     NODE_INDEX,
     NODE_MEMBER,
     NODE_INITIALIZER,
+    /* A compound literal: an unnamed object built by an initializer in the
+       middle of an expression. Its value is the object. */
+    NODE_COMPOUND_LITERAL,
     NODE_COMPOUND,
     NODE_EXPRESSION_STATEMENT,
     NODE_IF,

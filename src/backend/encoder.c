@@ -482,9 +482,12 @@ static void emit_restore_xmm(IrEncoder *encoder, unsigned index, size_t width)
     if (encoder->stack_depth != 0U) --encoder->stack_depth;
 }
 
+/* A value carried as a sequence of eightbytes rather than in one register:
+   a record, or the 128-bit integer, which is two general registers wide. */
 static bool argument_is_aggregate(const Type *type)
 {
-    return type != NULL && (type->kind == TYPE_STRUCT || type->kind == TYPE_UNION);
+    return type != NULL && (type->kind == TYPE_STRUCT || type->kind == TYPE_UNION ||
+                            type->kind == TYPE_UINT128);
 }
 
 /* The `index`th argument of a call, counting from zero. The list is walked
@@ -959,14 +962,23 @@ static void encode_store(IrEncoder *encoder, IrInst *inst)
 
 static void encode_addr(IrEncoder *encoder, IrInst *inst)
 {
-    if (inst->symbol != NULL && inst->a == NULL) {
-        if (symbol_is_local(inst->symbol)) {
-            emit_rex(encoder, true, 0U, 5U);
-            emit8(encoder, 0x8dU);
-            emit_mem_reg(encoder, 5U, 0U, (int64_t)inst->symbol->offset);
-        } else {
-            emit_rip_reference(encoder, 0x8dU, 0U, inst->symbol);
+    if (inst->a == NULL) {
+        if (inst->symbol != NULL) {
+            if (symbol_is_local(inst->symbol)) {
+                emit_rex(encoder, true, 0U, 5U);
+                emit8(encoder, 0x8dU);
+                emit_mem_reg(encoder, 5U, 0U, (int64_t)inst->symbol->offset);
+            } else {
+                emit_rip_reference(encoder, 0x8dU, 0U, inst->symbol);
+            }
+            return;
         }
+        /* No name and nothing to compute: the address is a frame offset the
+           lowering chose, which is how the storage of a compound literal is
+           named. */
+        emit_rex(encoder, true, 0U, 5U);
+        emit8(encoder, 0x8dU);
+        emit_mem_reg(encoder, 5U, 0U, inst->offset);
         return;
     }
     encode_expr(encoder, inst->a);
@@ -1379,9 +1391,33 @@ static void encode_conditional(IrEncoder *encoder, IrInst *inst)
     define_label(encoder, inst->end_label);
 }
 
+/* Defined with the other wide helpers, below the point where the operand
+   forms it needs have been written. */
+static void encode_wide_cast(IrEncoder *encoder, IrInst *inst);
+
 static void encode_cast(IrEncoder *encoder, IrInst *inst)
 {
     size_t width = inst->width == 0U ? 8U : inst->width;
+    bool to_wide = inst->type != NULL && inst->type->kind == TYPE_UINT128;
+    bool from_wide = (inst->flags & IR_FLAG_WIDE_VALUE) != 0U;
+    if (to_wide) {
+        /* A conversion between two values of that type is a change of address,
+           not of contents, so there is nothing to do. */
+        if (from_wide) {
+            encode_expr(encoder, inst->a);
+            return;
+        }
+        encode_wide_cast(encoder, inst);
+        return;
+    }
+    if (from_wide) {
+        /* The value of a 128-bit expression is its address, and every use
+           narrower than it wants the low half, which is the part a narrower
+           integer can hold. */
+        encode_expr(encoder, inst->a);
+        emit_load_mem(encoder, 0U, 0U, 0, 8U, false);
+        return;
+    }
     if (is_float_type(inst->type)) {
         encode_expr(encoder, inst->a);
         if (inst->a != NULL && is_float_type(inst->a->type)) {
@@ -1407,6 +1443,196 @@ static void encode_comma(IrEncoder *encoder, IrInst *inst)
     encode_expr(encoder, inst->b);
 }
 
+/* A 128-bit integer operation.
+ *
+ * The value is sixteen bytes and no machine register is that wide, so both
+ * operands and the result are addresses of storage. R10 and R11 hold the two
+ * operand addresses; RAX and RDX hold the halves being combined; RCX carries
+ * between them; and R9 holds the low half of a result that has to be written
+ * before the high half is known.
+ *
+ * The machine's own multiply already leaves a full product in two registers,
+ * so the wide product is the four products of the halves. Written out, with
+ * A at R11 and B at R10, the high half is
+ *
+ *     A.hi*B.hi + floor(A.lo*B.lo / 2^64) + A.lo*B.hi + A.hi*B.lo
+ *
+ * which is the standard identity for a 128-bit product; the middle term is
+ * the carry the machine produced. */
+static void emit_alu_mem(IrEncoder *encoder, unsigned char opcode,
+                         unsigned reg, unsigned base, int64_t displacement)
+{
+    emit8(encoder, 0x48U);
+    emit8(encoder, opcode);
+    emit_mem_reg(encoder, base, reg, displacement);
+}
+
+static void emit_shift_imm(IrEncoder *encoder, unsigned char digit,
+                           unsigned reg, unsigned count)
+{
+    /* The opcode's reg field holds the operation, so the register being
+       shifted is in the r/m field and needs the REX extension bit for the
+       numbers above seven. */
+    emit_rex(encoder, true, 0U, reg);
+    emit8(encoder, 0xc1U);
+    emit8(encoder, (unsigned char)(0xc0U | (digit << 3U) | (reg & 7U)));
+    emit8(encoder, (unsigned char)count);
+}
+
+/* The two multiply forms the wide product needs: RAX times a memory operand
+   with the full product in RDX:RAX, and one register times a memory operand
+   keeping the low half. Both are the general register, wide form, so the
+   opcode's reg field names the operation rather than a register. */
+static void emit_mul_reg_mem(IrEncoder *encoder, unsigned base, int64_t displacement)
+{
+    emit_rex(encoder, true, 0U, base);
+    emit8(encoder, 0xf7U);
+    emit_mem_reg(encoder, base, 4U, displacement);
+}
+
+static void encode_wide_mul(IrEncoder *encoder, int64_t result)
+{
+    /* The low half is the product of the low halves. The high half is the
+       high half of each of the four products of halves, of which the one
+       whose low half was used above contributes its carry as well, so that
+       carry is kept aside before the other three overwrite it.
+       Written out, with A at R11 and B at R10, the high half is
+           A.hi*B.hi + A.hi*B.lo + A.lo*B.hi + A.lo*B.lo
+       taken eight bytes at a time from each, because each product is a full
+       128-bit value and only its high half belongs here. */
+    emit_load_mem(encoder, 0U, 11U, 0, 8U, false);
+    emit_mul_reg_mem(encoder, 10U, 0);
+    emit_mov_reg_reg(encoder, 8U, 0U);
+    emit_mov_reg_reg(encoder, 1U, 2U);
+    emit_load_mem(encoder, 0U, 11U, 8, 8U, false);
+    emit_mul_reg_mem(encoder, 10U, 8);
+    emit_mov_reg_reg(encoder, 9U, 2U);
+    emit_load_mem(encoder, 0U, 11U, 8, 8U, false);
+    emit_mul_reg_mem(encoder, 10U, 0);
+    emit_alu(encoder, 0x01U, 9U, 2U);
+    emit_load_mem(encoder, 0U, 11U, 0, 8U, false);
+    emit_mul_reg_mem(encoder, 10U, 8);
+    emit_alu(encoder, 0x01U, 9U, 2U);
+    emit_alu(encoder, 0x01U, 9U, 1U);
+    emit_store_partial(encoder, 8U, 5U, result, 8U);
+    emit_store_partial(encoder, 9U, 5U, result + 8, 8U);
+}
+
+static void encode_wide(IrEncoder *encoder, IrInst *inst)
+{
+    int64_t result = inst->offset;
+    encode_expr(encoder, inst->a);
+    emit_push(encoder, 0U);
+    ++encoder->stack_depth;
+    encode_expr(encoder, inst->b);
+    emit_pop(encoder, 11U);
+    if (encoder->stack_depth != 0U) --encoder->stack_depth;
+    emit_mov_reg_reg(encoder, 10U, 0U);
+    if (inst->op == IR_WIDE_MUL) {
+        encode_wide_mul(encoder, result);
+        emit_lea_mem(encoder, 5U, 0U, result);
+        return;
+    }
+    if (inst->op == IR_WIDE_SHL || inst->op == IR_WIDE_SHR) {
+        /* Every path below leaves the low half in RAX and the high half in
+           RCX, which is the order the result is written out in. */
+        uint64_t count = inst->value.immediate;
+        bool left = inst->op == IR_WIDE_SHL;
+        if (count == 0U) {
+            /* A shift of no bits is the value itself, so the halves are read
+               rather than computed. */
+            emit_load_mem(encoder, 0U, 11U, 0, 8U, false);
+            emit_load_mem(encoder, 1U, 11U, 8, 8U, false);
+        } else if (count >= 128U) {
+            /* A shift of the whole width leaves nothing in either half. */
+            emit8(encoder, 0x31U); emit8(encoder, 0xc0U);
+            emit8(encoder, 0x31U); emit8(encoder, 0xc9U);
+        } else if (count >= 64U) {
+            /* A shift of a whole eightbyte moves the value into the other
+               half and leaves nothing behind in this one, so which half ends
+               up empty depends on the direction. */
+            emit_load_mem(encoder, left ? 1U : 0U, 11U, left ? 0 : 8, 8U, false);
+            emit_shift_imm(encoder, left ? 4U : 5U, left ? 1U : 0U,
+                           (unsigned)(count - 64U));
+            if (left) {
+                emit8(encoder, 0x31U); emit8(encoder, 0xc0U);
+            } else {
+                emit8(encoder, 0x31U); emit8(encoder, 0xc9U);
+            }
+        } else if (left) {
+            /* The new low half is the old one moved up; the bits it pushes
+               past its end are the old high half moved up, plus what the old
+               low half gave up at the top. */
+            emit_load_mem(encoder, 9U, 11U, 0, 8U, false);
+            emit_shift_imm(encoder, 4U, 9U, (unsigned)count);
+            emit_load_mem(encoder, 0U, 11U, 8, 8U, false);
+            emit_shift_imm(encoder, 4U, 0U, (unsigned)count);
+            emit_load_mem(encoder, 1U, 11U, 0, 8U, false);
+            emit_shift_imm(encoder, 5U, 1U, (unsigned)(64U - count));
+            emit_alu(encoder, 0x01U, 0U, 1U);
+            emit_mov_reg_reg(encoder, 1U, 0U);
+            emit_mov_reg_reg(encoder, 0U, 9U);
+        } else {
+            /* The new high half is the old one moved down; the bits it gives
+               up at the bottom are the old low half moved down. */
+            emit_load_mem(encoder, 1U, 11U, 8, 8U, false);
+            emit_shift_imm(encoder, 5U, 1U, (unsigned)count);
+            emit_load_mem(encoder, 0U, 11U, 0, 8U, false);
+            emit_shift_imm(encoder, 5U, 0U, (unsigned)count);
+            emit_load_mem(encoder, 9U, 11U, 8, 8U, false);
+            emit_shift_imm(encoder, 4U, 9U, (unsigned)(64U - count));
+            emit_rex(encoder, true, 9U, 0U);
+            emit8(encoder, 0x09U);
+            emit_modrm_reg(encoder, 9U, 0U);
+        }
+        emit_store_partial(encoder, 0U, 5U, result, 8U);
+        emit_store_partial(encoder, 1U, 5U, result + 8, 8U);
+        emit_lea_mem(encoder, 5U, 0U, result);
+        return;
+    }
+    unsigned char opcode = 0x31U;
+    switch (inst->op) {
+    case IR_WIDE_ADD: opcode = 0x03U; break;
+    case IR_WIDE_SUB: opcode = 0x2bU; break;
+    case IR_WIDE_AND: opcode = 0x23U; break;
+    case IR_WIDE_OR: opcode = 0x0bU; break;
+    case IR_WIDE_XOR: opcode = 0x33U; break;
+    default: break;
+    }
+    for (unsigned half = 0U; half < 2U; ++half) {
+        int64_t displacement = (int64_t)half * 8;
+        emit_load_mem(encoder, 0U, 11U, displacement, 8U, false);
+        emit_alu_mem(encoder, opcode, 0U, 10U, displacement);
+        if (half == 0U) {
+            emit_mov_reg_reg(encoder, 9U, 0U);
+        } else if (inst->op == IR_WIDE_SUB) {
+            /* A subtraction of the high half carries the borrow the low half
+               produced, so it is a borrow-and-subtract here. */
+            emit8(encoder, 0x48U); emit8(encoder, 0x19U);
+            emit8(encoder, 0x5cU); emit8(encoder, 0x08U);
+        }
+    }
+    emit_store_partial(encoder, 9U, 5U, result, 8U);
+    emit_store_partial(encoder, 0U, 5U, result + 8, 8U);
+    emit_lea_mem(encoder, 5U, 0U, result);
+}
+
+/* A conversion to or from the 128-bit type. Widening a narrower unsigned value
+   fills the high half with zero; narrowing keeps the low half. A value of that
+   type is an address, so a conversion that keeps the width passes the address
+   on and a widening one leaves the address of the space it wrote. */
+static void encode_wide_cast(IrEncoder *encoder, IrInst *inst)
+{
+    int64_t result = inst->offset;
+    encode_expr(encoder, inst->a);
+    emit_store_partial(encoder, 0U, 5U, result, 8U);
+    emit8(encoder, 0x31U); emit8(encoder, 0xc0U);
+    emit_store_partial(encoder, 0U, 5U, result + 8, 8U);
+    emit_rex(encoder, true, 0U, 5U);
+    emit8(encoder, 0x8dU);
+    emit_mem_reg(encoder, 5U, 0U, result);
+}
+
 static void encode_expr(IrEncoder *encoder, IrInst *inst)
 {
     if (inst == NULL || encoder->failed) return;
@@ -1426,6 +1652,10 @@ static void encode_expr(IrEncoder *encoder, IrInst *inst)
     case IR_STORE: encode_store(encoder, inst); break;
     case IR_ADDR: encode_addr(encoder, inst); break;
     case IR_AGGREGATE: encode_expr(encoder, inst->a); break;
+    case IR_WIDE_ADD: case IR_WIDE_SUB: case IR_WIDE_MUL: case IR_WIDE_AND:
+    case IR_WIDE_OR: case IR_WIDE_XOR: case IR_WIDE_SHL: case IR_WIDE_SHR:
+        encode_wide(encoder, inst);
+        break;
     case IR_MEMBER: encode_member(encoder, inst); break;
     case IR_CALL: encode_call(encoder, inst); break;
     case IR_CAST: encode_cast(encoder, inst); break;
@@ -1918,7 +2148,10 @@ typedef enum RuntimeFunction {
     RUNTIME_CLOSE,
     RUNTIME_DELETE,
     RUNTIME_EXIT,
-    RUNTIME_START
+    RUNTIME_START,
+    RUNTIME_CONSOLE_READY,
+    RUNTIME_TIME_FIELDS,
+    RUNTIME_DATE_FIELDS
 } RuntimeFunction;
 
 static bool runtime_function_info(const char *name, RuntimeFunction *function)
@@ -1936,6 +2169,9 @@ static bool runtime_function_info(const char *name, RuntimeFunction *function)
     else if (strcmp(name, "cc64_delete") == 0) *function = RUNTIME_DELETE;
     else if (strcmp(name, "cc64_exit") == 0) *function = RUNTIME_EXIT;
     else if (strcmp(name, "cc64_start") == 0) *function = RUNTIME_START;
+    else if (strcmp(name, "cc64_console_ready") == 0) *function = RUNTIME_CONSOLE_READY;
+    else if (strcmp(name, "cc64_time_fields") == 0) *function = RUNTIME_TIME_FIELDS;
+    else if (strcmp(name, "cc64_date_fields") == 0) *function = RUNTIME_DATE_FIELDS;
     else return false;
     return true;
 }
@@ -2236,6 +2472,43 @@ static void emit_runtime_body(IrEncoder *encoder, RuntimeFunction function)
         emit8(encoder, 0xb4U); emit8(encoder, 0x4cU);
         emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
         break;
+    case RUNTIME_CONSOLE_READY:
+        /* cc64_console_ready(void): AH=0Bh, AL=FF when a character is waiting.
+           The service reports availability in the low byte and leaves the
+           carry clear either way, so the byte is normalized to one and zero
+           here rather than being taken for a count. */
+        emit_mov_reg_imm(encoder, 0U, 0x0b00U, 4U);
+        emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
+        emit8(encoder, 0x0fU); emit8(encoder, 0xb6U); emit8(encoder, 0xc0U);
+        emit8(encoder, 0x85U); emit8(encoder, 0xc0U);
+        emit8(encoder, 0x0fU); emit8(encoder, 0x95U); emit8(encoder, 0xc0U);
+        emit8(encoder, 0x0fU); emit8(encoder, 0xb6U); emit8(encoder, 0xc0U);
+        break;
+    case RUNTIME_TIME_FIELDS:
+        /* cc64_time_fields(void): AH=2Ch leaves RCX=(hour<<8)|minute and
+           RDX=(second<<8). Folding the two halves of each into one byte
+           gives a single value whose three fields are the time of day. */
+        emit_mov_reg_imm(encoder, 0U, 0x2c00U, 4U);
+        emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
+        emit8(encoder, 0x31U); emit8(encoder, 0xc0U);
+        emit8(encoder, 0x48U); emit8(encoder, 0xc1U); emit8(encoder, 0xe1U);
+        emit8(encoder, 0x10U);
+        emit8(encoder, 0x48U); emit8(encoder, 0x09U); emit8(encoder, 0xc8U);
+        emit8(encoder, 0x48U); emit8(encoder, 0xc1U); emit8(encoder, 0xeaU);
+        emit8(encoder, 0x08U);
+        emit8(encoder, 0x48U); emit8(encoder, 0x09U); emit8(encoder, 0xd0U);
+        break;
+    case RUNTIME_DATE_FIELDS:
+        /* cc64_date_fields(void): AH=2Ah leaves CX=year and RDX=(month<<8)|day,
+           which is already the packing this uses. */
+        emit_mov_reg_imm(encoder, 0U, 0x2a00U, 4U);
+        emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
+        emit8(encoder, 0x31U); emit8(encoder, 0xc0U);
+        emit8(encoder, 0x48U); emit8(encoder, 0xc1U); emit8(encoder, 0xe1U);
+        emit8(encoder, 0x10U);
+        emit8(encoder, 0x48U); emit8(encoder, 0x09U); emit8(encoder, 0xc8U);
+        emit8(encoder, 0x48U); emit8(encoder, 0x09U); emit8(encoder, 0xd0U);
+        break;
     case RUNTIME_START:
         return;
     }
@@ -2247,7 +2520,8 @@ static bool append_runtime_functions(IrEncoder *encoder)
     static const char *const names[] = {
         "cc64_putc", "cc64_write", "cc64_read", "cc64_alloc",
         "cc64_free", "cc64_open", "cc64_create", "cc64_lseek",
-        "cc64_close", "cc64_delete", "cc64_exit", "cc64_start"
+        "cc64_close", "cc64_delete", "cc64_exit", "cc64_start",
+        "cc64_console_ready", "cc64_time_fields", "cc64_date_fields"
     };
     for (size_t i = 0U; i < sizeof(names) / sizeof(names[0]); ++i) {
         size_t symbol_index = UINT32_MAX;
