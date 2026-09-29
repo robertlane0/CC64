@@ -1022,6 +1022,58 @@ static void emit_binary_opcode(IrEncoder *encoder, IrOp op, bool is_signed)
     }
 }
 
+/* There is no instruction that negates a floating value, so the sign bit is
+   flipped against a mask. Doing it this way rather than by subtracting from
+   zero keeps a negative zero negative, which a program's division can observe
+   and which the definition of negation requires. */
+static void emit_xmm_negate(IrEncoder *encoder, size_t width)
+{
+    /* The mask is moved into the second vector register with the sixty-four-bit
+       form for both widths. The thirty-two-bit form of that move is spelled
+       without a width bit, and on this target it is decoded as a move to a
+       multimedia register rather than to a vector one, so the mask would land
+       where the exclusive-or cannot see it and the negation would do nothing.
+       Loading the thirty-two-bit mask through the wider move keeps the
+       upper bits zero, which the exclusive-or of the low half needs not care
+       about. */
+    emit_mov_reg_imm(encoder, 0U,
+                     width == 4U ? 0x80000000UL : 0x8000000000000000UL, 8U);
+    emit8(encoder, 0x66U); emit_rex(encoder, true, 0U, 0U);
+    emit8(encoder, 0x0fU); emit8(encoder, 0x6eU);
+    emit_modrm_reg(encoder, 1U, 0U);              /* movq xmm1, rax */
+    if (width == 4U) {
+        emit8(encoder, 0x0fU); emit8(encoder, 0x57U);
+        emit8(encoder, 0xc1U);                    /* xorps xmm0, xmm1 */
+        return;
+    }
+    emit8(encoder, 0x66U); emit8(encoder, 0x0fU);
+    emit8(encoder, 0x57U); emit8(encoder, 0xc1U); /* xorpd xmm0, xmm1 */
+}
+
+/* The step of one, or of minus one, in the second vector register. It is the
+   sixty-four-bit form in both directions because a single-precision step would
+   be taken apart and put back together for no gain, and because the narrow move
+   form is decoded differently on this target. */
+static void emit_xmm_step(IrEncoder *encoder, bool down)
+{
+    emit_mov_reg_imm(encoder, 0U,
+                     down ? 0xBFF0000000000000UL : 0x3FF0000000000000UL, 8U);
+    emit8(encoder, 0x66U); emit_rex(encoder, true, 0U, 0U);
+    emit8(encoder, 0x0fU); emit8(encoder, 0x6eU);
+    emit_modrm_reg(encoder, 1U, 0U);              /* movq xmm1, rax */
+}
+
+/* A floating value is computed into the first vector register, so the second
+   operand of a two-operand instruction is moved from there into the second
+   register. The move is a vector-to-vector one: the form that reads a general
+   register would take whatever bits that register happened to hold, which for
+   a value loaded from memory is nothing in particular. */
+static void emit_xmm_second_operand(IrEncoder *encoder)
+{
+    emit8(encoder, 0x66U); emit8(encoder, 0x0fU);
+    emit8(encoder, 0x28U); emit8(encoder, 0xc8U);   /* movapd xmm1, xmm0 */
+}
+
 static void emit_xmm_convert_to_double(IrEncoder *encoder, size_t width)
 {
     if (width == 4U) {
@@ -1048,7 +1100,7 @@ static void encode_float_binary(IrEncoder *encoder, IrInst *inst)
     emit_xmm_to_stack(encoder);
     encode_expr(encoder, inst->b);
     emit_xmm_convert_to_double(encoder, inst->b == NULL ? 8U : type_size(inst->b->type));
-    emit8(encoder, 0x66U); emit8(encoder, 0x0fU); emit8(encoder, 0x6fU); emit8(encoder, 0xc8U);
+    emit_xmm_second_operand(encoder);
     emit_xmm_from_stack(encoder);
     emit8(encoder, 0x48U); emit8(encoder, 0x83U); emit8(encoder, 0xc4U); emit8(encoder, 0x08U);
     if (encoder->stack_depth != 0U) --encoder->stack_depth;
@@ -1071,7 +1123,7 @@ static void encode_float_compare(IrEncoder *encoder, IrInst *inst)
     emit_xmm_to_stack(encoder);
     encode_expr(encoder, inst->b);
     emit_xmm_convert_to_double(encoder, inst->b == NULL ? 8U : type_size(inst->b->type));
-    emit8(encoder, 0x66U); emit8(encoder, 0x0fU); emit8(encoder, 0x6fU); emit8(encoder, 0xc8U);
+    emit_xmm_second_operand(encoder);
     emit_xmm_from_stack(encoder);
     emit8(encoder, 0x48U); emit8(encoder, 0x83U); emit8(encoder, 0xc4U); emit8(encoder, 0x08U);
     if (encoder->stack_depth != 0U) --encoder->stack_depth;
@@ -1140,8 +1192,7 @@ static void encode_compound_float(IrEncoder *encoder, IrInst *inst)
     encode_expr(encoder, inst->b);
     emit_xmm_convert_to_double(encoder, inst->b == NULL ? width
                                                        : type_size(inst->b->type));
-    emit8(encoder, 0x66U); emit8(encoder, 0x0fU); emit8(encoder, 0x6fU);
-    emit8(encoder, 0xc8U);
+    emit_xmm_second_operand(encoder);
     emit_xmm_from_stack(encoder);
     emit8(encoder, 0x48U); emit8(encoder, 0x83U); emit8(encoder, 0xc4U);
     emit8(encoder, 0x08U);
@@ -1328,6 +1379,49 @@ static void encode_increment(IrEncoder *encoder, IrInst *inst)
         return;
     }
     size_t width = inst->width == 0U ? 8U : inst->width;
+    if (is_float_type(inst->type)) {
+        /* A floating object moves through a vector register, so the address
+           travels on the stack while the value, the old value, and the step
+           occupy vector registers of their own. The value before the step is
+           kept in a register rather than on the stack because the address is
+           already there, and a second stack slot would be the same one. */
+        size_t operand = inst->type == NULL ? 8U : type_size(inst->type);
+        bool post = ((inst->flags) & IR_FLAG_POST) != 0;
+        /* The step is a signed count; a decrement is recorded as a negative
+           one, and the immediate field is unsigned, so the sign is read back
+           rather than compared against zero. */
+        bool down = (int64_t)inst->value.immediate < 0;
+        encode_expr(encoder, inst->a);
+        emit_push(encoder, 0U);
+        ++encoder->stack_depth;
+        emit_xmm_load_rax(encoder, operand);
+        emit_xmm_convert_to_double(encoder, operand);
+        emit8(encoder, 0x66U); emit_rex(encoder, true, 0U, 0U);
+        emit8(encoder, 0x0fU); emit8(encoder, 0x28U);
+        emit_modrm_reg(encoder, 3U, 0U);          /* movapd xmm3, xmm0 */
+        emit_xmm_step(encoder, down);
+        emit8(encoder, 0xf2U); emit8(encoder, 0x0fU);
+        emit8(encoder, 0x58U); emit8(encoder, 0xc1U);   /* addsd xmm0, xmm1 */
+        emit_xmm_convert_from_double(encoder, operand);
+        emit_pop(encoder, 11U);
+        if (encoder->stack_depth != 0U) --encoder->stack_depth;
+        if (operand == 4U) {
+            emit8(encoder, 0xf3U); emit_rex(encoder, false, 0U, 11U);
+            emit8(encoder, 0x0fU); emit8(encoder, 0x11U);
+        } else {
+            emit8(encoder, 0xf2U); emit_rex(encoder, false, 0U, 11U);
+            emit8(encoder, 0x0fU); emit8(encoder, 0x11U);
+        }
+        emit_mem_reg(encoder, 11U, 0U, 0);
+        /* A post-increment's value is the one before the step and a
+           pre-increment's is the one after. */
+        if (post) {
+            emit8(encoder, 0x66U); emit_rex(encoder, true, 3U, 0U);
+            emit8(encoder, 0x0fU); emit8(encoder, 0x28U);
+            emit_modrm_reg(encoder, 0U, 3U);      /* movapd xmm0, xmm3 */
+        }
+        return;
+    }
     encode_expr(encoder, inst->a);
     emit_push(encoder, 0U);
     ++encoder->stack_depth;
@@ -1363,6 +1457,46 @@ static void encode_switch(IrEncoder *encoder, IrInst *inst)
 
 static void encode_unary(IrEncoder *encoder, IrInst *inst)
 {
+    /* Which form an operator takes is decided by the type of its operand, not
+       by the type of its result: the result of a logical negation is an integer
+       whatever the operand was, and testing the result's type would send a
+       floating operand down the integer path. */
+    bool float_operand = inst->a != NULL && is_float_type(inst->a->type);
+    if ((is_float_type(inst->type) || float_operand) &&
+        (inst->op == IR_NEG || inst->op == IR_LOGICAL_NOT)) {
+        size_t width = (inst->type != NULL && is_float_type(inst->type))
+                           ? type_size(inst->type)
+                           : (inst->a == NULL ? 8U : type_size(inst->a->type));
+        encode_expr(encoder, inst->a);
+        /* A negation leaves the value in the width it arrived in, because every
+           use of it is a conversion that knows what to do with that width. A
+           widening here would leave a value whose form no later instruction
+           expects. */
+        if (inst->op == IR_NEG) {
+            emit_xmm_negate(encoder, width);
+            return;
+        }
+        /* A floating value is true when it is not zero, so this asks whether it
+           is zero. The comparison is against a zero in the second register
+           rather than against the value itself, because a value always equals
+           itself and the answer would then be the opposite of the one wanted.
+           A value that is not a number compares unordered with everything and
+           is true, so the equality has to exclude the unordered case, which the
+           parity flag is what reports. */
+        emit_xmm_convert_to_double(encoder, width);
+        emit8(encoder, 0x66U); emit8(encoder, 0x0fU);
+        emit8(encoder, 0x57U); emit8(encoder, 0xc9U);  /* xorpd xmm1, xmm1 */
+        emit8(encoder, 0x66U); emit8(encoder, 0x0fU);
+        emit8(encoder, 0x2eU); emit8(encoder, 0xc1U);  /* ucomisd xmm0, xmm1 */
+        emit8(encoder, 0x0fU); emit8(encoder, 0x94U);
+        emit8(encoder, 0xc0U);                    /* sete al */
+        emit8(encoder, 0x0fU); emit8(encoder, 0x9bU);
+        emit8(encoder, 0xc1U);                    /* setnp cl */
+        emit8(encoder, 0x20U); emit8(encoder, 0xc8U); /* and al, cl */
+        emit8(encoder, 0x0fU); emit8(encoder, 0xb6U);
+        emit8(encoder, 0xc0U);                    /* movzx eax, al */
+        return;
+    }
     encode_expr(encoder, inst->a);
     switch (inst->op) {
     case IR_NEG: emit8(encoder, 0x48U); emit8(encoder, 0xf7U); emit_modrm_reg(encoder, 3U, 0U); break;
@@ -1419,6 +1553,16 @@ static void encode_cast(IrEncoder *encoder, IrInst *inst)
         return;
     }
     if (is_float_type(inst->type)) {
+        /* A conversion to the width the value already has changes nothing, and
+           performing one anyway is not a no-op: widening then narrowing a
+           single-precision value twice loses the low half of the double the
+           first widening produced, because the second widening reads it back
+           as if it were a single-precision value again. */
+        if (inst->a != NULL && is_float_type(inst->a->type) &&
+            type_size(inst->a->type) == type_size(inst->type)) {
+            encode_expr(encoder, inst->a);
+            return;
+        }
         encode_expr(encoder, inst->a);
         if (inst->a != NULL && is_float_type(inst->a->type)) {
             emit_xmm_convert_to_double(encoder, type_size(inst->a->type));
