@@ -19,6 +19,7 @@ int cc64_putc(int character);
 int cc64_write(int handle, const void *data, size_t size);
 int cc64_read(int handle, void *data, size_t size);
 void *cc64_alloc(size_t size);
+void *cc64_resize(void *pointer, size_t size);
 void cc64_free(void *pointer);
 cc64_fd cc64_open(const char *name);
 int cc64_close(cc64_fd handle);
