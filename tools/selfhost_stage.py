@@ -28,6 +28,7 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TARGET = ROOT.parent / "MS-DOS64"
 sys.path.insert(0, str(ROOT / "tools"))
+import runtime_sources  # noqa: E402  (path is set above)
 import target_revision  # noqa: E402  (path is set above)
 
 IMAGE_NAME = "CC64S.COM"
@@ -38,15 +39,8 @@ VOLUME_ARGUMENTS = [
 ]
 
 
-def production_sources() -> list[pathlib.Path]:
-    return sorted(
-        path for path in (ROOT / "src").rglob("*.c")
-        if "runtime" not in path.parts and "selfhost" not in path.parts
-    )
-
-
-def library_sources() -> list[pathlib.Path]:
-    return sorted((ROOT / "src/runtime").glob("target_*.c"))
+production_sources = runtime_sources.production_sources
+library_sources = runtime_sources.compiler_library_sources
 
 
 def include_tree() -> list[pathlib.Path]:
