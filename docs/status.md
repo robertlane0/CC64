@@ -1,13 +1,14 @@
 # CC64 implementation status
 
 Status date: 2026-09-28. The recorded `make check-release` run passed every
-stage: 24 QEMU image cases and two linked target-library
-cases, 8 Bochs conformance cases in both image forms, all
-fourteen production units compiled on the target to byte-identical objects,
-the relinked compiler image byte-identical, the 24 conformance
-cases compiled, linked, and run by a compiler the target built, the fuzz and
-property gate, the license and provenance audit, and a reproducible clean
-build over 45 files with digest `1b7531ed3a4f06ecd025852f8219682ee663fcca79a8f3d5defbe777a4c40f3a`.
+stage: 26 QEMU image cases and two linked target-library cases, 8 Bochs
+conformance cases in both image forms, all fourteen production units compiled
+on the target to byte-identical objects, the relinked compiler image
+byte-identical, the 26 conformance cases compiled, linked, and run by a
+compiler the target built, the seven unit groups, the linker-rejection and
+image-compatibility gates, the property gate, the license and provenance
+audit, and a reproducible clean build over 51 files with digest
+`90f110f7b3e43ea92724b59115b0492f272c34271bfb4207a19d3725c352ce99`.
 
 Bootstrap audit record: GCC 16.2.1, GNU Make 4.4.1, Python 3.14.7,
 QEMU 11.1.1, Bochs 3.1, Git 2.55.0. `make clean && make check` and
