@@ -41,11 +41,48 @@ reported in the run's output rather than hidden.
 | M4 linker, loader image, runtime | complete | independent `CC64O` validation, section and symbol merge, relocation application with overflow checks, deterministic raw `.COM`, the target entry and exit path, freestanding target headers, the target library, and QEMU and Bochs evidence for both image forms |
 | M5 language and MS-DOS64 compatibility | complete | pointers, arrays, nested and multi-dimensional initializers, structs, unions, enums, switch and short-circuit control flow, increments and compound assignment, stack arguments, scalar and aggregate copies, binary32 and binary64 arithmetic, variadic calls, the target runtime service set, formatted output, floating arithmetic and comparison, and the conformance corpus running on both emulators. Bochs runs a named subset of the corpus chosen for what the second emulator has to agree about, because it is far slower than the other one, and a named case that the corpus drops is a failure rather than a silently smaller run |
 | M6 `MZ64`, diagnostics, hardening | complete | `MZ64` header and table emission, image-relative data fixups, BSS sizing, full-file and section CRC validation, bounded relocation and object records, malformed-image rejection, deterministic raw and `MZ64` links, load-bias checks at five biases and at two that must be refused, every header field the loader reads mutated and required to be rejected, every relocation field driven out of range, extreme constants, and deep nesting in three constructs. Diagnostic recovery is covered: an error marks the declaration wrong, the parse continues, and a case shows three independent errors reported in one run and the declaration that follows an error still parsed |
-| M7 self-hosting | complete | all fourteen production translation units compile on the target to objects byte-identical to the bootstrap compiler's, the self-hosted linker relinks them into a compiler image byte-identical to the bootstrap image, a target-built compiler reproduces one project's object, image, and exit code, and the whole conformance corpus is compiled, linked, and run by a compiler the target built with every object compared byte for byte |
+| M7 self-hosting | **regressed** | all fourteen production translation units compile on the target to objects byte-identical to the bootstrap compiler's, the self-hosted linker relinks them into a compiler image byte-identical to the bootstrap image, a target-built compiler reproduces one project's object, image, and exit code, and the whole conformance corpus is compiled, linked, and run by a compiler the target built with every object compared byte for byte |
 | M8 release quality | complete | path-independent clean-build hash comparison, deterministic malformed source, object, and image smoke, the automated provenance and source-origin audit, QEMU and Bochs target evidence, and the aggregate release gate, a license inventory the audit enforces against every tracked file, and a performance gate that measures the clean build twice, each production unit, and both image forms against the budgets the contracts state |
 
 A milestone is marked complete only after its tests and required target runs
 pass. Planned code is never reported as completed.
+
+## What does not pass, and why
+
+`make self-host-stage` no longer passes. The target-built compiler cannot
+compile the compiler's own largest translation unit, `src/backend/encoder.c`,
+inside the target's heap. This is a measured limit and not a miscompilation: the
+unit compiles correctly on the host in 23 milliseconds and produces an object
+byte-identical to the bootstrap compiler's.
+
+The target's heap is six mebibytes in total, from `0x200000` to `0x800000`, and
+the compiler image leaves most of it. Compiling that unit, the target-built
+compiler requests about 8.9 megabytes in total and its largest single request
+is 1.2 megabytes, which is a token list the preprocessor is holding at once with
+the list the lexer produced. The allocation refusal now reports both figures,
+because a bounded heap needs the numbers rather than the fact.
+
+Two things were tried and one of them helped. Bounding a token list's
+reservation so that it grows in steps rather than in one request cut the largest
+single request from 2,031,600 bytes to 1,245,120 and did not close the gap: the
+demand is larger than the heap however it is taken. The target's own resize
+service is the obvious answer to a growing buffer and is not usable, because a
+user process that calls it reboots the kernel; that was measured with a program
+that resizes a block twelve times, and the reboot follows the second resize.
+
+What passes: every unit group, the host integration group, the 35 conformance
+cases on QEMU in both image forms, the four linked target-library cases, the
+target's own arithmetic suite, every function the target headers declare, the
+8 Bochs cases, the self-host image built and run twice with both runs
+identical, the self-host probe, the target library build, the linker rejections,
+the image compatibility matrix, the property gate, the performance measurement,
+the reproducible build, and the license and provenance audit.
+
+The next piece of work is the memory the compiler asks for while it works: the
+lexer and the preprocessor hold two complete token lists, and a compiler that
+compiles a hundred-thousand-token unit inside six mebibytes cannot do that. The
+fix is to stream one into the other rather than to build both and walk one, and
+it is a change to the preprocessor's shape rather than to its rules.
 
 ## A large program compiled with this compiler
 
