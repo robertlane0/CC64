@@ -2293,7 +2293,6 @@ typedef enum RuntimeFunction {
     RUNTIME_DELETE,
     RUNTIME_EXIT,
     RUNTIME_START,
-    RUNTIME_RESIZE,
     RUNTIME_CONSOLE_READY,
     RUNTIME_TIME_FIELDS,
     RUNTIME_DATE_FIELDS
@@ -2314,7 +2313,6 @@ static bool runtime_function_info(const char *name, RuntimeFunction *function)
     else if (strcmp(name, "cc64_delete") == 0) *function = RUNTIME_DELETE;
     else if (strcmp(name, "cc64_exit") == 0) *function = RUNTIME_EXIT;
     else if (strcmp(name, "cc64_start") == 0) *function = RUNTIME_START;
-    else if (strcmp(name, "cc64_resize") == 0) *function = RUNTIME_RESIZE;
     else if (strcmp(name, "cc64_console_ready") == 0) *function = RUNTIME_CONSOLE_READY;
     else if (strcmp(name, "cc64_time_fields") == 0) *function = RUNTIME_TIME_FIELDS;
     else if (strcmp(name, "cc64_date_fields") == 0) *function = RUNTIME_DATE_FIELDS;
@@ -2560,20 +2558,6 @@ static void emit_runtime_body(IrEncoder *encoder, RuntimeFunction function)
         emit_service_int(encoder);
         emit_pop(encoder, 3U);
         break;
-    case RUNTIME_RESIZE:
-        /* cc64_resize(block, size): RDI=block, RSI=new size in bytes, AH=4Ah.
-           The target can grow a block where it stands, which is what makes a
-           growing buffer cheap: a copy would need the old block and the new one
-           at the same time, and a heap of a few mebibytes cannot give both. */
-        emit_push(encoder, 3U);
-        emit_mov_reg_reg(encoder, 3U, 7U);       /* rbx = the callee's third */
-        emit_mov_reg_reg(encoder, 1U, 6U);       /* rsi = the new size */
-        emit_mov_reg_reg(encoder, 7U, 3U);       /* rdi = the block */
-        emit_mov_reg_reg(encoder, 3U, 3U);
-        emit_mov_reg_imm(encoder, 0U, 0x4a00U, 4U);
-        emit_service_int(encoder);
-        emit_pop(encoder, 3U);
-        break;
     case RUNTIME_FREE:
         emit_push(encoder, 3U);
         emit_mov_reg_reg(encoder, 3U, 7U);
@@ -2681,8 +2665,7 @@ static bool append_runtime_functions(IrEncoder *encoder)
         "cc64_putc", "cc64_write", "cc64_read", "cc64_alloc",
         "cc64_free", "cc64_open", "cc64_create", "cc64_lseek",
         "cc64_close", "cc64_delete", "cc64_exit", "cc64_start",
-        "cc64_console_ready", "cc64_time_fields", "cc64_date_fields",
-        "cc64_resize"
+        "cc64_console_ready", "cc64_time_fields", "cc64_date_fields"
     };
     for (size_t i = 0U; i < sizeof(names) / sizeof(names[0]); ++i) {
         size_t symbol_index = UINT32_MAX;

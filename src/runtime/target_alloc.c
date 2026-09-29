@@ -10,7 +10,6 @@
 #include <string.h>
 
 void *cc64_alloc(unsigned long size);
-void *cc64_resize(void *block, unsigned long size);
 void cc64_free(void *pointer);
 void cc64_exit(int code);
 
@@ -57,20 +56,8 @@ void *realloc(void *pointer, size_t size)
         free(pointer);
         return NULL;
     }
-    char *base = (char *)pointer - CC64_HEAP_HEADER;
-    size_t previous = *(size_t *)base;
+    size_t previous = *(size_t *)((char *)pointer - CC64_HEAP_HEADER);
     if (size <= previous) return pointer;
-    /* The target can grow a block where it stands. Asking it first means a
-       growing buffer never needs the old block and the new one at once, which
-       on a heap of a few mebibytes is the difference between growing and
-       failing: a copy of a two-mebibyte buffer into a four-mebibyte one asks
-       for six. */
-    if (size > (size_t)-1 - CC64_HEAP_HEADER) return NULL;
-    void *grown = cc64_resize(base, (unsigned long)(size + CC64_HEAP_HEADER));
-    if (!alloc_refused(grown)) {
-        *(size_t *)grown = size;
-        return (char *)grown + CC64_HEAP_HEADER;
-    }
     void *next = malloc(size);
     if (next == NULL) return (void *)-1;
     memcpy(next, pointer, previous);
