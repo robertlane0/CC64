@@ -25,6 +25,13 @@ struct Parser {
     Scope *global_scope;
     Scope *scope;
     TranslationUnit *unit;
+    /* `errored` records that the declaration being parsed now is wrong and
+       the next one may be parsed after it; `failed` records that the stream
+       cannot be parsed further. Whether the unit as a whole was accepted is
+       decided from the diagnostics the sink holds, not from either flag, so
+       a per-declaration flag can be cleared without losing an earlier
+       declaration's diagnostic. */
+    bool errored;
     bool failed;
     Symbol *current_function;
     Type *last_declarator_type;
@@ -92,10 +99,18 @@ static const Token *expect(Parser *parser, const char *text)
                     token == NULL ? NULL : token->source,
                     token == NULL ? 0U : token->line,
                     token == NULL ? 0U : token->column, message);
-    parser->failed = true;
+    /* A missing token is recoverable: the caller skips the declaration and
+       the next one is parsed. A stream that has already run out is not. */
+    if (token == NULL) parser->failed = true;
+    else parser->errored = true;
     return token;
 }
 
+/* A diagnostic records that the unit is wrong but does not stop the parse:
+   a program with several independent mistakes should report all of them, so
+   the parser recovers at the next declaration and the caller decides from
+   the diagnostic count whether the unit was accepted. Only a failure that
+   leaves the stream unusable sets `failed`. */
 static void semantic_error(Parser *parser, unsigned id, const Token *token,
                            const char *message)
 {
@@ -103,7 +118,7 @@ static void semantic_error(Parser *parser, unsigned id, const Token *token,
                     token == NULL ? NULL : token->source,
                     token == NULL ? 0U : token->line,
                     token == NULL ? 0U : token->column, message);
-    parser->failed = true;
+    parser->errored = true;
 }
 
 static void location_of(const Token *token, SourceLocation *location)
@@ -2229,6 +2244,10 @@ bool parser_next(Parser *parser, size_t *first, size_t *last)
             continue;
         }
         DeclSpec spec;
+        /* The flag records whether the declaration being parsed now is
+           wrong, so it is cleared before each one and does not carry an
+           earlier declaration's diagnostic into the next. */
+        parser->errored = false;
         if (!parse_decl_specs(parser, &spec)) {
             while (peek(parser) != NULL && !token_text(peek(parser), ";"))
                 (void)take(parser);
@@ -2238,6 +2257,27 @@ bool parser_next(Parser *parser, size_t *first, size_t *last)
         size_t before = parser->unit->count;
         parse_global_declaration(parser, &spec);
         if (parser->failed) return false;
+        if (parser->errored) {
+            /* A declaration that was rejected is skipped up to its terminator
+               so the next one is parsed from a known position. The nodes it
+               appended are dropped, because a declaration that failed to parse
+               cannot be lowered. The scan always consumes at least one token,
+               so a declaration whose terminator is missing cannot hold the
+               parse at the same position for ever. */
+            for (size_t i = before; i < parser->unit->count; ++i) {
+                parser->unit->declarations[i] = NULL;
+            }
+            parser->unit->count = before;
+            size_t start = parser->position;
+            while (peek(parser) != NULL && parser->position > start) {
+                bool terminator = token_text(peek(parser), ";") ||
+                                  token_text(peek(parser), "}");
+                (void)take(parser);
+                if (terminator) break;
+            }
+            if (peek(parser) != NULL) (void)take(parser);
+            continue;
+        }
         if (parser->unit->count == before) continue;
         if (first != NULL) *first = before;
         if (last != NULL) *last = parser->unit->count;
@@ -2253,7 +2293,11 @@ bool parser_finish(Parser *parser)
         parser->global_scope->bindings != NULL) {
         parser->unit->globals = parser->global_scope->bindings->symbol;
     }
-    return !parser->failed;
+    /* The unit is accepted when the stream was parsed to its end and no
+       diagnostic was reported at all, so a declaration that was skipped after
+       an error is still a rejected unit. */
+    return !parser->failed &&
+           (parser->diagnostics == NULL || parser->diagnostics->count == 0U);
 }
 
 bool parse_tokens(Arena *arena, TokenList *tokens, DiagnosticSink *diagnostics,

@@ -11,7 +11,7 @@ DEPS = $(OBJECTS:.o=.d) $(TEST_OBJECTS:.o=.d)
 TEST_SOURCES = $(shell find tests/unit -name '*.c' -print | sort 2>/dev/null)
 TEST_OBJECTS = $(TEST_SOURCES:%.c=build/%.o)
 
-.PHONY: all clean check test test-unit test-target test-bochs self-host self-host-stage selfhost-probe self-host-run self-host-corpus fuzz-smoke repro-check check-release check-release-strict audit target-lib
+.PHONY: all clean check test test-unit test-target test-bochs self-host self-host-stage selfhost-probe self-host-run self-host-corpus fuzz-smoke repro-check check-release check-release-strict audit target-lib perf-measure
 all: cc64
 
 cc64: $(OBJECTS)
@@ -78,13 +78,18 @@ self-host-corpus: cc64
 target-lib: cc64
 	@python3 tools/target_lib.py
 
+# Record what the compiler and the target cost, against the bounds the
+# contracts state. A measurement outside a bound fails rather than reporting.
+perf-measure: cc64
+	@python3 tools/perf_measure.py
+
 fuzz-smoke: cc64
 	@python3 tests/fuzz_smoke.py
 
 repro-check: cc64
 	@python3 tools/repro_check.py
 
-check-release: check test-target test-bochs self-host self-host-stage selfhost-probe self-host-run self-host-corpus target-lib fuzz-smoke repro-check audit
+check-release: check test-target test-bochs self-host self-host-stage selfhost-probe self-host-run self-host-corpus target-lib perf-measure fuzz-smoke repro-check audit
 check-release-strict:
 	@CC64_REQUIRE_CLEAN=1 python3 tests/audit.py
 	@CC64_REQUIRE_CLEAN=1 CC64_REQUIRE_EMULATORS=1 $(MAKE) check-release

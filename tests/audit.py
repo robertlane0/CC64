@@ -63,6 +63,26 @@ def main() -> int:
         if required not in ledger:
             errors.append(f"provenance ledger omits {required}")
 
+    # The license inventory is a release deliverable, so the audit checks it
+    # rather than trusting it: a tracked file whose path no inventory row
+    # covers has no recorded license decision.
+    policy = (ROOT / "docs/license-policy.md").read_text(encoding="utf-8")
+    if "MIT" not in policy or "## Inventory" not in policy:
+        errors.append("license policy has no inventory")
+    covered: list[str] = []
+    for line in policy.splitlines():
+        if not line.startswith("| `"):
+            continue
+        path = line.split("`")[1]
+        if path.endswith("/**"):
+            covered.append(path[:-3])
+        elif path:
+            covered.append(path)
+    for name in files:
+        if any(name == item or name.startswith(item + "/") for item in covered):
+            continue
+        errors.append(f"license inventory omits {name}")
+
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     if "! -path 'src/runtime/*'" not in makefile:
         errors.append("host bootstrap source list includes target runtime sources")

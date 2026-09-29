@@ -131,6 +131,55 @@ static void expect_error_id(const char *text, unsigned id)
     arena_destroy(arena);
 }
 
+/* Recovery reports the independent errors in one unit rather than stopping at
+   the first, so a program with several mistakes is fixed in one pass. Each
+   error below is in its own declaration, so none of them can be a consequence
+   of another. */
+static void test_recovery(void)
+{
+    Arena *arena = arena_create(1024U * 1024U);
+    DiagnosticSink diagnostics = {0};
+    TranslationUnit unit;
+    const char *text =
+        "int first(void) { return missing_one; }\n"
+        "int second(void) { return missing_two; }\n"
+        "int third(void) { return missing_three; }\n"
+        "int main(void) { return 0; }\n";
+    CHECK(!parse_text(arena, text, &unit, &diagnostics));
+    CHECK(diagnostics.count >= 3U);
+    translation_unit_free(&unit);
+    diagnostic_sink_destroy(&diagnostics);
+    arena_destroy(arena);
+}
+
+/* Recovery inside one declaration: an error in the middle of a statement
+   must not swallow the declarations that follow it. */
+static void test_recovery_in_declaration(void)
+{
+    Arena *arena = arena_create(1024U * 1024U);
+    DiagnosticSink diagnostics = {0};
+    TranslationUnit unit;
+    const char *text =
+        "int first(void) { int local = absent; return local; }\n"
+        "int second(void) { return 4; }\n"
+        "int main(void) { return second(); }\n";
+    CHECK(!parse_text(arena, text, &unit, &diagnostics));
+    /* The second function is still parsed, so the unit carries it. */
+    bool found = false;
+    for (size_t i = 0U; i < unit.count; ++i) {
+        if (unit.declarations[i] != NULL &&
+            unit.declarations[i]->kind == NODE_FUNCTION_DEFINITION &&
+            unit.declarations[i]->symbol != NULL &&
+            strcmp(unit.declarations[i]->symbol->name, "second") == 0) {
+            found = true;
+        }
+    }
+    CHECK(found);
+    translation_unit_free(&unit);
+    diagnostic_sink_destroy(&diagnostics);
+    arena_destroy(arena);
+}
+
 static void test_deferred_diagnostics(void)
 {
     /* Every construct the subset document defers has its own stable
@@ -157,6 +206,8 @@ int main(void)
     expect_error("struct S { int x : 1; }; int main(void) { return 0; }\n");
     expect_error("int main(void) { _Atomic int x; return 0; }\n");
     test_deferred_diagnostics();
+    test_recovery();
+    test_recovery_in_declaration();
     if (failures != 0) {
         fprintf(stderr, "%d semantic test(s) failed\n", failures);
         return 1;
