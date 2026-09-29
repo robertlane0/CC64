@@ -102,13 +102,13 @@ def run_bochs(bochs: str, config: pathlib.Path, serial: int,
 
 
 def main() -> int:
-    bochs = shutil.which("bochs")
-    if bochs is None or not TARGET.is_dir():
-        message = "bochs: skipped (Bochs or target checkout unavailable)"
-        if os.environ.get("CC64_REQUIRE_EMULATORS") == "1":
-            raise SystemExit(message.replace("skipped", "required but unavailable"))
-        print(message)
+    if not TARGET.is_dir():
+        print("bochs: skipped (target checkout unavailable)")
         return 0
+    if not target_revision.require_emulator(
+            "bochs", "bochs: skipped (Bochs or target checkout unavailable)"):
+        return 0
+    bochs = shutil.which("bochs")
     check_target()
     with tempfile.TemporaryDirectory(prefix="cc64-bochs-") as temp:
         work = pathlib.Path(temp)

@@ -89,10 +89,14 @@ fuzz-smoke: cc64
 repro-check: cc64
 	@python3 tools/repro_check.py
 
+# The release gate treats a missing emulator as a failure rather than a skip,
+# so it cannot record that a target property was checked when nothing booted.
+check-release: export CC64_REQUIRE_EMULATORS = 1
 check-release: check test-target test-bochs self-host self-host-stage selfhost-probe self-host-run self-host-corpus target-lib perf-measure fuzz-smoke repro-check audit
-check-release-strict:
-	@CC64_REQUIRE_CLEAN=1 python3 tests/audit.py
-	@CC64_REQUIRE_CLEAN=1 CC64_REQUIRE_EMULATORS=1 $(MAKE) check-release
+check-release-strict: export CC64_REQUIRE_CLEAN = 1
+check-release-strict: export CC64_REQUIRE_EMULATORS = 1
+check-release-strict: audit
+	@$(MAKE) check-release
 .NOTPARALLEL: check-release check-release-strict
 
 audit:

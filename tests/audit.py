@@ -86,6 +86,11 @@ def main() -> int:
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     if "! -path 'src/runtime/*'" not in makefile:
         errors.append("host bootstrap source list includes target runtime sources")
+    # A release gate that can pass with no target evidence has not checked
+    # anything the status document claims, so the gate must ask for a failure
+    # rather than a skip when an emulator is missing.
+    if "check-release: export CC64_REQUIRE_EMULATORS = 1" not in makefile:
+        errors.append("release gate does not require emulator evidence")
     status = (ROOT / "docs/status.md").read_text(encoding="utf-8")
     for required in ("Bochs", "QEMU"):
         if required not in status:

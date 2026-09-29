@@ -23,7 +23,6 @@ holds, and the objects are read back and released before the next batch.
 
 from __future__ import annotations
 
-import os
 import pathlib
 import shutil
 import subprocess
@@ -223,12 +222,11 @@ def batches(entries: list, sizes: dict, limit_bytes: int) -> list[list]:
 
 
 def main() -> int:
-    if shutil.which("qemu-system-x86_64") is None or not TARGET.is_dir():
+    if not TARGET.is_dir():
         message = "self-host corpus: skipped (QEMU or target checkout unavailable)"
-        if os.environ.get("CC64_REQUIRE_EMULATORS") == "1":
-            raise SystemExit(message.replace("skipped", "required but unavailable"))
-        print(message)
-        return 0
+        if not target_revision.require_emulator(
+                f"{tool}", f"{message}"):
+            return 0
     target_revision.check(TARGET)
     headers = include_tree()
     cases = corpus.CASES

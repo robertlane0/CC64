@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import os
 import pathlib
 import shutil
 import subprocess
@@ -63,12 +62,11 @@ def execute(qemu: str, disk: pathlib.Path, name: str) -> str:
 
 def main() -> int:
     qemu = shutil.which("qemu-system-x86_64")
-    if qemu is None or not TARGET.is_dir():
+    if not TARGET.is_dir():
         message = "self-host: skipped (QEMU or target checkout unavailable)"
-        if os.environ.get("CC64_REQUIRE_EMULATORS") == "1":
-            raise SystemExit(message.replace("skipped", "required but unavailable"))
-        print(message)
-        return 0
+        if not target_revision.require_emulator(
+                f"{tool}", f"{message}"):
+            return 0
     check_target()
     with tempfile.TemporaryDirectory(prefix="cc64-self-host-") as temp:
         work = pathlib.Path(temp)

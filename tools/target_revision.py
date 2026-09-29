@@ -5,12 +5,18 @@ reference revision, and the only permitted change is one on the edit branch that
 exists to make the compiler operational. Every harness that boots a target image
 asks this module, so the rule is stated once and the evidence it prints is the
 same everywhere.
+
+This module also owns whether a missing emulator is a skip or a failure. A
+harness that cannot produce its evidence reports a skip locally and a failure
+under release conditions, so an aggregate gate cannot record a pass for a run
+that booted nothing.
 """
 
 from __future__ import annotations
 
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 
@@ -18,6 +24,26 @@ import sys
 TARGET_REVISION = "13c3cedb05ad75592c17bf2006ba8617c8761a38"
 # The only branch allowed to carry target changes.
 TARGET_EDIT_BRANCH = "edit"
+
+
+def required() -> bool:
+    """Whether a release is being prepared, so a missing emulator is a failure."""
+    return os.environ.get("CC64_REQUIRE_EMULATORS") == "1"
+
+
+def require_emulator(name: str, message: str) -> bool:
+    """Report a skip or a failure for an emulator that is not installed.
+
+    A local run without an emulator is a skip, because a developer may not
+    have one. A release run without one is a failure, because the gate would
+    otherwise record that a target property was checked when nothing was run.
+    """
+    if shutil.which(name) is None:
+        if required():
+            raise SystemExit(message.replace("skipped", "required but unavailable"))
+        print(message)
+        return False
+    return True
 
 
 def _git(target: pathlib.Path, *arguments: str) -> subprocess.CompletedProcess:

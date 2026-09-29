@@ -12,7 +12,6 @@ here has reached a fixed point on every construct the probe uses.
 
 from __future__ import annotations
 
-import os
 import pathlib
 import shutil
 import subprocess
@@ -132,12 +131,11 @@ def extract(disk: pathlib.Path, name: str, output: pathlib.Path) -> bytes:
 
 def main() -> int:
     qemu = shutil.which("qemu-system-x86_64")
-    if qemu is None or not TARGET.is_dir():
+    if not TARGET.is_dir():
         message = "self-host run: skipped (QEMU or target checkout unavailable)"
-        if os.environ.get("CC64_REQUIRE_EMULATORS") == "1":
-            raise SystemExit(message.replace("skipped", "required but unavailable"))
-        print(message)
-        return 0
+        if not target_revision.require_emulator(
+                f"{tool}", f"{message}"):
+            return 0
     target_revision.check(TARGET)
     if not PROBE.is_file():
         raise SystemExit(f"self-host run is missing its probe source {PROBE}")

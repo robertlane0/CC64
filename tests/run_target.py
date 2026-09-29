@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import os
 import pathlib
 import shutil
 import subprocess
@@ -119,13 +118,14 @@ def compile_and_link(work: pathlib.Path, source_text: str, name: str,
 
 
 def main() -> int:
-    qemu = shutil.which("qemu-system-x86_64")
-    if qemu is None or not TARGET.is_dir():
-        message = "target: skipped (QEMU or target checkout unavailable)"
-        if os.environ.get("CC64_REQUIRE_EMULATORS") == "1":
-            raise SystemExit(message.replace("skipped", "required but unavailable"))
-        print(message)
+    if not TARGET.is_dir():
+        print("target: skipped (target checkout unavailable)")
         return 0
+    if not target_revision.require_emulator(
+            "qemu-system-x86_64",
+            "target: skipped (QEMU or target checkout unavailable)"):
+        return 0
+    qemu = shutil.which("qemu-system-x86_64")
     check_target()
     run(["make", "clean", "lean"], TARGET)
     with tempfile.TemporaryDirectory(prefix="cc64-target-") as temp:
