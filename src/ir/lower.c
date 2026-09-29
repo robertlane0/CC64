@@ -926,6 +926,7 @@ static void lower_one_statement(LowerContext *context, AstNode *node,
     if (node == NULL) return;
     switch (node->kind) {
     case NODE_COMPOUND: lower_statement_list(context, node->a, head, tail); break;
+    case NODE_NULL_STATEMENT: break;
     case NODE_DECLARATION: {
         if (node->symbol != NULL && node->a != NULL &&
             node->symbol->storage != STORAGE_STATIC &&

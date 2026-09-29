@@ -470,7 +470,10 @@ Binding *scope_add_symbol(Arena *arena, Scope *scope, Symbol *symbol)
     if (binding == NULL) {
         return NULL;
     }
-    binding->name = symbol->name;
+    /* The binding keeps its own copy of the name. A symbol can be renamed after
+       it is bound, as `__func__` is, and an aliased name would then no longer
+       be the name the scope is searched by. */
+    binding->name = cc64_xstrdup(symbol->name);
     binding->tag = false;
     binding->symbol = symbol;
     binding->type = symbol->type;

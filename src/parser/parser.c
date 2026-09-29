@@ -793,6 +793,20 @@ static bool parse_declarator(Parser *parser, Type *base, const char **name,
     return type != NULL;
 }
 
+/* skip_balanced consumes a parenthesized argument list, including nested
+   parentheses, so a rejected declaration continues from after its own
+   specifier instead of being re-parsed as the next declaration's. */
+static void skip_balanced(Parser *parser)
+{
+    if (!token_text(peek(parser), "(")) return;
+    unsigned depth = 0U;
+    while (peek(parser) != NULL) {
+        if (accept(parser, "(")) ++depth;
+        else if (accept(parser, ")")) { --depth; if (depth == 0U) return; }
+        else (void)take(parser);
+    }
+}
+
 static bool parse_decl_specs(Parser *parser, DeclSpec *spec)
 {
     spec->type = NULL;
@@ -825,14 +839,21 @@ static bool parse_decl_specs(Parser *parser, DeclSpec *spec)
         if (token_is_keyword(token, "_Atomic") || token_is_keyword(token, "_Alignas")) {
             semantic_error(parser, 2030U, token, "deferred type specifier is unsupported");
             (void)take(parser);
-            if (token_text(peek(parser), "(")) {
-                unsigned depth = 1U;
-                while (depth != 0U && peek(parser) != NULL) {
-                    if (accept(parser, "(")) ++depth;
-                    else if (accept(parser, ")")) --depth;
-                    else (void)take(parser);
-                }
-            }
+            if (token_text(peek(parser), "(")) skip_balanced(parser);
+            continue;
+        }
+        /* The remaining deferred specifiers each get their own diagnostic, so a
+           program that uses one is told which construct is out of contract
+           rather than receiving the generic "no type specifier" error and a
+           cascade of follow-on failures. */
+        if (token_is_keyword(token, "_Complex") || token_is_keyword(token, "_Imaginary")) {
+            semantic_error(parser, 2037U, token, "complex and imaginary types are deferred");
+            (void)take(parser);
+            continue;
+        }
+        if (token_is_keyword(token, "_Thread_local")) {
+            semantic_error(parser, 2038U, token, "thread-local storage is deferred");
+            (void)take(parser);
             continue;
         }
         if (token_is_keyword(token, "struct") || token_is_keyword(token, "union")) {
@@ -895,6 +916,12 @@ static bool parse_decl_specs(Parser *parser, DeclSpec *spec)
     }
     if (saw_float && (saw_double || saw_int || saw_signed || saw_unsigned)) {
         semantic_error(parser, 2032U, peek(parser), "conflicting floating type specifiers");
+    }
+    /* `long double` is a distinct C type; the ABI gives binary64 to `double`
+       only, so accepting the spelling would silently give a program a
+       narrower type than it asked for. */
+    if (saw_double && long_count != 0U) {
+        semantic_error(parser, 2039U, peek(parser), "'long double' is deferred");
     }
     if (saw_char && (saw_float || saw_double || saw_int || short_count != 0U || long_count != 0U)) {
         semantic_error(parser, 2033U, peek(parser), "conflicting integer type specifiers");
@@ -1545,6 +1572,25 @@ static AstNode *parse_unary(Parser *parser)
         if (node != NULL) { node->a = value; node->unsigned_integer = type_size(value == NULL ? NULL : value->type); }
         return node;
     }
+    /* `_Alignof` is `sizeof` restricted to a type name, so it reuses the same
+       result node and only differs in the operand it accepts. */
+    if (token_is_keyword(token, "_Alignof")) {
+        (void)take(parser);
+        (void)expect(parser, "(");
+        Type *type = parse_type_name(parser);
+        (void)expect(parser, ")");
+        AstNode *node = node_new(parser, NODE_SIZEOF, type_basic(parser->arena, TYPE_UNSIGNED_LONG), token);
+        if (node != NULL) { node->type_operand = type; node->unsigned_integer = type_alignment(type); node->integer = (int64_t)type_alignment(type); }
+        return node;
+    }
+    if (token_is_keyword(token, "_Generic")) {
+        (void)take(parser);
+        semantic_error(parser, 2042U, token, "generic selection is deferred");
+        (void)expect(parser, "(");
+        while (peek(parser) != NULL && !token_text(peek(parser), ")")) (void)take(parser);
+        (void)expect(parser, ")");
+        return NULL;
+    }
     return parse_postfix(parser);
 }
 
@@ -1838,10 +1884,41 @@ static AstNode *parse_local_declaration(Parser *parser)
     return first;
 }
 
+/* A static assertion is checked while the unit is parsed and produces no code,
+   so it needs no node: the constant expression is evaluated here and a false
+   one is a diagnostic. The optional message is consumed so that the parse
+   resumes after it instead of reporting a second failure on the string. */
+static bool parse_static_assert(Parser *parser)
+{
+    const Token *token = take(parser);
+    (void)expect(parser, "(");
+    AstNode *node = parse_conditional(parser);
+    uint64_t value = 0UL;
+    if (node == NULL || !const_eval(node, &value)) {
+        semantic_error(parser, 2040U, peek(parser),
+                       "static assertion requires an integer constant expression");
+    } else if (value == 0UL) {
+        const Token *message = token_text(peek(parser), ",") ? peek_at(parser, 1U) : NULL;
+        if (message != NULL && message->kind == TOKEN_STRING) {
+            semantic_error(parser, 2041U, message, message->text);
+        } else {
+            semantic_error(parser, 2041U, token, "static assertion failed");
+        }
+    }
+    while (peek(parser) != NULL && !token_text(peek(parser), ")")) (void)take(parser);
+    (void)expect(parser, ")");
+    (void)expect(parser, ";");
+    return token != NULL;
+}
+
 static AstNode *parse_statement(Parser *parser)
 {
     const Token *token = peek(parser);
     if (token == NULL) return NULL;
+    if (token_is_keyword(token, "_Static_assert") || token_is_keyword(token, "static_assert")) {
+        (void)parse_static_assert(parser);
+        return node_new(parser, NODE_NULL_STATEMENT, NULL, token);
+    }
     if (token_text(token, "{")) return parse_compound(parser);
     if (token_text(token, ";")) { (void)take(parser); return node_new(parser, NODE_NULL_STATEMENT, NULL, token); }
     if (token_is_keyword(token, "if")) {
@@ -1954,6 +2031,40 @@ static void parse_function_definition(Parser *parser, const DeclSpec *spec,
     Symbol *old_function = parser->current_function;
     parser->scope = function_scope;
     parser->current_function = function;
+    /* `__func__` names the function that is being parsed. It is a static
+       const char array, so the body reads it as an ordinary object and the
+       back end needs no case for it. Each function gets its own object, so
+       the emitted name carries a per-function counter. */
+    char self_name[32];
+    (void)snprintf(self_name, sizeof(self_name), ".Lfunc.%u",
+                   parser->static_local_count++);
+    Symbol *self = symbol_new(parser, "__func__",
+                              type_array(parser->arena,
+                                         type_copy(parser->arena,
+                                                   type_basic(parser->arena, TYPE_CHAR),
+                                                   TYPE_QUAL_CONST),
+                                         strlen(name) + 1U, true),
+                              SYMBOL_VARIABLE);
+    if (self != NULL) {
+        self->storage = STORAGE_STATIC;
+        self->linkage = LINKAGE_INTERNAL;
+        self->defined = true;
+        size_t length = strlen(name) + 1U;
+        AstNode *text = node_new(parser, NODE_STRING,
+                                 type_array(parser->arena,
+                                            type_basic(parser->arena, TYPE_CHAR),
+                                            length, true), peek(parser));
+        if (text != NULL) {
+            text->text = cc64_xstrdup(name);
+            text->text_length = length;
+            self->initializer = copy_tree(parser, text);
+        }
+        /* The scope is bound first, under the name the body spells, and the
+           symbol is renamed afterwards to the private name its data is
+           emitted under. */
+        (void)scope_add_symbol(parser->arena, function_scope, self);
+        self->name = cc64_xstrdup(self_name);
+    }
     AstNode *body = parse_compound(parser);
     parser->scope = old_scope;
     parser->current_function = old_function;
@@ -2077,6 +2188,13 @@ bool parser_next(Parser *parser, size_t *first, size_t *last)
     if (parser == NULL || parser->failed) return false;
     while (parser->position < parser->count && !parser->failed) {
         if (accept(parser, ";")) continue;
+        /* A file-scope static assertion produces no declaration, so it is
+           consumed here and the loop continues with the next one. */
+        if (token_is_keyword(peek(parser), "_Static_assert") ||
+            token_is_keyword(peek(parser), "static_assert")) {
+            (void)parse_static_assert(parser);
+            continue;
+        }
         DeclSpec spec;
         if (!parse_decl_specs(parser, &spec)) {
             while (peek(parser) != NULL && !token_text(peek(parser), ";"))

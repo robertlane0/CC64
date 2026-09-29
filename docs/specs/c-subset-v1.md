@@ -14,6 +14,12 @@ pipeline. It is a subset of C17, not an extension.
 - Parameters, including `void` parameter lists and ordinary named parameters.
 - Scalar and aggregate initializer lists. Empty and unevaluated array bounds
   are accepted only where the type can be completed by context.
+- `static_assert` and `_Static_assert` at file scope and in block scope, with
+  an optional message. The condition is an integer constant expression and is
+  checked while the unit is parsed; the assertion emits no code.
+- `__func__`, a `static const char` array holding the name of the function
+  being parsed. Each function gets its own object.
+- `_Alignof(type)`, which yields the alignment the ABI gives the type.
 
 ## Accepted expressions and statements
 
@@ -58,6 +64,22 @@ pointer arguments, as recorded in the ABI document. Full floating-point
 conversions, floating variadic arguments, and aggregate-by-value parameter
 passing remain deferred and are diagnosed or kept outside the first target
 gate.
+
+Each deferred construct has its own diagnostic identifier, so a program that
+uses one is told which construct is out of contract instead of receiving a
+generic parse failure and a cascade of follow-on errors.
+
+| Identifier | Construct |
+|---:|---|
+| CC2010 | variable length array bound |
+| CC2018 | bit-field member |
+| CC2030 | `_Atomic` or `_Alignas` type specifier |
+| CC2037 | `_Complex` or `_Imaginary` type specifier |
+| CC2038 | `_Thread_local` storage class |
+| CC2039 | `long double` |
+| CC2042 | `_Generic` selection |
+| CC2081 | compound literal |
+| CC2016 | anonymous struct or union member |
 
 A construct outside this document is not accepted by silently extending the
 grammar. It must receive a diagnostic before code generation.

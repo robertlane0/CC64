@@ -79,19 +79,88 @@ static void expect_error(const char *text)
     arena_destroy(arena);
 }
 
+static void test_static_assert(void)
+{
+    Arena *arena = arena_create(1024U * 1024U);
+    DiagnosticSink diagnostics = {0};
+    TranslationUnit unit;
+    /* Both spellings are accepted, the message is optional, and the
+       assertion is checked while the unit is parsed. */
+    const char *text =
+        "static_assert(sizeof(int) == 4, \"int is four bytes\");\n"
+        "_Static_assert(sizeof(long) == 8);\n"
+        "int main(void) { static_assert(sizeof(char) == 1, \"char\"); return 7; }\n";
+    CHECK(parse_text(arena, text, &unit, &diagnostics));
+    CHECK(diagnostics.count == 0U);
+    CHECK(unit.has_main);
+    translation_unit_free(&unit);
+    diagnostic_sink_destroy(&diagnostics);
+    arena_destroy(arena);
+}
+
+static void test_func_name(void)
+{
+    Arena *arena = arena_create(1024U * 1024U);
+    DiagnosticSink diagnostics = {0};
+    TranslationUnit unit;
+    /* `__func__` is a static const char array holding the function's own
+       name, so a body reads it as an ordinary object. */
+    const char *text =
+        "int helper(void) { return __func__[0]; }\n"
+        "int main(void) { return __func__[0] == 'm' ? 7 : 1; }\n";
+    CHECK(parse_text(arena, text, &unit, &diagnostics));
+    CHECK(diagnostics.count == 0U);
+    translation_unit_free(&unit);
+    diagnostic_sink_destroy(&diagnostics);
+    arena_destroy(arena);
+}
+
+static void expect_error_id(const char *text, unsigned id)
+{
+    Arena *arena = arena_create(1024U * 1024U);
+    DiagnosticSink diagnostics = {0};
+    TranslationUnit unit;
+    CHECK(!parse_text(arena, text, &unit, &diagnostics));
+    bool found = false;
+    for (size_t i = 0U; i < diagnostics.count; ++i) {
+        if (diagnostics.items[i].id == id) found = true;
+    }
+    CHECK(found);
+    translation_unit_free(&unit);
+    diagnostic_sink_destroy(&diagnostics);
+    arena_destroy(arena);
+}
+
+static void test_deferred_diagnostics(void)
+{
+    /* Every construct the subset document defers has its own stable
+       identifier, so a program that uses one is told which construct is out
+       of contract rather than receiving a generic parse failure. */
+    expect_error_id("static_assert(0, \"false\");\nint main(void) { return 0; }\n", 2041U);
+    expect_error_id("static_assert(main);\nint main(void) { return 0; }\n", 2040U);
+    expect_error_id("int main(void) { return _Generic(1, int: 2, default: 3); }\n", 2042U);
+    expect_error_id("_Thread_local int shared;\nint main(void) { return 0; }\n", 2038U);
+    expect_error_id("_Complex double z;\nint main(void) { return 0; }\n", 2037U);
+    expect_error_id("int main(void) { return (int)sizeof(long double); }\n", 2039U);
+    expect_error_id("int main(void) { return 0; } _Alignof(int);\n", 2031U);
+}
+
 int main(void)
 {
     test_valid();
     test_completed_tag();
+    test_static_assert();
+    test_func_name();
     expect_error("int main(void) { return missing; }\n");
     expect_error("int main(void) { int a; int a; return 0; }\n");
     expect_error("int main(void) { int a[n]; return 0; }\n");
     expect_error("struct S { int x : 1; }; int main(void) { return 0; }\n");
     expect_error("int main(void) { _Atomic int x; return 0; }\n");
+    test_deferred_diagnostics();
     if (failures != 0) {
         fprintf(stderr, "%d semantic test(s) failed\n", failures);
         return 1;
     }
-    puts("semantic: valid and negative groups passed");
+    puts("semantic: valid, deferred, and negative groups passed");
     return 0;
 }

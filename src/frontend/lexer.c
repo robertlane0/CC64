@@ -430,7 +430,7 @@ void token_list_classify_keywords(TokenList *list)
         "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
         "unsigned", "void", "volatile", "while", "true", "false", "_Alignas", "_Alignof",
         "_Atomic", "_Bool", "_Complex", "_Generic", "_Imaginary", "_Noreturn",
-        "_Static_assert", "_Thread_local"
+        "_Static_assert", "_Thread_local", "static_assert"
     };
     for (size_t i = 0U; i < list->count; ++i) {
         Token *token = &list->items[i];
