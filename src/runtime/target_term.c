@@ -306,21 +306,26 @@ int nanosleep(const void *request, void *remain)
         errno = EINVAL;
         return -1;
     }
-    /* The target has no timer service, so the only way to let time pass is to
-       spend it asking whether the console has anything yet. A wait that is
-       shorter than the clock's resolution is spent in full anyway, because
-       there is no finer reading to wait for. */
-    long target = (long)cc64_time_fields();
-    long want = wanted->tv_sec * 3600L +
-                ((wanted->tv_nsec / 1000000000L) * 3600L) +
-                ((wanted->tv_nsec / 1000000L) / 1000L) * 60L +
-                (wanted->tv_nsec / 1000000L) % 60L;
+    /* The clock fields are an hour, a minute, and a second, so a request is
+       reduced to a number of seconds within the day and compared against how
+       far the clock has moved since the wait began. A wait shorter than the
+       clock's resolution therefore ends at the next reading rather than after
+       the time asked for, which is the only reading there is. */
+    long want = wanted->tv_sec;
+    if (wanted->tv_nsec >= 1000000000L) want += 1L;
+    long started = (long)cc64_time_fields();
     for (;;) {
+        /* A character arriving ends the wait. The target has no way to sleep,
+           so the loop asks the console instead of doing nothing, and a program
+           that sleeps while a key is pressed resumes as soon as the key does
+           rather than when the sleep would have ended. That is a deliberate
+           difference from a timed wait and it is the only scheduling the
+           target offers. */
+        if (cc64_console_ready() != 0) break;
         long now = (long)cc64_time_fields();
-        long spent = now - target;
+        long spent = now - started;
         if (spent < 0L) spent += 86400L;
         if (spent >= want) break;
-        if (cc64_console_ready() != 0) break;
     }
     return 0;
 }
