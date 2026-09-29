@@ -464,6 +464,24 @@ Symbol *scope_lookup(Scope *scope, const char *name)
     return NULL;
 }
 
+/* A redeclaration is a conflict only within one scope. A name bound in an
+   enclosing scope is shadowed by a new binding, which is ordinary C, so a
+   caller checking for a duplicate asks this rather than `scope_lookup`. */
+Symbol *scope_lookup_here(const Scope *scope, const char *name)
+{
+    for (const Scope *at = scope; at != NULL; at = at->parent) {
+        for (Binding *binding = at->bindings; binding != NULL;
+             binding = binding->next) {
+            if (!binding->tag && binding->symbol != NULL &&
+                strcmp(binding->name, name) == 0) {
+                return binding->symbol;
+            }
+        }
+        break;
+    }
+    return NULL;
+}
+
 Binding *scope_add_symbol(Arena *arena, Scope *scope, Symbol *symbol)
 {
     Binding *binding = arena_alloc(arena, sizeof(*binding));

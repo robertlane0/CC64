@@ -39,17 +39,21 @@ build/cc64-abi: build/tests/unit/test_abi.o build/libcc64core.a
 build/cc64-diagnostic: build/tests/unit/test_diagnostic.o build/libcc64core.a
 	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ build/tests/unit/test_diagnostic.o build/libcc64core.a $(LDLIBS)
 
+build/cc64-conversion: build/tests/unit/test_conversion.o build/libcc64core.a
+	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ build/tests/unit/test_conversion.o build/libcc64core.a $(LDLIBS)
+
 build/libcc64core.a: $(filter-out build/src/driver/main.o,$(OBJECTS))
 	@mkdir -p $(@D)
 	$(AR) rcs $@ $^
 
-test-unit: build/cc64-unit build/cc64-frontend build/cc64-semantic build/cc64-numeric build/cc64-abi build/cc64-diagnostic
+test-unit: build/cc64-unit build/cc64-frontend build/cc64-semantic build/cc64-numeric build/cc64-abi build/cc64-diagnostic build/cc64-conversion
 	@build/cc64-unit
 	@build/cc64-frontend
 	@build/cc64-semantic
 	@build/cc64-numeric
 	@build/cc64-abi
 	@build/cc64-diagnostic
+	@build/cc64-conversion
 
 test: test-unit
 	@python3 tests/run.py

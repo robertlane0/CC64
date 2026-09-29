@@ -1871,7 +1871,7 @@ static AstNode *parse_local_declaration(Parser *parser)
         }
         if (spec.storage == STORAGE_TYPEDEF) {
             Symbol *symbol = symbol_new(parser, name, type, SYMBOL_TYPEDEF);
-            if (symbol == NULL || scope_lookup(parser->scope, name) != NULL || !scope_add_symbol(parser->arena, parser->scope, symbol)) {
+            if (symbol == NULL || scope_lookup_here(parser->scope, name) != NULL || !scope_add_symbol(parser->arena, parser->scope, symbol)) {
                 semantic_error(parser, 2096U, peek(parser), "duplicate declaration");
                 return first;
             }
@@ -1886,7 +1886,11 @@ static AstNode *parse_local_declaration(Parser *parser)
                               (spec.storage == STORAGE_EXTERN ? LINKAGE_EXTERNAL :
                                LINKAGE_NONE);
             if (spec.storage == STORAGE_STATIC) symbol->defined = true;
-            if (scope_lookup(parser->scope, name) != NULL) {
+            /* A name may be redeclared in an inner block, where it hides the
+               outer one, so only a name already in this scope is a duplicate.
+               The lookup used to reach the parent scopes, which made every
+               ordinary shadowing a redeclaration. */
+            if (scope_lookup_here(parser->scope, name) != NULL) {
                 semantic_error(parser, 2098U, peek(parser), "duplicate local declaration");
             } else if (!scope_add_symbol(parser->arena, parser->scope, symbol)) return first;
             if (spec.storage == STORAGE_STATIC) {
@@ -2026,9 +2030,12 @@ static bool append_declaration(TranslationUnit *unit, AstNode *node)
     return append_node(&unit->declarations, &unit->count, &unit->capacity, node);
 }
 
+/* define_symbol records a file-scope name. `tentative` is a definition with no
+   initializer, which a unit may repeat; an initialized definition conflicts
+   with any other and sets the recorded definition. */
 static bool define_symbol(Parser *parser, const char *name, Type *type,
-                          StorageClass storage, bool function, bool definition,
-                          Symbol **result)
+                          StorageClass storage, bool function, bool tentative,
+                          bool initialized, Symbol **result)
 {
     Symbol *existing = scope_lookup(parser->global_scope, name);
     Symbol *symbol = existing;
@@ -2042,8 +2049,19 @@ static bool define_symbol(Parser *parser, const char *name, Type *type,
     symbol->type = type;
     symbol->storage = storage;
     symbol->linkage = storage == STORAGE_STATIC ? LINKAGE_INTERNAL : LINKAGE_EXTERNAL;
-    if (definition && symbol->defined) semantic_error(parser, 2105U, peek(parser), "duplicate definition");
-    if (definition) symbol->defined = true;
+    /* A tentative definition reserves a name for the unit without being the
+       one the back end emits, so a unit may repeat it and may still give the
+       same name an initialized definition later. An initialized definition is
+       the one that conflicts with any other. */
+    if (initialized) {
+        if (symbol->defined && symbol->initialized) {
+            semantic_error(parser, 2105U, peek(parser), "duplicate definition");
+        }
+        symbol->defined = true;
+        symbol->initialized = true;
+    } else if (tentative) {
+        symbol->defined = true;
+    }
     if (result != NULL) *result = symbol;
     return true;
 }
@@ -2053,7 +2071,8 @@ static void parse_function_definition(Parser *parser, const DeclSpec *spec,
                                       Symbol *parameters, size_t parameter_count)
 {
     Symbol *function = NULL;
-    if (!define_symbol(parser, name, type, spec->storage, true, true, &function)) return;
+    if (!define_symbol(parser, name, type, spec->storage, true, true, true,
+                         &function)) return;
     (void)parameter_count;
     Scope *function_scope = scope_create(parser->arena, parser->global_scope);
     for (Symbol *parameter = parameters; parameter != NULL; parameter = parameter->next) {
@@ -2146,13 +2165,20 @@ static void parse_global_declaration(Parser *parser, const DeclSpec *spec)
         } else {
             Symbol *symbol = NULL;
             bool is_function = type_is_function(type);
-            bool is_definition = !is_function && !token_text(peek(parser), "=") &&
-                                 spec->storage != STORAGE_EXTERN;
-            if (!define_symbol(parser, name, type, spec->storage, is_function, is_definition, &symbol)) return;
-            if (accept(parser, "=")) {
+            /* A declaration that is not extern contributes a definition, but
+               a definition with no initializer is a tentative one and a unit
+               may hold several of them, so only an initialized definition is
+               recorded as the one that conflicts with another. The duplicate
+               check used to see only the tentative form, so two initialized
+               definitions of one name were both accepted. */
+            bool has_initializer = token_text(peek(parser), "=");
+            bool tentative = !is_function && !has_initializer &&
+                             spec->storage != STORAGE_EXTERN;
+            if (!define_symbol(parser, name, type, spec->storage, is_function,
+                               tentative, has_initializer, &symbol)) return;
+            if (has_initializer && accept(parser, "=")) {
                 symbol->initializer = parse_initializer(parser, type);
                 complete_initializer_array(type, symbol->initializer);
-                symbol->defined = true;
                 /* The back end emits an object's data from its initializer
                    after the whole unit has been parsed and lowered, by which
                    time the node arena is gone, so the initializer is copied
@@ -2160,7 +2186,7 @@ static void parse_global_declaration(Parser *parser, const DeclSpec *spec)
                 symbol->initializer = copy_tree(parser, symbol->initializer);
                 AstNode *declaration = node_new(parser, NODE_DECLARATION, type, peek(parser));
                 if (declaration != NULL) { declaration->symbol = symbol; declaration->a = symbol->initializer; (void)append_declaration(parser->unit, declaration); }
-            } else if (is_definition) {
+            } else if (tentative) {
                 AstNode *declaration = node_new(parser, NODE_DECLARATION, type, peek(parser));
                 if (declaration != NULL) { declaration->symbol = symbol; (void)append_declaration(parser->unit, declaration); }
             }
@@ -2293,6 +2319,7 @@ bool parser_finish(Parser *parser)
         parser->global_scope->bindings != NULL) {
         parser->unit->globals = parser->global_scope->bindings->symbol;
     }
+    parser->unit->global_scope = parser->global_scope;
     /* The unit is accepted when the stream was parsed to its end and no
        diagnostic was reported at all, so a declaration that was skipped after
        an error is still a rejected unit. */

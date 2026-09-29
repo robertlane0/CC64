@@ -92,6 +92,9 @@ struct Symbol {
     StorageClass storage;
     Linkage linkage;
     bool defined;
+    /* True when the definition carries an initializer, which is the
+       form that conflicts with any other definition of the same name. */
+    bool initialized;
     bool is_parameter;
     size_t offset;
     bool has_frame_offset;
@@ -221,6 +224,11 @@ typedef struct TranslationUnit {
     size_t count;
     size_t capacity;
     Symbol *globals;
+    /* The file scope, so a caller that needs a declared name rather than a
+       declaration node can look one up. `globals` is the first binding, which
+       is the most recently added symbol, so a unit with both functions and
+       objects does not have its objects in that list. */
+    Scope *global_scope;
     bool has_main;
 } TranslationUnit;
 
@@ -250,6 +258,9 @@ const char *type_kind_name(TypeKind kind);
 
 Scope *scope_create(Arena *arena, Scope *parent);
 Symbol *scope_lookup(Scope *scope, const char *name);
+/* Looks a name up in one scope only. A redeclaration is a conflict within a
+   scope; a name in an enclosing scope is shadowed rather than duplicated. */
+Symbol *scope_lookup_here(const Scope *scope, const char *name);
 Binding *scope_add_symbol(Arena *arena, Scope *scope, Symbol *symbol);
 Binding *scope_add_tag(Arena *arena, Scope *scope, const char *name, Type *type);
 Type *scope_lookup_tag(Scope *scope, const char *name);
