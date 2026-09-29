@@ -66,18 +66,33 @@ production_sources = runtime_sources.production_sources
 library_sources = runtime_sources.compiler_library_sources
 
 
-def stage_name(index: int) -> str:
-    """A one-letter staged base name, so every command stays inside the tail.
+STAGE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
-    The tail the target accepts is a fixed 143 bytes, and a compile names the
-    source, the object, and the output. One letter plus a one-character
-    extension leaves room for the longest case name, so a case is staged under
-    a letter and the mapping is derived only from the case list, which means a
-    given case is always staged and read back under the same name.
+
+def stage_name(index: int) -> str:
+    """A short staged base name, so every command stays inside the tail.
+
+    The tail the target accepts holds 126 characters: the process contract
+    gives the child 127 bytes at PSP+0xA1 and the last one is the terminator.
+    A command names the compiler, the object, and the output, and the longest
+    one here is a link, so a one-character base leaves ample room and a case is
+    staged under a name derived only from the case list, which means a given
+    case is always staged and read back under the same name. The alphabet is
+    base-36 rather than the alphabet alone, and a second character is added
+    only when the case list outgrows thirty-six items, because the growth is
+    reported rather than silently made to collide.
     """
-    if index >= 26:
-        raise SystemExit(f"self-host corpus has no staged name for item {index}")
-    return chr(ord("A") + index)
+    if index < 0:
+        raise SystemExit(f"self-host corpus has a negative item index {index}")
+    if index < len(STAGE_ALPHABET):
+        return STAGE_ALPHABET[index]
+    rest = index - len(STAGE_ALPHABET)
+    if rest < len(STAGE_ALPHABET) ** 2:
+        return (STAGE_ALPHABET[rest // len(STAGE_ALPHABET)] +
+                STAGE_ALPHABET[rest % len(STAGE_ALPHABET)])
+    raise SystemExit(f"self-host corpus has no staged name for item {index}: "
+                     f"the staged alphabet holds at most "
+                     f"{len(STAGE_ALPHABET) + len(STAGE_ALPHABET) ** 2} items")
 
 
 def build_image(work: pathlib.Path) -> tuple[pathlib.Path, list[pathlib.Path]]:

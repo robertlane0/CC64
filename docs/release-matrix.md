@@ -22,6 +22,8 @@ the target checkout's own checker.
 | `make perf-measure` | the clean build timed twice, every production unit timed, and both image forms measured against the budgets the contracts state |
 | `make fuzz-smoke` | malformed sources, mutated and structurally mutated objects, truncated objects, every relocation field driven out of range, mutated `MZ64` fields, fixups that leave the image, load-bias checks at five biases and at two that must be refused, extreme constants, and deep nesting in three constructs |
 | `make repro-check` | two path-independent clean builds compared over every generated file and the compiler-produced target artifacts |
+| `make response-files` | a response file producing a byte-identical image to the same arguments written out, a response file naming another, a quoted word keeping a space, arguments mixed with plain ones, and a missing file, a self-naming file, and two files naming each other each reported rather than followed |
+| `make target-heap` | the target heap measured by a compiler-produced program that claims the largest block the allocator will give it, against the minimum the target contract states; the pinned reference is required to fail it by name |
 | `make audit` | tracked-file provenance: no external compiler reference, no generated artifact, no unexpected source type, a milestone row with a state and its evidence, and the stated limits of the self-host claim |
 
 ## Image and ABI compatibility

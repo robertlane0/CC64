@@ -56,6 +56,15 @@ tools, not build or runtime dependencies of a target program.
 
 `MS-DOS64` is an interface reference and a test platform. It is ignored by
 this repository, is not a build input, and contributes no file to a release.
-The two changes CC64 depends on are made on that repository's `edit` branch and
-are recorded with their reason and observable effect in
+The changes CC64 depends on are made on that repository's `edit` branch and are
+recorded with their reason and observable effect in
 `docs/provenance-ledger.md`.
+
+The one CC64 depends on for self-hosting is the heap extension, recorded as
+D-132: the target's `edit` branch at `d9a4379`, over the pinned reference
+`13c3ced`, provides a twelve-mebibyte heap where the reference provides six.
+`make target-heap` measures the difference with a compiler-produced program and
+requires at least eleven mebibytes, so the pinned reference fails that gate by
+name rather than the dependency being implicit. The pinned reference revision
+stays in the checkout, so a CC64 build can always be compared against the
+unmodified target.

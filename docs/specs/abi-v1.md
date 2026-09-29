@@ -184,10 +184,25 @@ call project runtime functions which use the target `INT 21h` contract:
 | close | `AH=3Eh`, `RBX=handle` |
 | exit | `AH=4Ch`, low return value in `AL` |
 
-The target has a 16 MiB conventional process area. Allocation failure is
-represented by a null result. A raw `.COM` has no metadata for separate BSS;
-the compiler emits statically initialized objects in-band and automatic
-storage in the application frame. `MZ64` supports zero-filled BSS.
+The target maps the low fourteen mebibytes of the address space, and the MCB
+chain runs from `0x200000` to `0xE00000`: a twelve-mebibyte heap. A process
+block holds its image, its environment, and its stack, so the space a program
+can claim is the heap less that block. `tests/target_heap.py` measures it and
+requires at least eleven mebibytes; the pinned reference provides six and
+measures five, so the gate fails by name against an unmodified target. This
+figure is a property of the target's `edit` branch and CC64's self-hosting
+depends on it (D-132).
+
+A command tail holds 126 characters. The target's process contract gives a
+child 127 bytes at `PSP+0xA1` and the last one is the terminator, which
+`tests/` measures with the target's own `ECHO` builtin rather than assuming. A
+link of enough objects to exceed that passes its argument list in a response
+file named by an `@`-prefixed argument (D-133).
+
+Allocation failure is represented by a null result. A raw `.COM` has no
+metadata for separate BSS; the compiler emits statically initialized objects
+in-band and automatic storage in the application frame. `MZ64` supports
+zero-filled BSS.
 
 ## Versioning
 

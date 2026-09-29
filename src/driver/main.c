@@ -38,10 +38,23 @@ typedef struct Options {
     ImageFormat format;
 } Options;
 
+/* The target's process contract gives a command line 127 bytes, so a build
+ * with more than about two dozen objects cannot be written as one line: the
+ * self-hosted linker reached twenty-one inputs and the tail was cut short. An
+ * argument of the form @NAME is therefore replaced by the whitespace-separated
+ * words inside NAME, read through the same file interface the rest of the
+ * compiler uses, so a response file means the same thing on the host and on the
+ * target. A word may itself name a response file; nesting is bounded so a file
+ * that names itself is reported rather than followed, and a file is bounded so
+ * a large one costs a stated amount rather than whatever the heap has left. */
+#define RESPONSE_DEPTH 8
+#define RESPONSE_BYTES 65536U
+
 static void usage(FILE *stream)
 {
     fprintf(stream,
             "usage: cc64 [options] input.c\n"
+            "  @FILE          read further arguments from FILE\n"
             "  -c             compile and emit CC64O\n"
             "  --link         link CC64O objects\n"
             "  --format NAME  raw COM (default) or mz64\n"
@@ -56,6 +69,145 @@ static void usage(FILE *stream)
             "  --target NAME  target contract (default: " CC64_TARGET ")\n"
             "  --version      print version\n"
             "  --help         print help\n");
+}
+
+static bool response_push(const char **items, size_t *count, size_t capacity,
+                          const char *word)
+{
+    if (*count >= capacity) {
+        return false;
+    }
+    items[(*count)++] = word;
+    return true;
+}
+
+static bool is_space(int character)
+{
+    return character == ' ' || character == '\t' || character == '\r' ||
+           character == '\n' || character == '\f' || character == '\v';
+}
+
+/* Read one response file and append its words. A word is either a plain
+ * argument or a quoted run, so a path may contain a space. */
+static bool append_response_file(const char *name, const char **items, size_t *count,
+                                 size_t capacity, unsigned depth, int *status)
+{
+    char *text;
+    size_t used = 0U;
+    FILE *stream;
+    if (depth >= RESPONSE_DEPTH) {
+        fprintf(stderr, "cc64: CC1001: @%s nests deeper than %u response files\n",
+                name, (unsigned)RESPONSE_DEPTH);
+        *status = 1;
+        return false;
+    }
+    stream = fopen(name, "rb");
+    if (stream == NULL) {
+        fprintf(stderr, "cc64: CC1002: cannot read response file '%s'\n", name);
+        *status = 1;
+        return false;
+    }
+    /* The file is read up to the ceiling; a file that fills it is refused
+     * rather than truncated, because a truncated argument list would link the
+     * wrong image without saying so. */
+    text = cc64_xmalloc(RESPONSE_BYTES);
+    for (;;) {
+        size_t got = fread(text + used, 1U, RESPONSE_BYTES - used, stream);
+        used += got;
+        if (used < RESPONSE_BYTES) {
+            break;
+        }
+        fprintf(stderr, "cc64: CC1003: response file '%s' is larger than "
+                "%lu bytes\n", name, (unsigned long)RESPONSE_BYTES);
+        free(text);
+        fclose(stream);
+        *status = 1;
+        return false;
+    }
+    fclose(stream);
+    text[used] = '\0';
+    for (size_t i = 0U; i < used; ++i) {
+        size_t start;
+        size_t length;
+        char *word;
+        if (is_space((unsigned char)text[i])) {
+            continue;
+        }
+        start = i;
+        if (text[i] == '"' || text[i] == '\'') {
+            char quote = text[i++];
+            start = i;
+            while (i < used && text[i] != quote) {
+                ++i;
+            }
+            length = i - start;
+            if (i < used) {
+                ++i;
+            }
+        } else {
+            while (i < used && !is_space((unsigned char)text[i])) {
+                ++i;
+            }
+            length = i - start;
+        }
+        word = cc64_xmalloc(length + 1U);
+        memcpy(word, text + start, length);
+        word[length] = '\0';
+        if (word[0] == '@' && word[1] != '\0') {
+            bool good = append_response_file(word + 1, items, count, capacity,
+                                             depth + 1U, status);
+            free(word);
+            if (!good) {
+                free(text);
+                return false;
+            }
+        } else if (!response_push(items, count, capacity, word)) {
+            fprintf(stderr, "cc64: CC1004: response file '%s' holds more than "
+                    "%lu arguments\n", name, (unsigned long)capacity);
+            free(word);
+            free(text);
+            *status = 1;
+            return false;
+        }
+    }
+    free(text);
+    return true;
+}
+
+/* Replace every @NAME argument with the words it names. The result is a fresh
+ * argument vector: the caller's is left alone, and argv[0] stays in place. */
+static char **expand_response_files(int argc, char **argv, int *expanded,
+                                    int *status)
+{
+    const size_t capacity = 1024U;
+    const char **items = cc64_xmalloc(capacity * sizeof(*items));
+    char **result;
+    size_t count = 0U;
+    *status = 0;
+    items[count++] = argv[0];
+    for (int i = 1; i < argc; ++i) {
+        if (argv[i][0] == '@' && argv[i][1] != '\0') {
+            if (!append_response_file(argv[i] + 1, items, &count, capacity,
+                                      1U, status)) {
+                free(items);
+                return NULL;
+            }
+        } else if (!response_push(items, &count, capacity, argv[i])) {
+            fprintf(stderr, "cc64: CC1004: more than %lu arguments\n",
+                    (unsigned long)capacity);
+            free(items);
+            *status = 1;
+            return NULL;
+        }
+    }
+    result = cc64_xmalloc((count + 1U) * sizeof(*result));
+    for (size_t i = 0U; i < count; ++i) {
+        result[i] = (char *)items[i];
+    }
+    result[count] = NULL;
+    free(items);
+    *expanded = (int)count;
+    return result;
 }
 
 static bool take_value(int argc, char **argv, int *index, const char **value)
@@ -444,22 +596,33 @@ int cc64_main(int argc, char **argv)
     DiagnosticSink sink = {0};
     sink.limit = 100U;
     Options options;
-    if (!parse_options(argc, argv, &options, &sink)) {
+    char **expanded = NULL;
+    int expanded_count = argc;
+    int expansion_status = 0;
+    expanded = expand_response_files(argc, argv, &expanded_count,
+                                     &expansion_status);
+    if (expanded == NULL) {
+        return expansion_status == 0 ? 1 : expansion_status;
+    }
+    if (!parse_options(expanded_count, expanded, &options, &sink)) {
         print_diagnostics(&sink);
         diagnostic_sink_destroy(&sink);
         free_options(&options);
+        free(expanded);
         return 1;
     }
     if (options.action == ACTION_VERSION) {
         printf("cc64 %s target=%s\n", CC64_VERSION, options.target);
         diagnostic_sink_destroy(&sink);
         free_options(&options);
+        free(expanded);
         return 0;
     }
     if (options.action == ACTION_HELP) {
         usage(stdout);
         diagnostic_sink_destroy(&sink);
         free_options(&options);
+        free(expanded);
         return 0;
     }
     if (options.action == ACTION_LINK) {
@@ -480,6 +643,7 @@ int cc64_main(int argc, char **argv)
         print_diagnostics(&sink);
         diagnostic_sink_destroy(&sink);
         free_options(&options);
+        free(expanded);
         return 1;
     }
     if (options.input_count > 1U && options.output_set) {
@@ -488,6 +652,7 @@ int cc64_main(int argc, char **argv)
         print_diagnostics(&sink);
         diagnostic_sink_destroy(&sink);
         free_options(&options);
+        free(expanded);
         return 1;
     }
     /* Every action other than linking produces one file per input. */
@@ -508,12 +673,14 @@ int cc64_main(int argc, char **argv)
         }
         diagnostic_sink_destroy(&sink);
         free_options(&options);
+        free(expanded);
         return status;
     }
     {
         int status = compile_one(&options, &sink);
         diagnostic_sink_destroy(&sink);
         free_options(&options);
+        free(expanded);
         return status;
     }
 }

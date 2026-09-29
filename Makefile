@@ -106,10 +106,23 @@ fuzz-smoke: cc64
 repro-check: cc64
 	@python3 tools/repro_check.py
 
+# The target's command tail is 126 characters, so a link of more than about two
+# dozen objects goes in a response file. These pin that a response file means
+# the same thing as the arguments written out, and that the ways it can be
+# wrong are reported.
+response-files: cc64
+	@python3 tests/response_files.py
+
+# The heap the target provides, measured by a compiler-produced program. The
+# bound is the target contract's, so a target without the edit branch fails
+# here by name rather than at some later and less obvious point.
+target-heap: cc64
+	@python3 tests/target_heap.py
+
 # The release gate treats a missing emulator as a failure rather than a skip,
 # so it cannot record that a target property was checked when nothing booted.
 check-release: export CC64_REQUIRE_EMULATORS = 1
-check-release: check test-target test-bochs self-host self-host-stage selfhost-probe self-host-run self-host-corpus target-lib link-negative compat-matrix perf-measure fuzz-smoke repro-check audit
+check-release: check test-target test-bochs self-host self-host-stage selfhost-probe self-host-run self-host-corpus target-lib link-negative compat-matrix perf-measure fuzz-smoke repro-check response-files target-heap audit
 check-release-strict: export CC64_REQUIRE_CLEAN = 1
 check-release-strict: export CC64_REQUIRE_EMULATORS = 1
 check-release-strict: audit

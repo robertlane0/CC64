@@ -26,6 +26,13 @@ The measured state of every milestone, and the limits the self-host evidence
 does and does not claim, are recorded in `docs/status.md` and
 `docs/release-matrix.md`.
 
+The target's process contract gives a child 126 characters of command tail, so
+a link of more than about two dozen objects passes its argument list in a
+response file: an argument of the form `@NAME` is replaced by the words inside
+`NAME`. `make response-files` pins that this means the same thing as the
+arguments written out, and `make target-heap` measures the target heap that
+self-hosting depends on.
+
 No target program is built by the host compiler. The MS-DOS64 checkout, if
 present beside this repository, is an interface reference and test target; it
 is not part of the CC64 source or normal build.

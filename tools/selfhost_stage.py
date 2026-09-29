@@ -185,16 +185,16 @@ def batches(sources: list[pathlib.Path], sizes: dict[str, int],
 
 
 def staged_name(index: int) -> str:
-    """A one-letter staged base name, so a link of every object fits on one line.
+    """A short staged base name, so a case is staged under a stable short name.
 
-    A command tail is bounded to 143 bytes on the target. A link names every
-    object, the image format, and the output, which leaves about four
-    characters per object: twenty objects plus the options need one letter each
-    and a one-letter extension. The name comes from the position in the list it
-    was drawn from, so a given object is always staged and read back under the
-    same name.
+    A command tail is bounded to 126 characters on the target. A link names
+    every object, the image format, and the output, which is about four
+    characters per object, so a one-character base with a one-letter extension
+    covers the twenty-one objects a link of this compiler needs. The name comes
+    from the position in the list it was drawn from, so a given object is
+    always staged and read back under the same name.
     """
-    if index >= 26:
+    if index < 0 or index >= 26:
         raise SystemExit(f"self-host stage has no staged name for item {index}")
     return chr(ord('A') + index)
 
@@ -292,14 +292,25 @@ def main() -> int:
                             str(disk), str(library_object), name], cwd=ROOT,
                            check=True, stdout=subprocess.DEVNULL)
         check_volume(disk)
-        inputs = " ".join([f"{names[source.stem]}.O" for source in sources] +
-                          library_names)
+        # The target's process contract gives a command line 127 bytes, and
+        # this link has twenty-one objects, so the argument list goes in a
+        # response file and the command names only that.
+        response = work / "link.rsp"
+        response.write_text(
+            "--link\n--format\nmz64\n--free\n"
+            + "\n".join([f"{names[source.stem]}.O" for source in sources] +
+                        library_names) + "\n",
+            encoding="utf-8")
+        subprocess.run(["python3", str(ROOT / "tests/embed_fat12.py"),
+                        str(disk), str(response), "LINK.RSP"], cwd=ROOT,
+                       check=True, stdout=subprocess.DEVNULL)
+        check_volume(disk)
         # The volume holds the image, the objects, and the image the link
         # produces, and that is more than its data area. The linker reads
         # each object once, so the stage asks it to release them as it
         # goes; the copies it releases are the stage's own, already
         # compared with the bootstrap objects.
-        boot(disk, f"CC64S --link --format mz64 --free {inputs} -o S2.COM")
+        boot(disk, "CC64S @LINK.RSP -o S2.COM")
         check_volume(disk)
         stage2 = work / "stage2.mz64"
         extract(disk, "S2.COM", stage2)

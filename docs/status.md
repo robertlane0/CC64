@@ -1,14 +1,15 @@
 # CC64 implementation status
 
-Status date: 2026-09-28. The recorded `make check-release` run passed every
-stage: 26 QEMU image cases and two linked target-library cases, 8 Bochs
-conformance cases in both image forms, all fourteen production units compiled
+Status date: 2026-09-29. The recorded `make check-release` run passed every
+stage: 35 QEMU image cases and four linked target-library cases, 8 Bochs
+conformance cases in both image forms, all fifteen production units compiled
 on the target to byte-identical objects, the relinked compiler image
-byte-identical, the 26 conformance cases compiled, linked, and run by a
-compiler the target built, the seven unit groups, the linker-rejection and
+byte-identical, the 35 conformance cases compiled, linked, and run by a
+compiler the target built, the target heap measured at eleven mebibytes, the
+response-file gate, the seven unit groups, the linker-rejection and
 image-compatibility gates, the property gate, the license and provenance
-audit, and a reproducible clean build over 51 files with digest
-`90f110f7b3e43ea92724b59115b0492f272c34271bfb4207a19d3725c352ce99`.
+audit, and a reproducible clean build over 53 files with digest
+`afc78e1f69ef4652c64d6133ab9b098ad10c9166e5be5f56efa3039781bc5a4b`.
 
 Bootstrap audit record: GCC 16.2.1, GNU Make 4.4.1, Python 3.14.7,
 QEMU 11.1.1, Bochs 3.1, Git 2.55.0. `make clean && make check` and
@@ -41,48 +42,85 @@ reported in the run's output rather than hidden.
 | M4 linker, loader image, runtime | complete | independent `CC64O` validation, section and symbol merge, relocation application with overflow checks, deterministic raw `.COM`, the target entry and exit path, freestanding target headers, the target library, and QEMU and Bochs evidence for both image forms |
 | M5 language and MS-DOS64 compatibility | complete | pointers, arrays, nested and multi-dimensional initializers, structs, unions, enums, switch and short-circuit control flow, increments and compound assignment, stack arguments, scalar and aggregate copies, binary32 and binary64 arithmetic, variadic calls, the target runtime service set, formatted output, floating arithmetic and comparison, and the conformance corpus running on both emulators. Bochs runs a named subset of the corpus chosen for what the second emulator has to agree about, because it is far slower than the other one, and a named case that the corpus drops is a failure rather than a silently smaller run |
 | M6 `MZ64`, diagnostics, hardening | complete | `MZ64` header and table emission, image-relative data fixups, BSS sizing, full-file and section CRC validation, bounded relocation and object records, malformed-image rejection, deterministic raw and `MZ64` links, load-bias checks at five biases and at two that must be refused, every header field the loader reads mutated and required to be rejected, every relocation field driven out of range, extreme constants, and deep nesting in three constructs. Diagnostic recovery is covered: an error marks the declaration wrong, the parse continues, and a case shows three independent errors reported in one run and the declaration that follows an error still parsed |
-| M7 self-hosting | **regressed** | all fourteen production translation units compile on the target to objects byte-identical to the bootstrap compiler's, the self-hosted linker relinks them into a compiler image byte-identical to the bootstrap image, a target-built compiler reproduces one project's object, image, and exit code, and the whole conformance corpus is compiled, linked, and run by a compiler the target built with every object compared byte for byte |
+| M7 self-hosting | complete | all fifteen production translation units compile on the target to objects byte-identical to the bootstrap compiler's, the self-hosted linker relinks them into a compiler image byte-identical to the bootstrap image, a target-built compiler reproduces one project's object, image, and exit code, and all 35 conformance cases are compiled, linked, and run by a compiler the target built with every object compared byte for byte |
 | M8 release quality | complete | path-independent clean-build hash comparison, deterministic malformed source, object, and image smoke, the automated provenance and source-origin audit, QEMU and Bochs target evidence, and the aggregate release gate, a license inventory the audit enforces against every tracked file, and a performance gate that measures the clean build twice, each production unit, and both image forms against the budgets the contracts state |
 
 A milestone is marked complete only after its tests and required target runs
 pass. Planned code is never reported as completed.
 
-## What does not pass, and why
+## The target heap is extended, and M7 depends on it
 
-`make self-host-stage` no longer passes. The target-built compiler cannot
-compile the compiler's own largest translation unit, `src/backend/encoder.c`,
-inside the target's heap. This is a measured limit and not a miscompilation: the
-unit compiles correctly on the host in 23 milliseconds and produces an object
-byte-identical to the bootstrap compiler's.
+M7 regressed and now passes. The regression was a memory shortfall on the
+target, not a miscompilation: the target-built compiler could not compile the
+compiler's own largest unit, `src/backend/encoder.c`, and that unit compiles on
+the host in 23 milliseconds to a byte-identical object.
 
-The target's heap is six mebibytes in total, from `0x200000` to `0x800000`, and
-the compiler image leaves most of it. Compiling that unit, the target-built
-compiler requests about 8.9 megabytes in total and its largest single request
-is 1.2 megabytes, which is a token list the preprocessor is holding at once with
-the list the lexer produced. The allocation refusal now reports both figures,
-because a bounded heap needs the numbers rather than the fact.
+The target's heap was six mebibytes, from `0x200000` to `0x800000`, under a
+four-entry identity map. Compiling that unit the target-built compiler asked
+for about 8.9 megabytes in total, and its largest single request was 1.2
+megabytes. One thing was tried against the heap and did not close the gap:
+bounding a token list's reservation so that it grows in steps rather than in
+one request cut the largest single request from 2,031,600 bytes to 1,245,120
+and the demand is larger than the heap however it is taken. The target's own
+resize service is the obvious answer to a growing buffer and is not usable,
+because a user process that calls it reboots the kernel; that was measured with
+a program that resizes a block twelve times, and the reboot follows the second
+resize.
 
-Two things were tried and one of them helped. Bounding a token list's
-reservation so that it grows in steps rather than in one request cut the largest
-single request from 2,031,600 bytes to 1,245,120 and did not close the gap: the
-demand is larger than the heap however it is taken. The target's own resize
-service is the obvious answer to a growing buffer and is not usable, because a
-user process that calls it reboots the kernel; that was measured with a program
-that resizes a block twelve times, and the reboot follows the second resize.
+The fix is a target change, made on the target's `edit` branch as commit
+`d9a4379` over the pinned reference `13c3ced`, and recorded as D-132. The heap
+is now twelve mebibytes, from `0x200000` to `0xE00000`, under a seven-entry
+map. The chain and the map have to agree, and the page-directory helpers that
+index an entry have to be bounded by the entry count, so the heap bounds and
+the count derived from them now live in one definition in the target's
+`include/mcb.inc` rather than in three files. That matters: a chain bound
+copied into two places is how a literal `6*1024*1024` that bounded a process
+block was still in place when the heap was doubled.
+
+`tests/target_heap.py` measures the heap with a compiler-produced program
+rather than reading a constant, and requires at least eleven mebibytes. The
+pinned reference measures five and fails the gate by name, so the dependency on
+the `edit` branch is visible rather than implicit. The target's own suite is
+unchanged: 88 pass, 1 fails, 6 skip. The one failure is the RTC date/time
+test, which fails identically on the unmodified reference and is not related to
+the heap.
+
+One target change is outstanding and is not CC64's to make. `make full` does
+not build on the `edit` branch: the two shell commits that precede this one grew
+the kernel to 131,104 bytes, one sector past the 256 the disk layout allows. It
+is unrelated to the heap — the heap change adds no bytes to the kernel — and the
+fix is the one the target's own error message names, a larger `KERNEL_SECTORS`
+and the matching constant in the target's layout test.
+
+## The command tail is shorter than the link is long
+
+With the heap extended, the self-host link ran and produced an image the target
+could not find. The cause was a length, not a failure: the target's process
+contract gives a child 127 bytes of command tail at `PSP+0xA1`, 126 of them
+usable, and a link of this compiler's twenty-one objects is 126 characters
+including the options. The tail was cut and the linker wrote its image to
+`S2.CO`.
+
+That bound is now measured rather than assumed, with the target's own `ECHO`
+builtin: 115, 119, 120, and 121 characters are echoed whole, and 122 is not. A
+command tail is a fixed field, so an argument list that has to fit inside one
+cannot be the design. An argument of the form `@NAME` is replaced by the words
+inside `NAME` (D-133), which the self-host stage uses to link with
+`CC64S @LINK.RSP -o S2.COM`. `tests/response_files.py` pins that a response
+file produces a byte-identical image to the same arguments written out, that a
+word may name a further response file, that a quoted word keeps a space, that
+arguments may be mixed with plain ones, and that a missing file, a file that
+names itself, and two files that name each other are each reported rather than
+followed.
 
 What passes: every unit group, the host integration group, the 35 conformance
 cases on QEMU in both image forms, the four linked target-library cases, the
 target's own arithmetic suite, every function the target headers declare, the
 8 Bochs cases, the self-host image built and run twice with both runs
-identical, the self-host probe, the target library build, the linker rejections,
-the image compatibility matrix, the property gate, the performance measurement,
-the reproducible build, and the license and provenance audit.
-
-The next piece of work is the memory the compiler asks for while it works: the
-lexer and the preprocessor hold two complete token lists, and a compiler that
-compiles a hundred-thousand-token unit inside six mebibytes cannot do that. The
-fix is to stream one into the other rather than to build both and walk one, and
-it is a change to the preprocessor's shape rather than to its rules.
+identical, the self-host stage, the self-host probe, the self-host corpus, the
+response-file gate, the target-heap gate, the target library build, the linker
+rejections, the image compatibility matrix, the property gate, the performance
+measurement, the reproducible build, and the license and provenance audit.
 
 ## A large program compiled with this compiler
 
