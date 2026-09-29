@@ -218,8 +218,29 @@ def main() -> int:
         if "Exit 0" not in text:
             raise SystemExit("C64D: a target header declares a name the "
                              f"library does not define: {text[-200:]}")
+        # The target's own arithmetic, checked on the target: the routines are
+        # written from the numeric definitions rather than from a library, and
+        # the only way to know a target's floating-point code is right is to run
+        # it on the target.
+        math_source = work / "C64S.c"
+        math_object = work / "C64S.cc64o"
+        shutil.copy2(ROOT / "tests" / "target_math.c", math_source)
+        run([str(ROOT / "cc64"), "-I", str(ROOT / "include" / "target"),
+             "-I", str(ROOT / "include" / "cc64"), "-c", str(math_source),
+             "-o", str(math_object)], ROOT)
+        math_image = work / "C64S.mz"
+        run([str(ROOT / "cc64"), "--link", "--format", "mz64",
+             str(math_object), *library_objects, "-o", str(math_image)], ROOT)
+        math_disk = work / "C64S.img"
+        shutil.copy2(TARGET / "build/dos64-lean.img", math_disk)
+        run(["python3", str(ROOT / "tests/embed_fat12.py"), str(math_disk),
+             str(math_image), "C64S"], ROOT)
+        text = execute(qemu, math_disk, "C64S", "C64S", 0, timeout=180.0)
+        if "Exit 0" not in text:
+            raise SystemExit("C64S: the target's arithmetic suite did not "
+                             f"return 0: {text[-200:]}")
         print(f"target: QEMU passed {len(cases)} raw/MZ64 image cases, "
-              "three linked target-library cases, and every declared name")
+              "four linked target-library cases, and every declared name")
     return 0
 
 
