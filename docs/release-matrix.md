@@ -9,7 +9,7 @@ the target checkout's own checker.
 | Gate | Covers |
 |---|---|
 | `make check` | unit, frontend, semantic, numeric, ABI, diagnostic, and conversion groups, the host integration group including the machine-code inspection mode, and the repository audit |
-| `make test-target` | twenty-three compiler-produced QEMU images in both executable forms, plus two linked target-library images that exercise the freestanding library, the `v` form of the printf family, and the extension the string header declares |
+| `make test-target` | every case of the conformance corpus as a compiler-produced QEMU image in both executable forms, plus three linked target-library images: one that exercises the freestanding library, one that covers the `v` form of the printf family and the extension the string header declares, and one generated from the target headers that references every function they declare, so a declaration without a definition fails at link rather than at the call |
 | `make test-bochs` | a named subset of the conformance corpus under the second emulator, in both image forms, through the target's own `bochsrc` template and its real serial input path; a named case the corpus no longer has is a failure |
 | `make self-host` | the bootstrap stage built and run twice under QEMU, with the two images compared |
 | `make selfhost-probe` | every production translation unit compiled individually with the target header profile, so the first construct the compiler cannot lower is named |
