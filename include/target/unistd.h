@@ -46,7 +46,6 @@ int usleep(unsigned int microseconds);
 int nanosleep(const void *request, void *remain);
 int dup2(int from, int to);
 int pipe(int *ends);
-int isatty_(int handle);
 char *readlink(const char *path, char *buffer, size_t size);
 int rmdir(const char *path);
 

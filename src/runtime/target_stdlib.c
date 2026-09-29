@@ -7,6 +7,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -151,4 +152,40 @@ void qsort(void *base, size_t count, size_t size,
         ++index;
     }
     free(slot);
+}
+
+/* The widest integer conversions. The target's own signed and unsigned
+   conversions already carry the whole range in the same type, so these are the
+   same conversion with the widest spelling; they are separate names because a
+   program that writes one means the widest type and not whichever type a
+   smaller spelling would have given it. */
+intmax_t imaxabs(intmax_t value)
+{
+    return value < 0 ? -value : value;
+}
+
+imaxdiv_t imaxdiv(intmax_t numerator, intmax_t denominator)
+{
+    imaxdiv_t result;
+    /* A zero divisor is undefined, so the result is the one a division that
+       did not happen produces: the dividend with no remainder, which is what
+       the quotient register holds when the machine refuses the operation. */
+    if (denominator == 0) {
+        result.quot = numerator;
+        result.rem = 0;
+        return result;
+    }
+    result.quot = numerator / denominator;
+    result.rem = numerator % denominator;
+    return result;
+}
+
+intmax_t strtoimax(const char *text, char **end, int base)
+{
+    return (intmax_t)strtoul(text, end, base);
+}
+
+uintmax_t strtoumax(const char *text, char **end, int base)
+{
+    return (uintmax_t)strtoul(text, end, base);
 }

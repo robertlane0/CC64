@@ -171,3 +171,18 @@ int dladdr(const void *address, Dl_info *info)
     (void)address;
     return 0;
 }
+
+int madvise(void *address, size_t length, int advice)
+{
+    prime_mappings();
+    /* The target has one address space and no protection, so there is nothing
+       for advice to change. A request about a range that is not mapped is still
+       refused, because that is a mistake in the caller rather than a hint the
+       target chose to ignore. */
+    if (find_mapping(address) == NULL) {
+        errno = ENOMEM;
+        return -1;
+    }
+    (void)length; (void)advice;
+    return 0;
+}

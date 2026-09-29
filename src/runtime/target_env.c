@@ -16,6 +16,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <sys/wait.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -107,4 +108,20 @@ void rewinddir(DIR *stream)
 int dirfd(DIR *stream)
 {
     return stream == NULL ? -1 : 0;
+}
+
+pid_t wait(int *status)
+{
+    /* One program runs at a time and it is the caller, so there is never a
+       child to report. Saying so is what a caller that checks the result
+       expects; inventing a status would be indistinguishable from one. */
+    if (status != NULL) *status = 0;
+    errno = ECHILD;
+    return -1;
+}
+
+pid_t waitpid(pid_t process, int *status, int options)
+{
+    (void)process; (void)options;
+    return wait(status);
 }

@@ -1,7 +1,7 @@
 #ifndef CC64_TARGET_SYS_WAIT_H
 #define CC64_TARGET_SYS_WAIT_H
 
-#include <sys/types.h.h>
+#include <sys/types.h>
 
 /* The target runs one program and has no process to wait for, so the wait
    interface is present with its portable names and reports that there is

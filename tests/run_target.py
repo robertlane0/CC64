@@ -193,8 +193,33 @@ def main() -> int:
         if "v-42" not in text:
             raise SystemExit(f"C64V2: target library v-form output unexpected: "
                              f"{text[-200:]}")
-        print(f"target: QEMU passed {len(cases)} raw/MZ64 image cases and "
-              "two linked target-library cases")
+        # Every name the target headers declare has to answer at link time, or
+        # a program written for a hosted system compiles and then fails on a
+        # symbol rather than on the header that promised it. The program is
+        # generated from the headers so a new declaration without a definition
+        # fails here without anything having to remember to extend a list.
+        declared = work / "C64D.c"
+        declared_object = work / "C64D.cc64o"
+        subprocess.run(
+            [sys.executable, str(ROOT / "tests/declared_symbols.py"),
+             "-o", str(declared)], check=True, cwd=ROOT,
+            stdout=subprocess.DEVNULL)
+        run([str(ROOT / "cc64"), "-I", str(ROOT / "include" / "target"),
+             "-I", str(ROOT / "include" / "cc64"), "-c", str(declared),
+             "-o", str(declared_object)], ROOT)
+        declared_image = work / "C64D.mz"
+        run([str(ROOT / "cc64"), "--link", "--format", "mz64",
+             str(declared_object), *library_objects, "-o", str(declared_image)], ROOT)
+        declared_disk = work / "C64D.img"
+        shutil.copy2(TARGET / "build/dos64-lean.img", declared_disk)
+        run(["python3", str(ROOT / "tests/embed_fat12.py"), str(declared_disk),
+             str(declared_image), "C64D"], ROOT)
+        text = execute(qemu, declared_disk, "C64D", "C64D", 0, timeout=60.0)
+        if "Exit 0" not in text:
+            raise SystemExit("C64D: a target header declares a name the "
+                             f"library does not define: {text[-200:]}")
+        print(f"target: QEMU passed {len(cases)} raw/MZ64 image cases, "
+              "three linked target-library cases, and every declared name")
     return 0
 
 

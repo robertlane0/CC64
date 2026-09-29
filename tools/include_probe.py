@@ -31,7 +31,9 @@ def main() -> int:
     headers = stage.include_tree()
     with tempfile.TemporaryDirectory(prefix="cc64-include-probe-") as temp:
         work = pathlib.Path(temp)
-        stage1, _ = stage.build_stage1(work)
+        # The routine also returns the runtime library objects, which this
+        # probe does not use: it measures the flat include search on its own.
+        stage1 = stage.build_stage1(work)[0]
         tree: list[tuple[str, pathlib.Path]] = [(stage.IMAGE_NAME, stage1)]
         for header in headers:
             probe = work / f"{header.stem}.probe"
