@@ -577,8 +577,10 @@ static IrInst *lower_address(LowerContext *context, AstNode *node)
     }
     /* The result of a call is not a name and not reached through one, so it has
        no address of its own; the lowering gives it storage and its value is
-       that storage, which is what a member of it is read from. */
-    if (node->kind == NODE_CALL) {
+       that storage, which is what a member of it is read from. A compound
+       literal is the same case: its value is the object, so the object is what
+       an address of it names. */
+    if (node->kind == NODE_CALL || node->kind == NODE_COMPOUND_LITERAL) {
         return lower_expr(context, node);
     }
     lower_error(context, 3004U, node, "address expression is unsupported");

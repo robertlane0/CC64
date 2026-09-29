@@ -989,6 +989,10 @@ static bool type_is_lvalue(AstNode *node)
     if (node == NULL) return false;
     if (node->kind == NODE_IDENTIFIER || node->kind == NODE_DEREFERENCE ||
         node->kind == NODE_INDEX || node->kind == NODE_MEMBER) return true;
+    /* A compound literal names an unnamed object rather than a value, so it can
+       be assigned through, have its address taken, and be indexed exactly as a
+       declared object of the same type can. */
+    if (node->kind == NODE_COMPOUND_LITERAL) return true;
     return false;
 }
 
@@ -1228,6 +1232,7 @@ static AstNode *make_unary(Parser *parser, UnaryOperator op, AstNode *value,
 
 static AstNode *parse_primary(Parser *parser);
 static AstNode *parse_postfix(Parser *parser);
+static AstNode *parse_postfix_from(Parser *parser, AstNode *node);
 
 static AstNode *parse_number(Parser *parser, const Token *token)
 {
@@ -1517,9 +1522,11 @@ static AstNode *parse_primary(Parser *parser)
     return NULL;
 }
 
-static AstNode *parse_postfix(Parser *parser)
+/* The operators that may follow a primary expression. The loop takes the
+   operand it is given rather than reading one, because a compound literal is
+   also a primary expression but is reached from the cast level instead. */
+static AstNode *parse_postfix_from(Parser *parser, AstNode *node)
 {
-    AstNode *node = parse_primary(parser);
     for (;;) {
         const Token *token = peek(parser);
         if (accept(parser, "[")) {
@@ -1581,6 +1588,11 @@ static AstNode *parse_postfix(Parser *parser)
         }
     }
     return node;
+}
+
+static AstNode *parse_postfix(Parser *parser)
+{
+    return parse_postfix_from(parser, parse_primary(parser));
 }
 
 static AstNode *parse_unary(Parser *parser)
@@ -1654,6 +1666,7 @@ static AstNode *parse_unary(Parser *parser)
 
 static AstNode *parse_compound_literal(Parser *parser, Type *type,
                                        const Token *token);
+static void complete_initializer_array(Type *type, AstNode *initializer);
 
 static AstNode *parse_cast(Parser *parser)
 {
@@ -1666,9 +1679,12 @@ static AstNode *parse_cast(Parser *parser)
         /* A type name in parentheses followed by a braced list is a compound
            literal: an unnamed object the list initializes, whose value is the
            object. Anywhere else in that position the parenthesized type name
-           is a cast. */
+           is a cast. The literal is an operand, so a member selection or an
+           index applied to it selects from the object and not from whatever
+           the braced list produced. */
         if (token_text(peek(parser), "{")) {
-            return parse_compound_literal(parser, type, token);
+            return parse_postfix_from(parser,
+                                      parse_compound_literal(parser, type, token));
         }
         if (type_is_void(type)) return make_cast(parser, type, parse_cast(parser), token);
         return make_cast(parser, type, parse_cast(parser), token);
@@ -1865,7 +1881,14 @@ static AstNode *parse_initializer(Parser *parser, Type *type)
 static AstNode *parse_compound_literal(Parser *parser, Type *type,
                                        const Token *token)
 {
-    if (type == NULL || type->incomplete) {
+    /* An array type written with no length is the one type the list is allowed
+       to complete, so it is parsed before the type is judged. Any other
+       incomplete type is refused before the list is read, so a diagnostic is
+       reported once rather than once per element. */
+    bool length_from_list = type != NULL && type->kind == TYPE_ARRAY &&
+                            type->incomplete && type->base != NULL &&
+                            type->base->size != 0U;
+    if (type == NULL || (type->incomplete && !length_from_list)) {
         semantic_error(parser, 2081U, token, "compound literal has no complete type");
         while (peek(parser) != NULL && !token_text(peek(parser), "}")) (void)take(parser);
         (void)accept(parser, "}");
@@ -1881,6 +1904,16 @@ static AstNode *parse_compound_literal(Parser *parser, Type *type,
         return NULL;
     }
     AstNode *initializer = parse_initializer(parser, type);
+    /* The list supplies the length of an array type written with none, exactly
+       as it does for a declared object, so `(int[]){1, 2, 3}` names an object of
+       three elements rather than one of no type at all. A list that turns out
+       to supply no length at all leaves the type incomplete, and the node is
+       not built. */
+    if (length_from_list) complete_initializer_array(type, initializer);
+    if (type->incomplete) {
+        semantic_error(parser, 2081U, token, "compound literal has no complete type");
+        return NULL;
+    }
     AstNode *node = node_new(parser, NODE_COMPOUND_LITERAL, type, token);
     if (node != NULL) node->a = initializer;
     return node;

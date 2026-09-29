@@ -789,6 +789,148 @@ WIDE_INTEGER_PROGRAM = (
     "}\n"
 )
 
+# A floating constant whose decimal exponent is larger than any single power of
+# ten that fits in a word. The exponent is applied in steps, with the
+# significand brought back to a word between them, so the whole range of the
+# format is reachable. Each expected value is compared as a bit pattern through
+# a union, because a comparison of two doubles that differ by one unit in the
+# last place is exactly the comparison that must not be used here.
+FLOAT_CONSTANT_PROGRAM = (
+    "int cc64_write(int, const void *, unsigned long);\n"
+    "union bits { double value; unsigned long raw; };\n"
+    "static int check(const char *name, double got, unsigned long want) {\n"
+    "  union bits seen;\n"
+    "  seen.value = got;\n"
+    "  if (seen.raw != want) {\n"
+    "    cc64_write(1, \"bad: \", 5);\n"
+    "    cc64_write(1, name, 4);\n"
+    "    return 1;\n"
+    "  }\n"
+    "  return 0;\n"
+    "}\n"
+    "int main(void) {\n"
+    "  int step = 0;\n"
+    "  step += check(\"1e19\", 1e19, 0x43E158E460913D00UL);\n"
+    "  step += check(\"1e22\", 1e22, 0x4480F0CF064DD592UL);\n"
+    "  step += check(\"1e30\", 1e30, 0x46293E5939A08CEAUL);\n"
+    "  step += check(\"1e100\", 1e100, 0x54B249AD2594C37DUL);\n"
+    "  step += check(\"1e300\", 1e300, 0x7E37E43C8800759CUL);\n"
+    "  step += check(\"max\", 1.7976931348623157e308, 0x7FEFFFFFFFFFFFFFUL);\n"
+    "  step += check(\"1e-100\", 1e-100, 0x2B2BFF2EE48E0530UL);\n"
+    "  step += check(\"1e-300\", 1e-300, 0x01A56E1FC2F8F359UL);\n"
+    "  step += check(\"min\", 4.9406564584124654e-324, 0x0000000000000001UL);\n"
+    "  step += check(\"pi\", 3.14159265358979, 0x400921FB54442D11UL);\n"
+    "  step += check(\"0.1\", 0.1, 0x3FB999999999999AUL);\n"
+    "  if (step != 0) return 1;\n"
+    "  cc64_write(1, \"F\", 1);\n"
+    "  return 0;\n"
+    "}\n"
+)
+
+# A compound literal at block scope: an unnamed object with an initializer,
+# whose lifetime is the enclosing block. Its type is the type its initializer
+# names, it is a modifiable object rather than a value, and an array one decays
+# to a pointer exactly as a declared array does.
+COMPOUND_LITERAL_PROGRAM = (
+    "int cc64_write(int, const void *, unsigned long);\n"
+    "struct point { int x; int y; };\n"
+    "static int origin_distance(struct point p) { return p.x * p.x + p.y * p.y; }\n"
+    "int main(void) {\n"
+    "  if (origin_distance((struct point){3, 4}) != 25) return 1;\n"
+    "  if ((struct point){1, 2}.x != 1) return 2;\n"
+    "  struct point *held = &(struct point){7, 8};\n"
+    "  held->x = 9;\n"
+    "  if (origin_distance(*held) != 145) return 3;\n"
+    "  int *numbers = (int[]){10, 20, 30};\n"
+    "  if (numbers[0] + numbers[1] + numbers[2] != 60) return 4;\n"
+    "  if (sizeof(int[3]) != 3 * sizeof(int)) return 5;\n"
+    "  int *empty = (int[0]){0};\n"
+    "  if (empty != 0 && empty[0] != 0) return 6;\n"
+    "  for (int i = 0; i < 2; ++i) {\n"
+    "    int *each = (int[]){i, i * 2};\n"
+    "    if (each[1] != i * 2) return 7;\n"
+    "  }\n"
+    "  if (sizeof((struct point){0, 0}) != 8) return 8;\n"
+    "  cc64_write(1, \"C\", 1);\n"
+    "  return 0;\n"
+    "}\n"
+)
+
+# Two interfaces that a program written for a hosted system takes for granted
+# and a small compiler is easy to get wrong: a token pasted from two halves
+# whose joined spelling is a keyword or a number, and a type named twice by the
+# same declaration. A paste that formed an identifier's spelling used to be
+# lexed as a name and a paste that formed a number's spelling as a name too.
+PASTE_AND_TYPEDEF_PROGRAM = (
+    "int cc64_write(int, const void *, unsigned long);\n"
+    "#define JOIN(a, b) a##b\n"
+    "#define COUNT 3\n"
+    "#define WIDTH 4\n"
+    "typedef int whole;\n"
+    "typedef int whole;\n"
+    "int JOIN(STA, RTS) = 7;\n"
+    "int main(void) {\n"
+    "  if (COUNT != 3) return 1;\n"
+    "  if (JOIN(STA, RTS) != 7) return 2;\n"
+    "  if (WIDTH != 4) return 3;\n"
+    "  /* A paste whose joined spelling is a number is a number, not a name, so\n"
+    "     it takes part in arithmetic like one. */\n"
+    "  if (JOIN(1, 2) + JOIN(3, 4) != 46) return 4;\n"
+    "  if (sizeof(JOIN(1, 2)) != sizeof(int)) return 5;\n"
+    "  /* A paste whose joined spelling is a keyword is that keyword, so the\n"
+    "     declaration below declares an int rather than a name spelled\n"
+    "     \"unsigned\". */\n"
+    "  JOIN(un, signed) int pastes = 5;\n"
+    "  if (sizeof(pastes) != sizeof(int)) return 6;\n"
+    "  whole a = 5;\n"
+    "  whole b = a;\n"
+    "  if (b != 5) return 7;\n"
+    "  typedef whole narrow;\n"
+    "  narrow c = b;\n"
+    "  if (c != 5) return 8;\n"
+    "  if (sizeof(narrow) != sizeof(whole)) return 9;\n"
+    "  cc64_write(1, \"P\", 1);\n"
+    "  return 0;\n"
+    "}\n"
+)
+
+# The target library's own boundary as a program sees it: a handle from the
+# target, a counted read and write, a seek, a status whose size comes from the
+# seek, and a deletion through a file control block. Every call is the target's
+# own service under a name the program chose, so a case that passes here is a
+# case where the rename is faithful.
+TARGET_BOUNDARY_PROGRAM = (
+    "int cc64_write(int, const void *, unsigned long);\n"
+    "#include <errno.h>\n"
+    "#include <fcntl.h>\n"
+    "#include <string.h>\n"
+    "#include <sys/stat.h>\n"
+    "#include <unistd.h>\n"
+    "int main(void) {\n"
+    "  int handle = open(\"C64X.TMP\", O_RDWR | O_CREAT | O_TRUNC, 0600);\n"
+    "  if (handle < 0) return 1;\n"
+    "  const char *text = \"boundary\";\n"
+    "  if (write(handle, text, 8) != 8) return 2;\n"
+    "  if (lseek(handle, 0, SEEK_SET) != 0) return 3;\n"
+    "  char back[8];\n"
+    "  if (read(handle, back, 8) != 8) return 4;\n"
+    "  if (memcmp(back, text, 8) != 0) return 5;\n"
+    "  struct stat status;\n"
+    "  if (fstat(handle, &status) != 0) return 6;\n"
+    "  if (status.st_size != 8) return 7;\n"
+    "  if (!S_ISREG(status.st_mode)) return 8;\n"
+    "  if (close(handle) != 0) return 9;\n"
+    "  if (access(\"C64X.TMP\", F_OK) != 0) return 10;\n"
+    "  if (isatty(0) != 1 || isatty(9) != 0) return 11;\n"
+    "  if (unlink(\"C64X.TMP\") != 0) return 12;\n"
+    "  if (access(\"C64X.TMP\", F_OK) == 0) return 13;\n"
+    "  errno = 0;\n"
+    "  if (access(\"C64X.GONE\", F_OK) == 0 || errno == 0) return 14;\n"
+    "  cc64_write(1, \"T\", 1);\n"
+    "  return 0;\n"
+    "}\n"
+)
+
 CASES = [
 ("C64R", "int main(void) { return 7; }", "raw", 7, None),
 ("C64S", "int f(int x){int y=0; switch(x){case 7: y=9; break; default: y=3;} return y;} int main(void){return f(7);}", "raw", 9, None),
@@ -829,6 +971,9 @@ CASES = [
 ("C64N2", NARROW_REGISTER_PROGRAM, "raw", 0, "N"),
 ("C64M2", MEMORY_AGGREGATE_PROGRAM, "raw", 0, "M"),
 ("C64U2", WIDE_INTEGER_PROGRAM, "raw", 0, "U"),
+("C64F2", FLOAT_CONSTANT_PROGRAM, "raw", 0, "F"),
+("C64C2", COMPOUND_LITERAL_PROGRAM, "raw", 0, "C"),
+("C64P2", PASTE_AND_TYPEDEF_PROGRAM, "raw", 0, "P"),
 ]
 
 LIBRARY_CASE = "C64L"
