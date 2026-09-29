@@ -164,18 +164,76 @@ def main() -> int:
         run_inspector(image, "valid MZ64 image", True)
         image_data = image.read_bytes()
         relocation_offset = struct.unpack_from("<I", image_data, 28)[0]
+        # Every field the loader reads is bounded, so a value the loader would
+        # act on is rejected before it is used rather than after.
         image_mutations = [
             ("empty image", b""),
             ("truncated MZ64 header", b"MZ64"),
             ("truncated MZ64", image_data[:-1]),
         ]
+        field_mutations = [
+            (4, 47, "wrong MZ64 header size"),
+            (8, 0, "zero MZ64 payload size"),
+            (8, 17 * 1024 * 1024, "oversized MZ64 payload size"),
+            (16, 1 << 20, "MZ64 entry past the payload"),
+            (20, 1 << 20, "oversized MZ64 stack request"),
+            (24, 2, "MZ64 relocation count disagrees with the table"),
+            (28, 32, "MZ64 relocation table is not adjacent"),
+            (32, 1, "MZ64 memory size below the payload"),
+            (32, 17 * 1024 * 1024, "oversized MZ64 memory size"),
+            (40, 1, "reserved MZ64 field is not zero"),
+        ]
+        for index, (offset, value, label) in enumerate(field_mutations):
+            mutated = bytearray(image_data)
+            struct.pack_into("<I", mutated, offset, value)
+            image_mutations.append((label, bytes(mutated)))
         negative = bytearray(image_data)
         struct.pack_into("<q", negative, relocation_offset + 8, -8)
         image_mutations.append(("negative MZ64 addend", bytes(negative)))
+        unaligned = bytearray(image_data)
+        struct.pack_into("<Q", unaligned, relocation_offset, 1)
+        image_mutations.append(("unaligned MZ64 fixup", bytes(unaligned)))
         for index, (label, contents) in enumerate(image_mutations):
             bad = work / f"image-{index}.mz64"
             bad.write_bytes(contents)
             run_inspector(bad, label, False)
+
+        # A load bias is applied to a valid image at several biases, and a
+        # bias that would push the image past the target's process area is
+        # refused. The `MZ64` form is position independent, so every bias has
+        # to leave its fixups inside the loaded image.
+        raw_source = work / "raw.c"
+        raw_source.write_text("int main(void) { return 7; }\n", encoding="utf-8")
+        raw_object = work / "raw.o"
+        raw_image = work / "raw.com"
+        run_compiler(["-c", str(raw_source), "-o", str(raw_object)],
+                     "raw source", True)
+        run_compiler(["--link", str(raw_object), "-o", str(raw_image)],
+                     "valid raw image", True)
+        run_inspector(raw_image, "valid raw image", True)
+        for bias in (0, 0x1000, 0x20000, 0x100000, 0x400000):
+            accepted = subprocess.run(
+                ["python3", str(ROOT / "tools/inspect_image.py"), str(image),
+                 "--bias", hex(bias)], cwd=ROOT,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=5, check=False)
+            if accepted.returncode != 0:
+                raise SystemExit(f"image inspector refused bias {hex(bias)}")
+            accepted = subprocess.run(
+                ["python3", str(ROOT / "tools/inspect_image.py"), str(raw_image),
+                 "--bias", hex(bias)], cwd=ROOT,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=5, check=False)
+            if accepted.returncode != 0:
+                raise SystemExit(f"raw inspector refused bias {hex(bias)}")
+        for bias in (-1, 16 * 1024 * 1024):
+            rejected = subprocess.run(
+                ["python3", str(ROOT / "tools/inspect_image.py"), str(raw_image),
+                 "--bias", str(bias)], cwd=ROOT,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=5, check=False)
+            if rejected.returncode == 0:
+                raise SystemExit(f"raw inspector accepted bias {bias}")
     print("fuzz: deterministic source/object/image smoke passed")
     return 0
 

@@ -73,12 +73,54 @@ def inspect(path: pathlib.Path) -> dict[str, object]:
     }
 
 
+def apply_bias(image: dict[str, object], bias: int) -> dict[str, int]:
+    """Apply a load bias to an image and return the fixups it produces.
+
+    The `MZ64` form carries image-relative data destinations, and the loader
+    supplies the bias, so the same payload is position independent. Walking the
+    table at a bias is what proves it: a destination that leaves the image,
+    that lands outside the eight-byte slot the fixup writes, or that would
+    overlap its neighbour, is a defect the image does not rule out.
+    """
+    memory_size = int(image["memory_size"])
+    result: dict[str, int] = {}
+    if image["format"] != "MZ64":
+        # A raw image is always loaded at the process origin, so the only
+        # thing to check is that the bias does not push it past the target's
+        # conventional process area.
+        if bias < 0 or bias + int(image["payload_size"]) > 16 * 1024 * 1024:
+            fail("raw image does not fit at this bias")
+        return result
+    for destination, addend in image["relocations"]:  # type: ignore[union-attr]
+        slot = bias + destination
+        value = bias + addend
+        if slot < 0 or slot + 8 > memory_size + bias:
+            fail(f"MZ64 fixup at bias {bias} leaves the image")
+        if value < 0 or value + 8 > memory_size + bias:
+            fail(f"MZ64 fixup value at bias {bias} leaves the image")
+        result[f"slot@{bias}"] = value
+    return result
+
+
+# A bias the loader may use. The value only has to be a plausible multiple of
+# the page the target maps; the point is that several of them are checked
+# rather than only the one the loader happens to use.
+BIASES = (0, 0x1000, 0x20000, 0x100000, 0x400000)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("path", type=pathlib.Path)
+    parser.add_argument("--bias", type=lambda value: int(value, 0), default=None,
+                        help="apply one load bias to the image's fixups")
     args = parser.parse_args()
     try:
         result = inspect(args.path)
+        biases = BIASES if args.bias is None else (args.bias,)
+        for bias in biases:
+            fixups = apply_bias(result, bias)
+            for slot, value in fixups.items():
+                print(f"  bias {bias}: {slot} -> {value}")
     except (OSError, ValueError, struct.error) as error:
         print(f"image: {error}", file=sys.stderr)
         return 1
