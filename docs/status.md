@@ -47,6 +47,35 @@ reported in the run's output rather than hidden.
 A milestone is marked complete only after its tests and required target runs
 pass. Planned code is never reported as completed.
 
+## A large program compiled with this compiler
+
+`tools/edit_build.py` builds a 24,461-line C program — a text editor, 111
+files — with CC64, without modifying a line of it, and places the result on a
+target volume. All 38 translation units compile and the objects link with the
+target library into a 590,353-byte load-biased image, which the target loads
+and starts: `Loaded, pid 1` from `build/dos64-lean.img` under QEMU.
+
+The program does not reach its first screen on the pinned target, and the
+reason is a resource limit rather than a compiler gap. It reserves address
+space it does not commit: two scratch arenas of 512 MiB each and two
+interface arenas of 128 MiB each, about 1.25 GiB in total. The target
+identity-maps eight mebibytes in total and its heap is the six mebibytes from
+`0x200000` to `0x800000`, so the largest single reservation that succeeds is
+between four and six mebibytes, measured. The program commits only what it
+uses, so the reservations are the whole of the requirement.
+
+No compiler change reaches that. A reservation is address space, and the target
+maps eight mebibytes of it. Enlarging the target's address space would be an
+operating-system feature rather than a defect the target contract requires be
+fixed, so it is out of scope under the repository's own rule that a target edit
+exists to make the compiler operational.
+
+What the build needed from the compiler is recorded in the ledger: the 128-bit
+unsigned integer type, compound literals, aggregate passing and return by value,
+oversized aggregates in memory, token pasting, spliced continuation lines,
+repeated type names, a floating constant whose exponent is out of table range,
+and eight further defects that those exposed. Each has a conformance case.
+
 ## Release gate
 
 `make check-release` currently runs and passes the host, object, raw and
@@ -76,7 +105,19 @@ refused rather than approximated:
 - Floating variadic arguments are not part of the version 1 variadic contract,
   and a floating conversion is not part of the target formatter's subset.
 - The version 1 startup builds `argv` from the process control block and the
-  command tail and passes a null `envp`, because the target supplies no
-  environment block.
+  command tail and passes a null `envp`. `getenv` therefore reports that no
+  variable is set. The target's environment belongs to its shell, and the
+  contract exposes no way for a running program to reach the process prefix the
+  loader gave it, so reading a variable needs an interface revision that passes
+  one.
+- The target has one flat directory with no subdirectories, so the working
+  directory is the volume root and a directory reading yields nothing. It has
+  no window size, so a terminal query reports the character size the runtime
+  assumes. It has no line discipline, so the terminal state is reported
+  unchanged and restored unchanged. It has no monotonic clock, so a monotonic
+  reading is the wall clock at one-second resolution and restarts at midnight.
+  It has no signal delivery, so a handler is recorded and never called. It has
+  no loader, so a shared object cannot be opened. Each header says which of
+  these its interface is subject to.
 - The conformance corpus, the object gate, and the fuzz gate bound what they
   test. They are evidence for the recorded contract, not a proof of it.

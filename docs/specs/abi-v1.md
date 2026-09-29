@@ -81,6 +81,24 @@ general register. The callee copies the object to that address and returns the
 address itself in `RAX`. Because no named argument was given the first general
 register, naming it there cannot displace one.
 
+## The 128-bit unsigned integer type
+
+`__uint128_t` is sixteen bytes wide with sixteen-byte alignment. It is not an
+aggregate, but it is two registers wide, so it is carried the way a record of
+two eightbytes that both hold integers is carried: the first piece in the next
+general register of the argument sequence and the second in the one after it,
+with the same overflow to the outgoing argument area and the same return in
+`RAX` and `RDX`. Naming it in the aggregate document rather than only here
+would let the argument classifier answer for it without a second rule.
+
+The value of an expression of that type is the address of the object holding
+it. The low half is at offset zero and the high half at offset eight, and every
+operation on the value works in that object rather than in registers, so an
+operation never has to be split across a sequence that a later phase would have
+to re-derive. A conversion to a narrower integer type loads the low half, which
+is the part a narrower integer can hold; a conversion between two values of the
+type is a change of address and copies nothing.
+
 ## Variadic calls
 
 A call to a function declared with `...` sets `AL` to the number of vector
