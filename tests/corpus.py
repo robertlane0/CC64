@@ -330,7 +330,7 @@ ASSERT_PROGRAM = (
     # Two functions must not share one name object, or the second would read
     # the first's name.
     "    if (other[0] != 'n' || other[1] != 'a' || other[2] != 'm' || other[3] != 'e') return 4;\n"
-    "    if (other[8] != 0) return 5;\n"
+    "    if (other[6] != 'f' || other[7] != 0) return 5;\n"
     "    if (self == other) return 6;\n"
     "    cc64_write(1, self, 4);\n"
     "    cc64_write(1, \"\\n\", 1);\n"

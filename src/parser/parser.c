@@ -2031,41 +2031,57 @@ static void parse_function_definition(Parser *parser, const DeclSpec *spec,
     Symbol *old_function = parser->current_function;
     parser->scope = function_scope;
     parser->current_function = function;
-    /* `__func__` names the function that is being parsed. It is a static
-       const char array, so the body reads it as an ordinary object and the
-       back end needs no case for it. Each function gets its own object, so
-       the emitted name carries a per-function counter. */
+    /* `__func__` names the function that is being parsed. It is declared as a
+       static const char array at the top of the body, so the back end's own
+       static-object path emits it and the body reads it as an ordinary
+       object. Each function gets its own object, so the emitted name carries
+       a per-function counter. */
     char self_name[32];
-    (void)snprintf(self_name, sizeof(self_name), ".Lfunc.%u",
+    (void)snprintf(self_name, sizeof(self_name), ".Lstatic.%u",
                    parser->static_local_count++);
-    Symbol *self = symbol_new(parser, "__func__",
-                              type_array(parser->arena,
-                                         type_copy(parser->arena,
-                                                   type_basic(parser->arena, TYPE_CHAR),
-                                                   TYPE_QUAL_CONST),
-                                         strlen(name) + 1U, true),
-                              SYMBOL_VARIABLE);
-    if (self != NULL) {
-        self->storage = STORAGE_STATIC;
-        self->linkage = LINKAGE_INTERNAL;
-        self->defined = true;
-        size_t length = strlen(name) + 1U;
-        AstNode *text = node_new(parser, NODE_STRING,
-                                 type_array(parser->arena,
-                                            type_basic(parser->arena, TYPE_CHAR),
-                                            length, true), peek(parser));
-        if (text != NULL) {
-            text->text = cc64_xstrdup(name);
-            text->text_length = length;
+    size_t length = strlen(name) + 1U;
+    AstNode *text = node_new(parser, NODE_STRING,
+                             type_array(parser->arena,
+                                        type_basic(parser->arena, TYPE_CHAR),
+                                        length, true), peek(parser));
+    AstNode *self_decl = NULL;
+    if (text != NULL) {
+        text->text = cc64_xstrdup(name);
+        text->text_length = length;
+        Symbol *self = symbol_new(parser, "__func__",
+                                  type_array(parser->arena,
+                                             type_copy(parser->arena,
+                                                       type_basic(parser->arena, TYPE_CHAR),
+                                                       TYPE_QUAL_CONST),
+                                             length, true),
+                                  SYMBOL_VARIABLE);
+        if (self != NULL) {
+            self->storage = STORAGE_STATIC;
+            self->linkage = LINKAGE_INTERNAL;
+            self->defined = true;
+            /* The initializer is copied into the durable arena: the back end
+               reads it after this function's syntax tree is released. */
             self->initializer = copy_tree(parser, text);
+            self_decl = node_new(parser, NODE_DECLARATION, self->type, peek(parser));
+            if (self_decl != NULL) self_decl->symbol = self;
         }
-        /* The scope is bound first, under the name the body spells, and the
-           symbol is renamed afterwards to the private name its data is
-           emitted under. */
-        (void)scope_add_symbol(parser->arena, function_scope, self);
-        self->name = cc64_xstrdup(self_name);
+    }
+    /* The scope is bound first, under the name the body spells, and the
+       symbol is renamed afterwards to the private name its data is emitted
+       under. */
+    if (self_decl != NULL && self_decl->symbol != NULL) {
+        (void)scope_add_symbol(parser->arena, function_scope, self_decl->symbol);
+        self_decl->symbol->name = cc64_xstrdup(self_name);
     }
     AstNode *body = parse_compound(parser);
+    /* The declaration is spliced in front of the statements the body
+       produced, so the back end sees it as an ordinary static object. */
+    if (self_decl != NULL) {
+        AstNode *statement = body == NULL ? NULL : body->a;
+        while (statement != NULL && statement->next != NULL) statement = statement->next;
+        if (statement != NULL) statement->next = self_decl;
+        else if (body != NULL) body->a = self_decl;
+    }
     parser->scope = old_scope;
     parser->current_function = old_function;
     AstNode *definition = node_new(parser, NODE_FUNCTION_DEFINITION, type, peek(parser));
