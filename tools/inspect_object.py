@@ -201,6 +201,10 @@ def read_object(path: pathlib.Path) -> tuple[dict, list[dict], list[dict], bytes
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("path", type=pathlib.Path)
+    parser.add_argument("--disassemble", action="store_true",
+                        help="decode the text section as machine code")
+    parser.add_argument("--symbol", default=None,
+                        help="decode only this symbol's text")
     args = parser.parse_args()
     try:
         header, sections, symbols, data = read_object(args.path)
@@ -212,7 +216,25 @@ def main() -> int:
         print(f"section {index} {section['name']} kind={section['kind']} size={section['size']} align={1 << section['align']}")
         if section["kind"] != 3 and section["size"] != 0:
             start = section["payload_offset"]
-            print(f"  bytes {data[start:start + section['size']].hex()}")
+            payload = data[start:start + section["size"]]
+            if args.disassemble and section["kind"] == 0:
+                sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+                import disasm
+                chosen = args.symbol
+                limit = 10 ** 9
+                if chosen is not None:
+                    for symbol in symbols:
+                        if symbol["name"] == chosen and symbol["section"] == index:
+                            limit = max(1, symbol["size"])
+                            payload = payload[:limit]
+                            break
+                    else:
+                        raise SystemExit(
+                            f"inspect: no symbol named {chosen!r} in section {index}")
+                for line in disasm.decode(payload, limit):
+                    print(f"  {line}")
+            else:
+                print(f"  bytes {payload.hex()}")
     for index, symbol in enumerate(symbols):
         print(f"symbol {index} {symbol['name']} section={symbol['section']} value={symbol['value']} size={symbol['size']}")
     return 0

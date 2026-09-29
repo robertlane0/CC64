@@ -45,6 +45,17 @@ def main() -> int:
         if not object_file.is_file() or object_file.read_bytes() != object_file2.read_bytes():
             raise SystemExit("object output is missing or nondeterministic")
         run(["python3", str(ROOT / "tools/inspect_object.py"), str(object_file)])
+        # The machine-code inspection mode decodes the frame the encoder emits
+        # for a function that has one, so a change to the prologue shows up in
+        # the decoded text rather than only as a wrong exit code.
+        decoded = subprocess.run(
+            ["python3", str(ROOT / "tools/inspect_object.py"), str(object_file),
+             "--disassemble", "--symbol", "add"],
+            cwd=ROOT, capture_output=True, text=True, check=True).stdout
+        for expected in ("push rbp", "mov rbp, rsp", "sub rsp", "ret"):
+            if expected not in decoded:
+                raise SystemExit(
+                    f"machine-code inspection lost {expected!r} from the frame")
         run([str(ROOT / "cc64"), "--link", str(object_file), "-o", str(image_file)])
         second_image = directory / "hello2.com"
         run([str(ROOT / "cc64"), "--link", str(object_file), "-o", str(second_image)])

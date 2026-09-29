@@ -8,7 +8,7 @@ the target checkout's own checker.
 
 | Gate | Covers |
 |---|---|
-| `make check` | unit, frontend, semantic, and numeric groups, the host integration group, and the repository audit |
+| `make check` | unit, frontend, semantic, numeric, and ABI groups, the host integration group including the machine-code inspection mode, and the repository audit |
 | `make test-target` | twenty-three compiler-produced QEMU images in both executable forms, plus two linked target-library images that exercise the freestanding library, the `v` form of the printf family, and the extension the string header declares |
 | `make test-bochs` | a named subset of the conformance corpus under the second emulator, in both image forms, through the target's own `bochsrc` template and its real serial input path; a named case the corpus no longer has is a failure |
 | `make self-host` | the bootstrap stage built and run twice under QEMU, with the two images compared |
@@ -17,7 +17,8 @@ the target checkout's own checker.
 | `make self-host-run` | a target-built compiler compiling, linking, and running a project source, with the object, the image, and a repeated run compared with the bootstrap build |
 | `make self-host-corpus` | the whole conformance corpus compiled by a target-built compiler, linked by its own linker, and every resulting image run and compared with the recorded exit code and output, with every object compared byte for byte |
 | `make target-lib` | every target library translation unit compiled by CC64 with the target header profile |
-| `make fuzz-smoke` | malformed sources, mutated and structurally mutated objects, truncated objects, mutated `MZ64` fields, fixups that leave the image, and load-bias checks at five biases and at two that must be refused |
+| `make perf-measure` | the clean build timed twice, every production unit timed, and both image forms measured against the budgets the contracts state |
+| `make fuzz-smoke` | malformed sources, mutated and structurally mutated objects, truncated objects, every relocation field driven out of range, mutated `MZ64` fields, fixups that leave the image, load-bias checks at five biases and at two that must be refused, extreme constants, and deep nesting in three constructs |
 | `make repro-check` | two path-independent clean builds compared over every generated file and the compiler-produced target artifacts |
 | `make audit` | tracked-file provenance: no external compiler reference, no generated artifact, no unexpected source type, a milestone row with a state and its evidence, and the stated limits of the self-host claim |
 
