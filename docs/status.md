@@ -1,6 +1,13 @@
 # CC64 implementation status
 
-Status date: 2026-09-28.
+Status date: 2026-09-28. The recorded `make check-release` run passed every
+stage: 24 QEMU image cases and two linked target-library
+cases, 8 Bochs conformance cases in both image forms, all
+fourteen production units compiled on the target to byte-identical objects,
+the relinked compiler image byte-identical, the 24 conformance
+cases compiled, linked, and run by a compiler the target built, the fuzz and
+property gate, the license and provenance audit, and a reproducible clean
+build over 45 files with digest `1b7531ed3a4f06ecd025852f8219682ee663fcca79a8f3d5defbe777a4c40f3a`.
 
 Bootstrap audit record: GCC 16.2.1, GNU Make 4.4.1, Python 3.14.7,
 QEMU 11.1.1, Bochs 3.1, Git 2.55.0. `make clean && make check` and
@@ -8,8 +15,9 @@ QEMU 11.1.1, Bochs 3.1, Git 2.55.0. `make clean && make check` and
 compiler-produced images against MS-DOS64 revision
 `13c3cedb05ad75592c17bf2006ba8617c8761a38`; Bochs runs the pinned raw and
 `MZ64` cases, and `make check-release` covers the QEMU image cases, the linked
-target-library cases, the self-host fixed point, and the conformance corpus run
-by a compiler the target built.
+target-library cases, the self-host fixed point, the conformance corpus run by
+a compiler the target built, the Bochs corpus subset, the property gate, the
+performance measurement, and the license inventory.
 
 One target change is active and is recorded in
 `docs/provenance-ledger.md`: MS-DOS64 `edit` revision `f36e84c` (over `8b989fb`)
