@@ -340,6 +340,27 @@ static char *stringize_arguments(const TokenList *list)
     return text;
 }
 
+/* The kind of a pasted token is decided by the text the paste produced, not by
+   the kinds of the two halves: pasting an integer constant with a suffix makes
+   a longer integer constant, and taking the kind of either half would report a
+   number as a name. The rule mirrors how the lexer decides a token from its
+   first bytes, so a pasted token is the same kind the lexer would have given
+   the same text. */
+static TokenKind pasted_kind(const char *text)
+{
+    unsigned char first = (unsigned char)text[0];
+    if (first >= '0' && first <= '9') return TOKEN_NUMBER;
+    if (first == '.' && text[1] >= '0' && text[1] <= '9') return TOKEN_NUMBER;
+    if (first == '"' || first == '\'') {
+        return first == '"' ? TOKEN_STRING : TOKEN_CHARACTER;
+    }
+    if ((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') ||
+        first == '_') {
+        return TOKEN_IDENTIFIER;
+    }
+    return TOKEN_PUNCTUATOR;
+}
+
 static bool append_paste(TokenList *list, const Token *right)
 {
     Token *left = token_list_last(list);
@@ -353,9 +374,7 @@ static bool append_paste(TokenList *list, const Token *right)
     memcpy(joined + left_length, right->text, right_length + 1U);
     left->text = joined;
     left->end = right->end;
-    if (left->kind != right->kind) {
-        left->kind = right->kind;
-    }
+    left->kind = pasted_kind(joined);
     return true;
 }
 
