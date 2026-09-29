@@ -1,6 +1,7 @@
 #ifndef CC64_TARGET_STDIO_H
 #define CC64_TARGET_STDIO_H
 
+#include <stdarg.h>
 #include <stddef.h>
 
 typedef struct cc64_file FILE;
@@ -27,11 +28,12 @@ int ferror(FILE *stream);
 int fputc(int character, FILE *stream);
 int fputs(const char *text, FILE *stream);
 int fprintf(FILE *stream, const char *format, ...);
+int vfprintf(FILE *stream, const char *format, va_list arguments);
 int printf(const char *format, ...);
 int putchar(int character);
 int puts(const char *text);
 int snprintf(char *buffer, size_t capacity, const char *format, ...);
-int vsnprintf(char *buffer, size_t capacity, const char *format, void *args);
+int vsnprintf(char *buffer, size_t capacity, const char *format, va_list arguments);
 int rename(const char *from, const char *to);
 int remove(const char *path);
 

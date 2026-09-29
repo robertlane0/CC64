@@ -173,8 +173,28 @@ def main() -> int:
         if corpus.LIBRARY_OUTPUT not in text:
             raise SystemExit(f"{corpus.LIBRARY_CASE}: target library output "
                              f"unexpected: {text[-200:]}")
+
+        vform_source = work / "C64V2.c"
+        vform_object = work / "C64V2.cc64o"
+        vform_source.write_text(corpus.LIBRARY_VFORM_PROGRAM, encoding="utf-8")
+        run([str(ROOT / "cc64"), "-I", str(ROOT / "include" / "target"),
+             "-I", str(ROOT / "include" / "cc64"), "-c", str(vform_source),
+             "-o", str(vform_object)], ROOT)
+        vform_image = work / "C64V2.mz"
+        run([str(ROOT / "cc64"), "--link", "--format", "mz64",
+             str(vform_object), *library_objects, "-o", str(vform_image)], ROOT)
+        vform_disk = work / "C64V2.img"
+        shutil.copy2(TARGET / "build/dos64-lean.img", vform_disk)
+        run(["python3", str(ROOT / "tests/embed_fat12.py"), str(vform_disk),
+             str(vform_image), "C64V2"], ROOT)
+        text = execute(qemu, vform_disk, "C64V2", "C64V2", 9, timeout=60.0)
+        if "Exit 9" not in text:
+            raise SystemExit("C64V2: target library v-form case did not return 9")
+        if "v-42" not in text:
+            raise SystemExit(f"C64V2: target library v-form output unexpected: "
+                             f"{text[-200:]}")
         print(f"target: QEMU passed {len(cases)} raw/MZ64 image cases and "
-              "one linked target-library case")
+              "two linked target-library cases")
     return 0
 
 

@@ -42,6 +42,23 @@ sixteen-bit register field. `fread` and `fwrite` therefore satisfy a request in
 as many calls as it needs; `cc64_read` and `cc64_write` are single-call service
 wrappers and move at most that much in one call.
 
+The formatted-output sink counts every character it writes, whether the
+destination is a bounded buffer or a stream, because the printf family returns
+that count. One sink therefore serves both destinations, and a stream write
+that is not counted makes `printf` report zero.
+
+A variadic walk reads one whole eight-byte slot per unnamed argument, so a
+64-bit conversion reads the whole slot and a 32-bit one reads its low half.
+A single `l` names a 64-bit type in this ABI, exactly as `ll` does, so both
+read the whole slot.
+
+The header declares only what the library defines. `strdup` is declared as a
+documented extension and allocates through `malloc`, so a refused allocation
+reads as a null pointer. `strtof` and `strtod` are not declared: a decimal
+conversion in the target library would have to be a second, independently
+written floating conversion, and the version 1 contract defers floating
+conversion rather than shipping one that was never exercised.
+
 The startup frame holds the argument vector and the command text in separate
 regions, with the vector below the text and one slot spare for the terminator.
 The vector holds at most sixteen entries: a command with more arguments than

@@ -29,8 +29,12 @@ struct cc64_sink {
 static void sink_put(struct cc64_sink *sink, int character)
 {
     char byte = (char)character;
+    /* Every sink counts the character, including a stream: the printf family
+       returns the number of characters it wrote, and a count that only
+       advanced for a bounded buffer reported zero for every stream write. */
     if (sink->stream != NULL) {
         if (fwrite(&byte, 1U, 1U, sink->stream) != 1U) sink->failed = 1;
+        ++sink->used;
         return;
     }
     if (sink->buffer == NULL) return;
@@ -156,7 +160,13 @@ static void format_into(struct cc64_sink *sink, const char *format, va_list argu
             continue;
         }
         if (conversion == 'd' || conversion == 'i') {
-            long value = size >= 3 ? va_arg(arguments, long long)
+            /* Every unnamed argument occupies a whole eight-byte slot, so the
+               no-modifier and `z` cases read the low half of the slot. A
+               single `l` and `ll` both name a 64-bit type, so both read the
+               whole slot; reading an `int` for `%ld` left the upper half
+               unconsumed by value and printed the wrong number for any
+               argument that does not fit in 32 bits. */
+            long value = size >= 2 ? (long)va_arg(arguments, long long)
                                    : (long)va_arg(arguments, int);
             unsigned long magnitude = value < 0L
                                           ? (unsigned long)0 - (unsigned long)value
@@ -166,7 +176,11 @@ static void format_into(struct cc64_sink *sink, const char *format, va_list argu
         }
         if (conversion == 'u' || conversion == 'x' || conversion == 'X' ||
             conversion == 'o' || conversion == 'p') {
-            unsigned long value = (unsigned long)va_arg(arguments, size_t);
+            /* An unsigned conversion with no modifier still names a 32-bit
+               type, so it reads the low half of the slot. */
+            unsigned long value = size == 0
+                                      ? (unsigned long)(unsigned int)va_arg(arguments, unsigned int)
+                                      : (unsigned long)va_arg(arguments, unsigned long long);
             unsigned long base = 10UL;
             int upper = 0;
             if (conversion == 'x') base = 16UL;

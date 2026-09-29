@@ -5,6 +5,7 @@
  * nothing but the target service boundary. */
 
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 
 void *memcpy(void *destination, const void *source, size_t size)
@@ -187,4 +188,16 @@ char *strstr(const char *text, const char *needle)
         ++index;
     }
     return NULL;
+}
+
+/* `strdup` is not part of the C17 library, so it is declared in this header
+   as a documented extension. A refused allocation is a null pointer, which is
+   what the caller checks. */
+char *strdup(const char *text)
+{
+    size_t length = strlen(text) + 1U;
+    char *copy = (char *)malloc(length);
+    if (copy == NULL) return NULL;
+    memcpy(copy, text, length);
+    return copy;
 }

@@ -308,6 +308,58 @@ COMPARE_PROGRAM = (
     "}\n"
 )
 
+# The target library's own interface: an extension the header declares, the
+# `v` form of each printf function, and the count a stream sink returns. The
+# count is the part a case that only checked the printed text would miss: the
+# text goes out through the same sink either way, so only the return value
+# shows that a stream write was counted.
+LIBRARY_VFORM_PROGRAM = (
+    "#include <stdarg.h>\n"
+    "#include <stdio.h>\n"
+    "#include <stdlib.h>\n"
+    "#include <string.h>\n"
+    "static int emit(FILE *stream, const char *format, ...) {\n"
+    "  va_list arguments;\n"
+    "  va_start(arguments, format);\n"
+    "  int written = vfprintf(stream, format, arguments);\n"
+    "  va_end(arguments);\n"
+    "  return written;\n"
+    "}\n"
+    # A variadic walk reads one whole eight-byte slot per argument, so a
+    # 64-bit conversion has to read the whole slot and a 32-bit one only its
+    # low half. Reading an int for `%ld` printed the wrong number for any
+    # argument that does not fit in 32 bits.
+    "static int wrap(char *text, unsigned long capacity, const char *format, ...) {\n"
+    "  va_list arguments;\n"
+    "  va_start(arguments, format);\n"
+    "  int written = vsnprintf(text, capacity, format, arguments);\n"
+    "  va_end(arguments);\n"
+    "  return written;\n"
+    "}\n"
+    "int main(void)\n"
+    "{\n"
+    "  char *copy = strdup(\"hello\");\n"
+    "  if (copy == 0) return 1;\n"
+    "  if (strcmp(copy, \"hello\") != 0) return 2;\n"
+    "  free(copy);\n"
+    # A stream sink counts the characters it wrote, so the printf family
+    # returns a real count rather than zero.
+    "  if (emit(stdout, \"%s-%d\", \"v\", 42) != 4) return 3;\n"
+    "  if (emit(stdout, \"\\n\") != 1) return 4;\n"
+    "  char text[32];\n"
+    "  if (wrap(text, sizeof text, \"%ld\", 7L) != 1) return 5;\n"
+    "  if (strcmp(text, \"7\") != 0) return 6;\n"
+    "  if (wrap(text, sizeof text, \"%lu\", 99UL) != 2) return 7;\n"
+    "  if (wrap(text, sizeof text, \"%lld\", 1234567890123LL) != 13) return 8;\n"
+    "  if (strcmp(text, \"1234567890123\") != 0) return 9;\n"
+    "  if (wrap(text, sizeof text, \"%x\", 255u) != 2) return 10;\n"
+    "  if (strcmp(text, \"ff\") != 0) return 11;\n"
+    "  if (wrap(text, sizeof text, \"[%5d]\", 42) != 7) return 12;\n"
+    "  if (strcmp(text, \"[   42]\") != 0) return 13;\n"
+    "  return 9;\n"
+    "}\n"
+)
+
 # A static assertion produces no code, so a case that only compiled would not
 # notice a wrong evaluation. This one checks at run time that the assertion's
 # own arithmetic, `__func__`, and `_Alignof` all agree with the ABI the

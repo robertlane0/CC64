@@ -18,8 +18,6 @@ long strtol(const char *text, char **end, int base);
 unsigned long strtoul(const char *text, char **end, int base);
 long long strtoll(const char *text, char **end, int base);
 unsigned long long strtoull(const char *text, char **end, int base);
-float strtof(const char *text, char **end);
-double strtod(const char *text, char **end);
 int abs(int value);
 void qsort(void *base, size_t count, size_t size,
            int (*compare)(const void *, const void *));
