@@ -168,6 +168,23 @@ size_t abi_assign_arguments(Type *const *types, size_t count, bool returns_memor
             slot->ok = false;
             continue;
         }
+        if (type->kind == TYPE_UINT128) {
+            /* The two halves are integers, so the placement is the same as a
+               record of two eightbytes that holds integers. */
+            slot->classes[0] = AGG_INTEGER;
+            slot->classes[1] = AGG_INTEGER;
+            slot->pieces = 2U;
+            if (take_registers(slot->classes, 2U, &general, &vector,
+                               slot->registers)) {
+                slot->in_register = true;
+                continue;
+            }
+            stack = round_up(stack, 8U);
+            slot->stack_offset = stack;
+            slot->size = 16U;
+            stack += 16U;
+            continue;
+        }
         if (type->kind == TYPE_STRUCT || type->kind == TYPE_UNION) {
             unsigned pieces = (unsigned)abi_aggregate_pieces(type, slot->classes,
                                                             &slot->memory);

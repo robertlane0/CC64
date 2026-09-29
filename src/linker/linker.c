@@ -504,7 +504,9 @@ static bool runtime_symbol_name(const char *name)
 {
     static const char *const names[] = {
         "cc64_putc", "cc64_write", "cc64_read", "cc64_alloc",
-        "cc64_free", "cc64_open", "cc64_close", "cc64_exit"
+        "cc64_free", "cc64_open", "cc64_create", "cc64_lseek",
+        "cc64_close", "cc64_delete", "cc64_exit",
+        "cc64_console_ready", "cc64_time_fields", "cc64_date_fields"
     };
     for (size_t i = 0U; i < sizeof(names) / sizeof(names[0]); ++i) {
         if (strcmp(name, names[i]) == 0) return true;
