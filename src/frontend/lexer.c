@@ -468,9 +468,20 @@ void token_list_free(TokenList *list)
 
 /* Reserving up front keeps a large source's list from being copied repeatedly
    on the way up, which is the expensive part on a small heap. */
+/* A reservation is bounded, however large the estimate is. The estimate from a
+   source's length is a good upper bound on how many tokens it produces, and
+   taking all of it in one request is what a first-fit heap cannot promise: a
+   large unit asks for a couple of megabytes of one run while the rest of the
+   compiler's memory is already committed around it, and the request fails even
+   though the same memory taken in steps would fit. A bounded reservation lets
+   the list grow by the step below, which every allocation the target can
+   satisfy, and costs a few more copies. */
+#define CC64_RESERVE_CAP 1365U
+
 bool token_list_reserve(TokenList *list, size_t capacity)
 {
     if (list == NULL) return false;
+    if (capacity > CC64_RESERVE_CAP) capacity = CC64_RESERVE_CAP;
     if (capacity <= list->capacity) return true;
     if (capacity > SIZE_MAX / sizeof(*list->items)) return false;
     Token *items = cc64_xrealloc(list->items, capacity * sizeof(*list->items));

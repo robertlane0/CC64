@@ -4,13 +4,39 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The total this run has asked for, so a refusal can report the demand rather
+   than only the failure. It counts requests and not live bytes, so it is an
+   upper bound rather than the figure a caller would measure; its purpose is to
+   say how much a bounded target could not give, because a target's heap is a
+   few mebibytes in total and a run that asks for more has a size to reduce
+   rather than an allocation to retry. */
+static size_t requested_total;
+static size_t largest_request;
+
+static void note(size_t size)
+{
+    if (size > SIZE_MAX - requested_total) {
+        fputs("cc64: allocation size overflow\n", stderr);
+        exit(2);
+    }
+    requested_total += size;
+    if (size > largest_request) largest_request = size;
+}
+
+static void refuse(void)
+{
+    fprintf(stderr,
+            "cc64: out of memory after requesting %lu bytes, largest single "
+            "request %lu bytes\n",
+            (unsigned long)requested_total, (unsigned long)largest_request);
+    exit(2);
+}
+
 void *cc64_xmalloc(size_t size)
 {
     void *ptr = malloc(size == 0U ? 1U : size);
-    if (ptr == NULL) {
-        fputs("cc64: out of memory\n", stderr);
-        exit(2);
-    }
+    note(size);
+    if (ptr == NULL) refuse();
     return ptr;
 }
 
@@ -24,10 +50,8 @@ void *cc64_xcalloc(size_t count, size_t size)
         exit(2);
     }
     void *ptr = calloc(count, size == 0U ? 1U : size);
-    if (ptr == NULL) {
-        fputs("cc64: out of memory\n", stderr);
-        exit(2);
-    }
+    note(count * size);
+    if (ptr == NULL) refuse();
     return ptr;
 }
 
@@ -43,9 +67,10 @@ void *cc64_xrealloc(void *ptr, size_t size)
 {
     void *next = realloc(ptr, size == 0U ? 1U : size);
     if (allocation_refused(next)) {
-        fputs("cc64: out of memory\n", stderr);
-        exit(2);
+        note(size);
+        refuse();
     }
+    note(size);
     return next;
 }
 
