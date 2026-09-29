@@ -17,4 +17,12 @@
 #define LONG_MAX 9223372036854775807L
 #define ULONG_MAX 18446744073709551615UL
 
+/* The target names a file with a drive letter, a separator, and an eight-byte
+   stem with a three-byte extension, so the longest name a caller should build
+   has room for all of that and a terminator. */
+#define PATH_MAX 260
+#define NAME_MAX 255
+#define FILENAME_MAX PATH_MAX
+#define HOST_NAME_MAX 64
+
 #endif

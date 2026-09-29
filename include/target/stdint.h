@@ -27,6 +27,11 @@ typedef unsigned long uintptr_t;
 #define INT64_MAX 9223372036854775807L
 #define UINT64_MAX 18446744073709551615UL
 #define SIZE_MAX UINT64_MAX
+#define INTPTR_MIN INT64_MIN
+#define INTPTR_MAX INT64_MAX
+#define UINTPTR_MAX UINT64_MAX
+#define PTRDIFF_MIN INT64_MIN
+#define PTRDIFF_MAX INT64_MAX
 
 /* A constant of the least type that holds the value keeps its type through
    integer promotion on the target, where the suffix that does that is the one

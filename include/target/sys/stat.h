@@ -11,6 +11,11 @@
 
 #define S_IFREG  0x8000
 #define S_IFDIR  0x4000
+/* The kind of a file is the one mode bit that says what sort of thing it is;
+   the permission bits beside it say who may reach it, and the target has no
+   accounts, so a mode is either a kind or nothing. */
+#define S_ISDIR(mode) (((mode) & 0xF000U) == S_IFDIR)
+#define S_ISREG(mode) (((mode) & 0xF000U) == S_IFREG)
 
 struct stat {
     unsigned long st_dev;

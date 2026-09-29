@@ -16,4 +16,17 @@ void *dlsym(void *handle, const char *name);
 int dlclose(void *handle);
 char *dlerror(void);
 
+/* A loaded object's own description of itself. The target has no loaded
+   objects, so a lookup always reports that it found nothing. The record is
+   present with its portable fields so a caller that fills one in a build that
+   has them still compiles here. */
+typedef struct {
+    const char *dli_fname;
+    void *dli_fbase;
+    const char *dli_sname;
+    void *dli_saddr;
+} Dl_info;
+
+int dladdr(const void *address, Dl_info *info);
+
 #endif

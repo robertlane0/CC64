@@ -27,5 +27,11 @@ struct pollfd_ {
 };
 
 int poll(struct pollfd *fds, unsigned long count, int timeout);
+/* The wait can be given a deadline rather than a number of seconds to
+   wait, and the remainder after an early return says how much of the
+   deadline was left. */
+struct timespec;
+int ppoll(struct pollfd *fds, unsigned long count,
+          const struct timespec *deadline, void *signal_mask);
 
 #endif

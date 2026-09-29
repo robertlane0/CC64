@@ -23,5 +23,8 @@ void qsort(void *base, size_t count, size_t size,
            int (*compare)(const void *, const void *));
 int rand(void);
 void srand(unsigned int seed);
+/* The target has no environment block, so a program that asks for one
+   gets nothing back rather than a block it would have to parse. */
+char *getenv(const char *name);
 
 #endif

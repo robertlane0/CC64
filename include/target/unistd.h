@@ -4,6 +4,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* A count of bytes a read or a write can report, and a position a seek can
+   report, are both as wide as the machine's own counters. */
+typedef long ssize_t;
+typedef long off_t;
+typedef int pid_t;
+
 /* The POSIX names the target's freestanding library provides, on the target's
    own file-handle and console model. A handle is the small non-negative value
    the target service returned; a stream is the same value until it is closed.
@@ -22,22 +28,26 @@
 
 int open(const char *path, int flags, ...);
 int close(int handle);
-long read(int handle, void *data, unsigned long size);
-long write(int handle, const void *data, unsigned long size);
+ssize_t read(int handle, void *data, size_t size);
+ssize_t write(int handle, const void *data, size_t size);
 int unlink(const char *path);
 int access(const char *path, int mode);
 char *getcwd(char *buffer, size_t size);
 int chdir(const char *path);
 int isatty(int handle);
-int lseek(int handle, long offset, int origin);
+off_t lseek(int handle, off_t offset, int origin);
+int stat(const char *path, void *status);
 int fstat(int handle, void *status);
 int fsync(int handle);
-int truncate(const char *path, long length);
+int truncate(const char *path, off_t length);
 int getpid(void);
 unsigned int sleep(unsigned int seconds);
 int usleep(unsigned int microseconds);
 int nanosleep(const void *request, void *remain);
 int dup2(int from, int to);
+int pipe(int *ends);
 int isatty_(int handle);
+char *readlink(const char *path, char *buffer, size_t size);
+int rmdir(const char *path);
 
 #endif

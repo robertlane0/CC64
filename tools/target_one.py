@@ -75,7 +75,7 @@ def main() -> int:
             [qemu, "-drive", f"file={disk},format=raw", "-serial", "stdio",
              "-display", "none"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, text=True)
+            stderr=subprocess.STDOUT, text=True, errors="replace")
         process.stdin.write(name + "\n")
         process.stdin.close()
         try:

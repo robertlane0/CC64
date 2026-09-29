@@ -29,10 +29,7 @@ typedef void (*sighandler_t)(int);
 #define SIGWINCH 28
 
 struct sigaction {
-    union {
-        sighandler_t sa_handler;
-        void (*sa_sigaction)(int, void *, void *);
-    };
+    sighandler_t sa_handler;
     sig_atomic_t sa_mask;
     int sa_flags;
     void (*sa_restorer)(void);
