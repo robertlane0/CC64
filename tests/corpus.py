@@ -553,6 +553,125 @@ LONG_ARGUMENT_PROGRAM = (
 
 
 
+# Aggregate-by-value passing and return. Every shape the ABI document defines
+# appears here: one general piece, two general pieces, one vector piece, two
+# vector pieces, a piece that is only partly inside the object, an argument
+# that runs out of registers and lands in the outgoing area, a result written
+# into a caller-supplied destination, and a value read out of a register into
+# a callee frame slot (D-100, D-101).
+AGGREGATE_PROGRAM = (
+    "int cc64_write(int, const void *, unsigned long);\n"
+    "typedef struct { int x; int y; } Point;\n"
+    "typedef struct { int a; int b; int c; int d; } Rect;\n"
+    "typedef struct { float a; float b; } Pair;\n"
+    "typedef struct { float l; float a; float b; float alpha; } Lab;\n"
+    "typedef struct { char c; } Byte;\n"
+    "typedef struct { char b[3]; } Triple;\n"
+    "static int sum(Point p) { return p.x + p.y; }\n"
+    "static Point make(int x, int y) { Point p; p.x = x; p.y = y; return p; }\n"
+    "static Rect widen(Rect r, int by) {\n"
+    "    r.a -= by; r.b -= by; r.c += by; r.d += by;\n"
+    "    return r;\n"
+    "}\n"
+    "static int area(Rect r) { return (r.c - r.a) * (r.d - r.b); }\n"
+    "static double pair_sum(Pair p) { return (double)p.a + (double)p.b; }\n"
+    "static Lab scale(Lab v, float k) {\n"
+    "    v.l *= k; v.a *= k; v.b *= k; v.alpha *= k;\n"
+    "    return v;\n"
+    "}\n"
+    "static int byte_value(Byte b) { return b.c; }\n"
+    "static int triple_sum(Triple t) { return t.b[0] + t.b[1] + t.b[2]; }\n"
+    "static int wide(Point a, Point b, Point c, Point d, Point e) {\n"
+    "    return a.x + b.x + c.x + d.x + e.x;\n"
+    "}\n"
+    "int main(void) {\n"
+    "    Point p = make(3, 4);\n"
+    "    if (sum(p) != 7) return 1;\n"
+    "    Rect r = {0, 0, 4, 4};\n"
+    "    if (area(r) != 16) return 2;\n"
+    "    if (area(widen(r, 1)) != 36) return 3;\n"
+    "    Rect s = widen(widen(r, 1), 1);\n"
+    "    if (area(s) != 64) return 4;\n"
+    "    Pair q = {1.0f, 2.0f};\n"
+    "    if (pair_sum(q) != 3.0) return 5;\n"
+    "    Lab v = {1.0f, 2.0f, 3.0f, 4.0f};\n"
+    "    Lab w = scale(v, 2.0f);\n"
+    "    if (w.l != 2.0f || w.alpha != 8.0f) return 6;\n"
+    "    Byte y;\n"
+    "    y.c = 81;\n"
+    "    if (byte_value(y) != 81) return 7;\n"
+    "    Triple t;\n"
+    "    t.b[0] = 1; t.b[1] = 2; t.b[2] = 3;\n"
+    "    if (triple_sum(t) != 6) return 8;\n"
+    "    if (wide(make(1, 0), make(2, 0), make(3, 0), make(4, 0), make(5, 0)) != 15)\n"
+    "        return 9;\n"
+    "    Point n = make(sum(make(1, 1)), sum(make(2, 2)));\n"
+    "    if (n.x != 2 || n.y != 4) return 10;\n"
+    "    cc64_write(1, \"G\", 1);\n"
+    "    return 0;\n"
+    "}\n"
+)
+
+# A returned expression is converted to the type the function declares, and a
+# compound assignment on a floating object works in the floating unit rather
+# than on the bits. Both are separate defects the aggregate work exposed
+# (D-103, D-104).
+RETURN_CONVERSION_PROGRAM = (
+    "int cc64_write(int, const void *, unsigned long);\n"
+    "static double add(float a, float b) { return a + b; }\n"
+    "static double widen_sum(float a, float b, float c, float d)\n"
+    "{\n"
+    "    return a + b + c + d;\n"
+    "}\n"
+    "static double scale_in_place(float *v, float k)\n"
+    "{\n"
+    "    *v *= k;\n"
+    "    return (double)*v;\n"
+    "}\n"
+    "static double accumulate(float start)\n"
+    "{\n"
+    "    float total = start;\n"
+    "    total += 1.5f;\n"
+    "    total -= 0.5f;\n"
+    "    total *= 4.0f;\n"
+    "    total /= 2.0f;\n"
+    "    return (double)total;\n"
+    "}\n"
+    "int main(void)\n"
+    "{\n"
+    "    if (add(1.0f, 2.0f) != 3.0) return 1;\n"
+    "    if (widen_sum(1.0f, 2.0f, 3.0f, 4.0f) != 10.0) return 2;\n"
+    "    float v = 3.0f;\n"
+    "    if (scale_in_place(&v, 2.0f) != 6.0) return 3;\n"
+    "    if (v != 6.0f) return 4;\n"
+    "    if (accumulate(1.0f) != 4.0) return 5;\n"
+    "    cc64_write(1, \"R\", 1);\n"
+    "    return 0;\n"
+    "}\n"
+)
+
+# A one-byte object stored through a register whose number names a legacy high
+# register without a REX prefix, which is the defect D-102 describes.
+NARROW_REGISTER_PROGRAM = (
+    "int cc64_write(int, const void *, unsigned long);\n"
+    "static unsigned char widen(unsigned char a, unsigned char b)\n"
+    "{\n"
+    "    return (unsigned char)(a + b);\n"
+    "}\n"
+    "static short join(short a, short b) { return (short)(a + b); }\n"
+    "int main(void)\n"
+    "{\n"
+    "    unsigned char c = 40;\n"
+    "    unsigned char d = 2;\n"
+    "    c += d;\n"
+    "    if (c != 42) return 1;\n"
+    "    if (widen(40, 2) != 42) return 2;\n"
+    "    if (join(20, 22) != 42) return 3;\n"
+    "    cc64_write(1, \"N\", 1);\n"
+    "    return 0;\n"
+    "}\n"
+)
+
 CASES = [
 ("C64R", "int main(void) { return 7; }", "raw", 7, None),
 ("C64S", "int f(int x){int y=0; switch(x){case 7: y=9; break; default: y=3;} return y;} int main(void){return f(7);}", "raw", 9, None),
@@ -588,6 +707,9 @@ CASES = [
 # the loader's zeroing is checked on the image form that actually has one.
 ("C64G2", BSS_PROGRAM, "mz64", 9, "B"),
 ("C64J", RECURSION_PROGRAM, "raw", 9, "R"),
+("C64Z2", AGGREGATE_PROGRAM, "raw", 0, "G"),
+("C64R2", RETURN_CONVERSION_PROGRAM, "raw", 0, "R"),
+("C64N2", NARROW_REGISTER_PROGRAM, "raw", 0, "N"),
 ]
 
 LIBRARY_CASE = "C64L"

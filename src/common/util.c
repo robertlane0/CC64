@@ -14,6 +14,23 @@ void *cc64_xmalloc(size_t size)
     return ptr;
 }
 
+void *cc64_xcalloc(size_t count, size_t size)
+{
+    if (count == 0U) {
+        return cc64_xmalloc(1U);
+    }
+    if (count > SIZE_MAX / (size == 0U ? 1U : size)) {
+        fputs("cc64: allocation size overflow\n", stderr);
+        exit(2);
+    }
+    void *ptr = calloc(count, size == 0U ? 1U : size);
+    if (ptr == NULL) {
+        fputs("cc64: out of memory\n", stderr);
+        exit(2);
+    }
+    return ptr;
+}
+
 /* The target allocator reports a refusal as -1, and a host allocator reports it
    as a null pointer, so both spellings have to be recognised here: a refused
    request that was mistaken for a block would be written through. */

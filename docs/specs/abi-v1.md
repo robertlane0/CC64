@@ -31,9 +31,44 @@ usual callee-saved rule.
 `RBX`, `RBP`, and `R12` through `R15` are preserved by every callee.
 `RSP` is preserved modulo argument removal. `RAX`, `RCX`, `RDX`, `R8` through
 `R11`, and all flags are call-clobbered. `XMM0` through `XMM7` are used for
-`float`; `XMM0` through `XMM7` and `XMM0` return `double`. This first ABI
-does not yet define aggregate parameter passing by value; aggregates are
-deferred until their representation is pinned.
+`float`; `XMM0` through `XMM7` and `XMM0` return `double`.
+
+## Aggregates passed and returned by value
+
+A `struct` or `union` that is not an array is carried in whole eightbytes. The
+object is split at offsets zero and eight, and each piece is named by what the
+bytes of that piece can hold:
+
+| Piece | Register |
+|---|---|
+| holds any integer, pointer, or bit-field | the next general register |
+| holds only `float` or `double` | the next vector register |
+| a later field would need the general register | the general register |
+
+A piece no field reaches is padding and travels in a general register, which is
+the class that can carry any byte pattern. Pieces are taken in order: piece
+zero takes the first register of its class, piece one the second. An argument
+that finds no register of the class it needs, and every part of a piece that is
+only partly inside the object, moves the whole argument to the outgoing
+argument area, where it is laid out with its first byte at its offset.
+
+A general register holds the piece's bytes in its low end. A piece that is only
+four or five bytes wide, which happens when the object is smaller than eight
+bytes or ends before the next boundary, is moved with a width no wider than the
+object, so no move reaches a byte the object does not have. A vector register
+receives a piece of a floating field with a move of four bytes when the piece is
+four and eight bytes otherwise.
+
+The same classification describes a return value. The first piece comes back in
+`RAX` when it is a general piece and in `XMM0` when it is a vector piece; the
+second comes back in `RDX` or `XMM1` on the same rule. The result of a call that
+returns an aggregate is written by the caller into its own frame, and the value
+of the call expression is the address of that space, so two such results can be
+live at once.
+
+An aggregate larger than two eightbytes, and one whose fields do not fall
+inside its eightbytes, is outside this revision. The compiler reports it with a
+backend diagnostic rather than passing a partial value.
 
 ## Variadic calls
 

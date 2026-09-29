@@ -1,5 +1,7 @@
 #include "backend/encoder.h"
 
+#include "backend/abi.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -88,6 +90,20 @@ static void emit_rex(IrEncoder *encoder, bool w, unsigned reg, unsigned rm)
     if (value != 0U) emit8(encoder, (unsigned char)(0x40U | value));
 }
 
+/* An eight- or sixteen-bit register operand names one of the low four
+   registers only when a REX prefix is present: without one, numbers four
+   through seven name the legacy high byte and word registers instead. The
+   prefix is written whenever an operand could land in that range, carrying the
+   extension bits it would otherwise carry, and is left off when neither
+   operand can need it, because an unnecessary prefix is not free. */
+static void emit_rex_byte_word(IrEncoder *encoder, unsigned reg, unsigned rm)
+{
+    unsigned value = ((reg >= 8U) ? 4U : 0U) | ((rm >= 8U) ? 1U : 0U);
+    if (value != 0U || reg >= 4U || rm >= 4U) {
+        emit8(encoder, (unsigned char)(0x40U | value));
+    }
+}
+
 static void emit_modrm_reg(IrEncoder *encoder, unsigned reg, unsigned rm)
 {
     emit8(encoder, (unsigned char)(0xc0U | ((reg & 7U) << 3) | (rm & 7U)));
@@ -144,7 +160,7 @@ static void emit_mov_reg32_reg(IrEncoder *encoder, unsigned dst, unsigned src)
    opposite order from the 64-bit move. */
 static void emit_mov_reg8_reg(IrEncoder *encoder, unsigned dst, unsigned src)
 {
-    emit_rex(encoder, false, src, dst);
+    emit_rex_byte_word(encoder, src, dst);
     emit8(encoder, 0x88U);
     emit_modrm_reg(encoder, src, dst);
 }
@@ -233,9 +249,89 @@ static void emit_store_mem(IrEncoder *encoder, unsigned src, unsigned base, int6
                            size_t width)
 {
     if (width == 2U) emit8(encoder, 0x66U);
-    emit_rex(encoder, width == 8U, src, base);
+    if (width == 1U || width == 2U) {
+        emit_rex_byte_word(encoder, src, base);
+    } else {
+        emit_rex(encoder, width == 8U, src, base);
+    }
     emit8(encoder, width == 1U ? 0x88U : 0x89U);
     emit_mem_reg(encoder, base, src, displacement);
+}
+
+/* An eightbyte at the end of an object can be shorter than eight bytes, so a
+   move of it has to be no wider than what the object has room for. The count
+   is taken apart into the widest chunk that still fits, which reaches any
+   length from one to eight without reading or writing past the object. */
+static size_t next_chunk(size_t *count)
+{
+    if (*count >= 8U) { *count -= 8U; return 8U; }
+    if (*count >= 4U) { *count -= 4U; return 4U; }
+    if (*count >= 2U) { *count -= 2U; return 2U; }
+    *count = 0U;
+    return 1U;
+}
+
+static void emit_load_partial(IrEncoder *encoder, unsigned reg, unsigned base,
+                              int64_t displacement, size_t count)
+{
+    while (count != 0U) {
+        size_t width = next_chunk(&count);
+        emit_load_mem(encoder, reg, base, displacement, width, false);
+        displacement += (int64_t)width;
+    }
+}
+
+static void emit_store_partial(IrEncoder *encoder, unsigned reg, unsigned base,
+                               int64_t displacement, size_t count)
+{
+    while (count != 0U) {
+        size_t width = next_chunk(&count);
+        emit_store_mem(encoder, reg, base, displacement, width);
+        displacement += (int64_t)width;
+    }
+}
+
+/* Move one eightbyte of an aggregate between memory and a vector register. A
+   piece whose class is the vector one holds a float or a double and nothing
+   else, so it is either four or eight bytes wide and the two moves below cover
+   both. */
+/* Move one eightbyte of an aggregate between memory and a vector register. A
+   piece whose class is the vector one holds a float or a double and nothing
+   else, so it is either four or eight bytes wide and the two moves below cover
+   both.
+
+   The two share one REX prefix: its B bit extends the memory operand's base
+   register and its R bit extends the vector register. A base register above
+   R7 therefore shifts the vector register as well, so a load from such a base
+   reads the eightbyte into a general register first and moves it across, which
+   costs one instruction and cannot address the wrong register. */
+static void emit_load_piece_vector(IrEncoder *encoder, unsigned index,
+                                   unsigned base, int64_t displacement,
+                                   size_t width)
+{
+    if (base >= 8U) {
+        emit_load_partial(encoder, 10U, base, displacement, width);
+        emit8(encoder, 0x66U);
+        /* The REX prefix follows the legacy prefix and precedes the opcode. */
+        emit_rex(encoder, width == 8U, index, 10U);
+        emit8(encoder, 0x0fU); emit8(encoder, 0x6eU);
+        emit_modrm_reg(encoder, index, 10U);
+        return;
+    }
+    emit8(encoder, width == 4U ? 0xf3U : 0xf2U);
+    emit8(encoder, 0x0fU); emit8(encoder, 0x10U);
+    emit_rex(encoder, false, index, base);
+    emit_mem_reg(encoder, base, index, displacement);
+}
+
+static void emit_store_piece_vector(IrEncoder *encoder, unsigned index,
+                                    unsigned base, int64_t displacement,
+                                    size_t width)
+{
+    emit8(encoder, width == 4U ? 0xf3U : 0xf2U);
+    emit8(encoder, 0x0fU); emit8(encoder, 0x11U);
+    emit_rex(encoder, false, index, base);
+    emit_mem_reg(encoder, base, index, displacement);
 }
 
 static size_t add_label(IrEncoder *encoder, size_t id)
@@ -386,44 +482,136 @@ static void emit_restore_xmm(IrEncoder *encoder, unsigned index, size_t width)
     if (encoder->stack_depth != 0U) --encoder->stack_depth;
 }
 
-static bool call_argument_location(const IrInst *args, const IrInst *target,
-                                    unsigned *reg, bool *is_fp)
+/* The number of eight-byte slots one argument occupies in the outgoing area: a
+   scalar is one slot, and an aggregate is rounded up to whole slots. */
+static bool argument_is_aggregate(const Type *type)
 {
-    unsigned integer = 0U;
-    unsigned floating = 0U;
-    for (const IrInst *arg = args; arg != NULL; arg = arg->next) {
-        bool fp = is_float_type(arg->type);
-        if (arg == target) {
-            if (fp) {
-                if (floating >= 8U) return false;
-                *reg = floating;
-            } else {
-                if (integer >= 6U) return false;
-                *reg = integer;
-            }
-            *is_fp = fp;
-            return true;
-        }
-        if (fp) ++floating;
-        else ++integer;
+    return type != NULL && (type->kind == TYPE_STRUCT || type->kind == TYPE_UNION);
+}
+
+static size_t argument_area_size(const Type *type)
+{
+    if (argument_is_aggregate(type)) {
+        size_t size = type_size(type);
+        return (size + 7U) & ~(size_t)7U;
     }
-    return false;
+    return 8U;
+}
+
+/* The `index`th argument of a call, counting from zero. The list is walked
+   because the encoder has no room for an index per argument. */
+static IrInst *nth_argument(const IrInst *inst, size_t index)
+{
+    IrInst *arg = inst->args;
+    for (size_t i = 0U; i < index && arg != NULL; ++i) arg = arg->next;
+    return arg;
+}
+
+/* Fill one slot per argument of a call. The same routine serves the caller,
+   which knows the types of the expressions it is passing, and the callee, which
+   knows the types it declared: both must reach the same answer, so both ask
+   the same question here. The types are returned because the caller needs the
+   size of each argument as well as where it goes. */
+static size_t call_slots(IrEncoder *encoder, const IrInst *inst, ArgSlot **result,
+                         Type ***types_result)
+{
+    size_t count = 0U;
+    for (IrInst *arg = inst->args; arg != NULL; arg = arg->next) ++count;
+    *result = NULL;
+    *types_result = NULL;
+    if (count == 0U) return 0U;
+    ArgSlot *slots = cc64_xcalloc(count, sizeof(*slots));
+    Type **types = cc64_xcalloc(count, sizeof(*types));
+    if (slots == NULL || types == NULL) {
+        free(slots);
+        free(types);
+        encoder_error(encoder, 4020U, &inst->location, "cannot record call arguments");
+        return 0U;
+    }
+    size_t index = 0U;
+    for (IrInst *arg = inst->args; arg != NULL; arg = arg->next, ++index) {
+        types[index] = arg->type;
+    }
+    size_t area = abi_assign_arguments(types, index, slots);
+    *result = slots;
+    *types_result = types;
+    return area;
+}
+
+/* Push one aggregate onto the outgoing argument area, a slot at a time, from
+   the address the argument expression produced. The slots go on in reverse, so
+   the object's first bytes end up at the lowest address, where the callee
+   reads them. The address is copied aside first, because the slots already
+   pushed would otherwise land on top of it. The last slot is no wider than
+   the object, so the push never reads bytes the object does not have. */
+static void emit_push_aggregate(IrEncoder *encoder, IrInst *arg, size_t *depth)
+{
+    encode_expr(encoder, arg);
+    size_t total = argument_area_size(arg->type);
+    if (total <= 8U) {
+        emit_push(encoder, 0U);
+        ++*depth;
+        return;
+    }
+    emit_mov_reg_reg(encoder, 10U, 0U);
+    size_t size = type_size(arg->type);
+    for (size_t end = total; end > 0U;) {
+        size_t width = size % 8U;
+        if (width == 0U || width > end) width = end >= 8U ? 8U : end;
+        end -= width;
+        emit_load_partial(encoder, 0U, 10U, (int64_t)end, width);
+        emit_push(encoder, 0U);
+        ++*depth;
+    }
+}
+
+/* Read the eightbytes an argument occupies out of the address the caller left
+   on top of the stack and into the registers the slot names. The address is
+   read, not popped, because the pieces have to be gathered from it before the
+   slot is released. */
+static void emit_take_aggregate(IrEncoder *encoder, const ArgSlot *slot,
+                                const Type *type)
+{
+    size_t remaining = type_size(type);
+    emit8(encoder, 0x4cU); emit8(encoder, 0x8bU); emit8(encoder, 0x1cU);
+    emit8(encoder, 0x24U);
+    for (unsigned piece = 0U; piece < slot->pieces; ++piece) {
+        size_t width = remaining >= 8U ? 8U : remaining;
+        if (slot->classes[piece] == AGG_SSE) {
+            emit_load_piece_vector(encoder, slot->registers[piece], 11U,
+                                   (int64_t)piece * 8, width);
+        } else {
+            emit_load_partial(encoder, argument_registers[slot->registers[piece]],
+                              11U, (int64_t)piece * 8, width);
+        }
+        remaining -= width;
+    }
+    emit8(encoder, 0x48U); emit8(encoder, 0x83U); emit8(encoder, 0xc4U); emit8(encoder, 0x08U);
+    if (encoder->stack_depth != 0U) --encoder->stack_depth;
 }
 
 static void encode_call(IrEncoder *encoder, IrInst *inst)
 {
     size_t argument_count = 0U;
-    size_t stack_argument_count = 0U;
-    for (IrInst *arg = inst->args; arg != NULL; arg = arg->next) {
-        unsigned reg = 0U;
-        bool fp = false;
-        if (!call_argument_location(inst->args, arg, &reg, &fp)) ++stack_argument_count;
-        ++argument_count;
-    }
+    for (IrInst *arg = inst->args; arg != NULL; arg = arg->next) ++argument_count;
     if (argument_count > 64U) {
         encoder_error(encoder, 4020U, &inst->location,
                       "call argument limit exceeded");
         return;
+    }
+    ArgSlot *slots = NULL;
+    Type **types = NULL;
+    size_t area = call_slots(encoder, inst, &slots, &types);
+    size_t stack_units = 0U;
+    for (size_t i = 0U; i < argument_count; ++i) {
+        if (!slots[i].ok) {
+            encoder_error(encoder, 4023U, &inst->location,
+                          "argument cannot be passed under this ABI");
+            free(slots);
+            free(types);
+            return;
+        }
+        if (!slots[i].in_register) stack_units += argument_area_size(types[i]) / 8U;
     }
     bool direct = inst->a != NULL && inst->a->op == IR_ADDR && inst->a->symbol != NULL;
     /* __cc64_va_start is a compiler builtin: it yields the first unnamed
@@ -436,6 +624,7 @@ static void encode_call(IrEncoder *encoder, IrInst *inst)
             current->va_area_offset == 0) {
             encoder_error(encoder, 4021U, &inst->location,
                           "va_start used outside a variadic function");
+            free(slots);
             return;
         }
         unsigned named = 0U;
@@ -447,32 +636,54 @@ static void encode_call(IrEncoder *encoder, IrInst *inst)
         emit8(encoder, 0x8dU);
         emit_mem_reg(encoder, 5U, 0U,
                      current->va_area_offset + (int64_t)named * 8);
+        free(slots);
+        free(types);
         return;
     }
-    bool adjust = ((encoder->stack_depth + stack_argument_count) & 1U) != 0U;
+    /* The stack has to be aligned before the call, and pushing the outgoing
+       area changes how much is on it, so the padding is decided from the final
+       size of that area rather than from the number of arguments. */
+    bool adjust = ((encoder->stack_depth + stack_units) & 1U) != 0U;
     if (adjust) {
         emit8(encoder, 0x48U); emit8(encoder, 0x83U); emit8(encoder, 0xecU); emit8(encoder, 8U);
         ++encoder->stack_depth;
     }
+    /* The outgoing area is filled from its high end down, so the last stack
+       slot is pushed first and the first ends up at the lowest address, which
+       is where a callee looks for it. */
     for (size_t index = argument_count; index > 0U; --index) {
-        IrInst *arg = inst->args;
-        for (size_t j = 1U; j < index; ++j) arg = arg == NULL ? NULL : arg->next;
-        unsigned reg = 0U;
-        bool fp = false;
-        if (arg == NULL || call_argument_location(inst->args, arg, &reg, &fp)) continue;
+        if (slots[index - 1U].in_register) continue;
+        IrInst *arg = nth_argument(inst, index - 1U);
+        if (arg == NULL) continue;
+        if (argument_is_aggregate(types[index - 1U])) {
+            emit_push_aggregate(encoder, arg, &encoder->stack_depth);
+            continue;
+        }
         encode_expr(encoder, arg);
-        if (fp) emit_save_xmm0(encoder, type_size(arg->type));
-        else { emit_push(encoder, 0U); ++encoder->stack_depth; }
+        if (slots[index - 1U].classes[0] == AGG_SSE) {
+            emit_save_xmm0(encoder, type_size(arg->type));
+        } else {
+            emit_push(encoder, 0U);
+            ++encoder->stack_depth;
+        }
     }
-    for (IrInst *arg = inst->args; arg != NULL; arg = arg->next) {
-        unsigned reg = 0U;
-        bool fp = false;
-        if (!call_argument_location(inst->args, arg, &reg, &fp)) continue;
-        if (!fp && reg >= 6U) continue;
-        if (fp && reg >= 8U) continue;
+    /* Register arguments are evaluated in order and each is left on the stack,
+       because loading one register can be undone by evaluating the next. The
+       load-back pass then walks them in reverse. */
+    for (size_t index = 0U; index < argument_count; ++index) {
+        if (!slots[index].in_register) continue;
+        IrInst *arg = nth_argument(inst, index);
+        if (arg == NULL) continue;
         encode_expr(encoder, arg);
-        if (fp) emit_save_xmm0(encoder, type_size(arg->type));
-        else { emit_push(encoder, 0U); ++encoder->stack_depth; }
+        if (argument_is_aggregate(types[index]) ||
+            slots[index].classes[0] != AGG_SSE) {
+            /* An aggregate is left as its address; the load-back pass reads the
+               eightbytes out of the object it points at. */
+            emit_push(encoder, 0U);
+            ++encoder->stack_depth;
+        } else {
+            emit_save_xmm0(encoder, type_size(arg->type));
+        }
     }
     if (!direct) {
         encode_expr(encoder, inst->a);
@@ -481,21 +692,20 @@ static void encode_call(IrEncoder *encoder, IrInst *inst)
         emit_pop(encoder, 11U);
         if (encoder->stack_depth != 0U) --encoder->stack_depth;
     }
-    IrInst *args[64];
-    size_t saved_count = 0U;
-    for (IrInst *arg = inst->args; arg != NULL && saved_count < 64U; arg = arg->next) {
-        unsigned reg = 0U;
-        bool fp = false;
-        if (call_argument_location(inst->args, arg, &reg, &fp) &&
-            ((fp && reg < 8U) || (!fp && reg < 6U))) args[saved_count++] = arg;
-    }
-    while (saved_count > 0U) {
-        IrInst *arg = args[--saved_count];
-        unsigned reg = 0U;
-        bool fp = false;
-        (void)call_argument_location(inst->args, arg, &reg, &fp);
-        if (fp) emit_restore_xmm(encoder, reg, type_size(arg->type));
-        else { emit_pop(encoder, argument_registers[reg]); if (encoder->stack_depth != 0U) --encoder->stack_depth; }
+    for (size_t index = argument_count; index > 0U; --index) {
+        size_t position = index - 1U;
+        if (!slots[position].in_register) continue;
+        IrInst *arg = nth_argument(inst, position);
+        if (arg == NULL) continue;
+        if (argument_is_aggregate(types[position])) {
+            emit_take_aggregate(encoder, &slots[position], types[position]);
+        } else if (slots[position].classes[0] == AGG_SSE) {
+            emit_restore_xmm(encoder, slots[position].registers[0],
+                             type_size(arg->type));
+        } else {
+            emit_pop(encoder, argument_registers[slots[position].registers[0]]);
+            if (encoder->stack_depth != 0U) --encoder->stack_depth;
+        }
     }
     /* The calling convention requires AL to report how many vector registers
        carry arguments. It is set after the argument registers are loaded and
@@ -520,24 +730,57 @@ static void encode_call(IrEncoder *encoder, IrInst *inst)
         emit8(encoder, 0xffU);
         emit_modrm_reg(encoder, 2U, 11U);
     }
-    size_t stack_argument_bytes = stack_argument_count * 8U;
-    if (stack_argument_bytes != 0U) {
-        if (stack_argument_bytes <= 127U) {
+    if (area != 0U) {
+        if (area <= 127U) {
             emit8(encoder, 0x48U); emit8(encoder, 0x83U); emit8(encoder, 0xc4U);
-            emit8(encoder, (unsigned char)stack_argument_bytes);
+            emit8(encoder, (unsigned char)area);
         } else {
             emit8(encoder, 0x48U); emit8(encoder, 0x81U); emit8(encoder, 0xc4U);
-            emit32(encoder, (uint32_t)stack_argument_bytes);
+            emit32(encoder, (uint32_t)area);
         }
-        encoder->stack_depth -= stack_argument_count;
+        encoder->stack_depth -= stack_units;
     }
     if (adjust) {
         emit8(encoder, 0x48U); emit8(encoder, 0x83U); emit8(encoder, 0xc4U); emit8(encoder, 8U);
         if (encoder->stack_depth != 0U) --encoder->stack_depth;
     }
+    if (inst->type != NULL && argument_is_aggregate(inst->type)) {
+        /* A result that came back in registers is written to the space the
+           lowering reserved, and the value of the call is that address. */
+        AggClass pieces[2];
+        size_t count = abi_aggregate_pieces(inst->type, pieces);
+        if (count == 0U) {
+            encoder_error(encoder, 4023U, &inst->location,
+                          "return value cannot be passed under this ABI");
+            free(slots);
+            free(types);
+            return;
+        }
+        static const unsigned char return_general[2] = {0U, 2U};
+        size_t remaining = type_size(inst->type);
+        for (size_t piece = 0U; piece < count; ++piece) {
+            size_t width = remaining >= 8U ? 8U : remaining;
+            if (pieces[piece] == AGG_SSE) {
+                emit_store_piece_vector(encoder, (unsigned)piece, 5U,
+                                        inst->offset + (int64_t)piece * 8, width);
+            } else {
+                emit_store_partial(encoder, return_general[piece], 5U,
+                                   inst->offset + (int64_t)piece * 8, width);
+            }
+            remaining -= width;
+        }
+        emit_rex(encoder, true, 0U, 5U);
+        emit8(encoder, 0x8dU);
+        emit_mem_reg(encoder, 5U, 0U, inst->offset);
+        free(slots);
+        free(types);
+        return;
+    }
     if (inst->type != NULL && !is_float_type(inst->type)) {
         emit_normalize(encoder, type_size(inst->type), type_is_signed(inst->type));
     }
+    free(slots);
+    free(types);
 }
 
 static bool is_float_type(const Type *type)
@@ -850,9 +1093,63 @@ static IrOp compound_ir_op(BinaryOperator binary)
     }
 }
 
+/* A compound assignment on a floating object: the stored value and the
+   right-hand side are both widened to the same working form, combined there,
+   and narrowed back before the result goes into the object. The address is
+   kept across both operands because the right-hand side may itself write
+   memory. */
+static void encode_compound_float(IrEncoder *encoder, IrInst *inst)
+{
+    size_t width = inst->width == 0U ? 8U : inst->width;
+    encode_expr(encoder, inst->a);
+    emit_push(encoder, 0U);
+    ++encoder->stack_depth;
+    emit_xmm_load_rax(encoder, width);
+    emit_xmm_convert_to_double(encoder, width);
+    emit8(encoder, 0x48U); emit8(encoder, 0x83U); emit8(encoder, 0xecU);
+    emit8(encoder, 0x08U);
+    ++encoder->stack_depth;
+    emit_xmm_to_stack(encoder);
+    encode_expr(encoder, inst->b);
+    emit_xmm_convert_to_double(encoder, inst->b == NULL ? width
+                                                       : type_size(inst->b->type));
+    emit8(encoder, 0x66U); emit8(encoder, 0x0fU); emit8(encoder, 0x6fU);
+    emit8(encoder, 0xc8U);
+    emit_xmm_from_stack(encoder);
+    emit8(encoder, 0x48U); emit8(encoder, 0x83U); emit8(encoder, 0xc4U);
+    emit8(encoder, 0x08U);
+    if (encoder->stack_depth != 0U) --encoder->stack_depth;
+    switch (compound_ir_op(inst->binary)) {
+    case IR_ADD: emit8(encoder, 0xf2U); emit8(encoder, 0x0fU); emit8(encoder, 0x58U); emit8(encoder, 0xc1U); break;
+    case IR_SUB: emit8(encoder, 0xf2U); emit8(encoder, 0x0fU); emit8(encoder, 0x5cU); emit8(encoder, 0xc1U); break;
+    case IR_MUL: emit8(encoder, 0xf2U); emit8(encoder, 0x0fU); emit8(encoder, 0x59U); emit8(encoder, 0xc1U); break;
+    case IR_DIV: emit8(encoder, 0xf2U); emit8(encoder, 0x0fU); emit8(encoder, 0x5eU); emit8(encoder, 0xc1U); break;
+    default:
+        encoder_error(encoder, 4022U, &inst->location,
+                      "operator cannot be applied to a floating object");
+        return;
+    }
+    emit_xmm_convert_from_double(encoder, width);
+    emit_pop(encoder, 11U);
+    if (encoder->stack_depth != 0U) --encoder->stack_depth;
+    if (width == 4U) {
+        emit8(encoder, 0xf3U); emit_rex(encoder, false, 0U, 11U);
+        emit8(encoder, 0x0fU); emit8(encoder, 0x11U);
+        emit_mem_reg(encoder, 11U, 0U, 0);
+    } else {
+        emit8(encoder, 0xf2U); emit_rex(encoder, false, 0U, 11U);
+        emit8(encoder, 0x0fU); emit8(encoder, 0x11U);
+        emit_mem_reg(encoder, 11U, 0U, 0);
+    }
+}
+
 static void encode_compound(IrEncoder *encoder, IrInst *inst)
 {
     if (inst->a == NULL || inst->b == NULL) return;
+    if (is_float_type(inst->type)) {
+        encode_compound_float(encoder, inst);
+        return;
+    }
     encode_expr(encoder, inst->a);
     emit_push(encoder, 0U);
     ++encoder->stack_depth;
@@ -1103,6 +1400,7 @@ static void encode_expr(IrEncoder *encoder, IrInst *inst)
     case IR_LOAD: encode_load(encoder, inst); break;
     case IR_STORE: encode_store(encoder, inst); break;
     case IR_ADDR: encode_addr(encoder, inst); break;
+    case IR_AGGREGATE: encode_expr(encoder, inst->a); break;
     case IR_MEMBER: encode_member(encoder, inst); break;
     case IR_CALL: encode_call(encoder, inst); break;
     case IR_CAST: encode_cast(encoder, inst); break;
@@ -1147,7 +1445,32 @@ static void encode_return(IrEncoder *encoder, IrInst *inst)
 {
     if (inst->a != NULL) {
         encode_expr(encoder, inst->a);
-        if (inst->type != NULL && !type_is_void(inst->type)) {
+        if (inst->type != NULL && argument_is_aggregate(inst->type)) {
+            /* The result is an address; the eightbytes it covers go into the
+               return registers, in piece order. The address is copied first so
+               that loading the first piece does not lose the rest. */
+            AggClass pieces[2];
+            size_t count = abi_aggregate_pieces(inst->type, pieces);
+            if (count == 0U) {
+                encoder_error(encoder, 4023U, &inst->location,
+                              "return value cannot be passed under this ABI");
+                return;
+            }
+            emit_mov_reg_reg(encoder, 11U, 0U);
+            static const unsigned char return_general[2] = {0U, 2U};
+            size_t remaining = type_size(inst->type);
+            for (size_t piece = 0U; piece < count; ++piece) {
+                size_t width = remaining >= 8U ? 8U : remaining;
+                if (pieces[piece] == AGG_SSE) {
+                    emit_load_piece_vector(encoder, (unsigned)piece, 11U,
+                                           (int64_t)piece * 8, width);
+                } else {
+                    emit_load_partial(encoder, return_general[piece], 11U,
+                                      (int64_t)piece * 8, width);
+                }
+                remaining -= width;
+            }
+        } else if (inst->type != NULL && !type_is_void(inst->type)) {
             emit_normalize(encoder, type_size(inst->type), type_is_signed(inst->type));
         }
     }
@@ -1172,6 +1495,26 @@ static void encode_statement(IrEncoder *encoder, IrInst *inst)
     }
 }
 
+/* Move the pieces of an aggregate parameter from the registers it arrived in
+   into the frame, and leave a parameter that arrived on the stack alone,
+   because a callee may read and write its own parameters in place. */
+static void emit_parameter_pieces(IrEncoder *encoder, const ArgSlot *slot,
+                                  const Type *type, int64_t offset)
+{
+    size_t remaining = type_size(type);
+    for (unsigned piece = 0U; piece < slot->pieces; ++piece) {
+        size_t width = remaining >= 8U ? 8U : remaining;
+        if (slot->classes[piece] == AGG_SSE) {
+            emit_store_piece_vector(encoder, slot->registers[piece], 5U,
+                                    offset + (int64_t)piece * 8, width);
+        } else {
+            emit_store_partial(encoder, argument_registers[slot->registers[piece]],
+                               5U, offset + (int64_t)piece * 8, width);
+        }
+        remaining -= width;
+    }
+}
+
 static void emit_prologue(IrEncoder *encoder, const IrFunction *function)
 {
     emit_push(encoder, 5U);
@@ -1180,27 +1523,53 @@ static void emit_prologue(IrEncoder *encoder, const IrFunction *function)
         emit8(encoder, 0x48U); emit8(encoder, 0x81U); emit8(encoder, 0xecU);
         emit32(encoder, (uint32_t)function->frame_size);
     }
-    unsigned floating_index = 0U;
-    unsigned integer_index = 0U;
+    size_t count = 0U;
     for (Symbol *parameter = function->symbol->type->parameters; parameter != NULL;
          parameter = parameter->next) {
-        if (is_float_type(parameter->type)) {
-            if (floating_index >= 8U) break;
-            if (parameter->type->kind == TYPE_FLOAT) {
-                emit8(encoder, 0xf3U);
-            } else {
-                emit8(encoder, 0xf2U);
-            }
-            emit8(encoder, 0x0fU); emit8(encoder, 0x11U);
-            emit_mem_reg(encoder, 5U, floating_index, (int64_t)parameter->offset);
-            ++floating_index;
+        ++count;
+    }
+    if (count == 0U) {
+        return;
+    }
+    Type **types = cc64_xcalloc(count, sizeof(*types));
+    ArgSlot *slots = cc64_xcalloc(count, sizeof(*slots));
+    if (types == NULL || slots == NULL) {
+        free(types);
+        free(slots);
+        encoder_error(encoder, 4020U, NULL, "cannot record parameter placement");
+        return;
+    }
+    size_t index = 0U;
+    for (Symbol *parameter = function->symbol->type->parameters; parameter != NULL;
+         parameter = parameter->next, ++index) {
+        types[index] = parameter->type;
+    }
+    (void)abi_assign_arguments(types, index, slots);
+    index = 0U;
+    for (Symbol *parameter = function->symbol->type->parameters; parameter != NULL;
+         parameter = parameter->next, ++index) {
+        const ArgSlot *slot = &slots[index];
+        if (!slot->ok || !slot->in_register) {
+            continue;
+        }
+        if (argument_is_aggregate(parameter->type)) {
+            emit_parameter_pieces(encoder, slot, parameter->type,
+                                  (int64_t)parameter->offset);
+        } else if (slot->classes[0] == AGG_SSE) {
+            emit_store_piece_vector(encoder, slot->registers[0], 5U,
+                                    (int64_t)parameter->offset,
+                                    type_size(parameter->type));
         } else {
-            if (integer_index >= 6U) break;
-            emit_store_mem(encoder, argument_registers[integer_index], 5U,
-                           (int64_t)parameter->offset, 8U);
-            ++integer_index;
+            /* The slot is as wide as the parameter and no wider, so the move
+               is too: a wider one would write past the slot and over the
+               saved frame pointer. */
+            emit_store_partial(encoder, argument_registers[slot->registers[0]],
+                               5U, (int64_t)parameter->offset,
+                               type_size(parameter->type));
         }
     }
+    free(types);
+    free(slots);
     /* A variadic function also spills the whole integer argument register set
        so that va_start can walk the unnamed arguments. Floating arguments are
        not part of the version 1 variadic contract. */

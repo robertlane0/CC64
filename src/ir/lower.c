@@ -1,5 +1,7 @@
 #include "ir/ir.h"
 
+#include "backend/abi.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -43,6 +45,8 @@ typedef struct LowerContext {
     CaseLabel *cases;
     StringLiteral *literals;
     size_t literal_count;
+    size_t temp_base;
+    size_t temp_used;
     bool failed;
 } LowerContext;
 
@@ -248,29 +252,63 @@ static void assign_frame_nodes(LowerContext *context, AstNode *node,
 static void assign_frame(LowerContext *context, Symbol *function, AstNode *body)
 {
     size_t frame = 0U;
-    size_t index = 0U;
+    size_t count = 0U;
     for (Symbol *parameter = function->type->parameters; parameter != NULL;
-         parameter = parameter->next, ++index) {
-        if (index < 6U) {
-            frame = align_up(frame, 8U);
-            if (frame > SIZE_MAX - 8U) {
+         parameter = parameter->next) {
+        ++count;
+    }
+    Type **types = count == 0U ? NULL
+                              : arena_alloc_array(context->arena, count, sizeof(*types));
+    ArgSlot *slots = count == 0U ? NULL
+                                : arena_alloc_array(context->arena, count, sizeof(*slots));
+    if (count != 0U && (types == NULL || slots == NULL)) {
+        lower_error(context, 3002U, NULL, "parameter frame overflow");
+        return;
+    }
+    count = 0U;
+    for (Symbol *parameter = function->type->parameters; parameter != NULL;
+         parameter = parameter->next) {
+        types[count++] = parameter->type;
+    }
+    (void)abi_assign_arguments(types, count, slots);
+    count = 0U;
+    for (Symbol *parameter = function->type->parameters; parameter != NULL;
+         parameter = parameter->next, ++count) {
+        const ArgSlot *slot = &slots[count];
+        if (!slot->ok) {
+            lower_error(context, 3007U, NULL,
+                        "parameter cannot be passed under this ABI");
+            break;
+        }
+        if (slot->in_register) {
+            /* The value arrives in registers and is copied into the frame, so
+               the rest of the body reads a parameter as any other local. */
+            size_t size = type_size(parameter->type);
+            size_t alignment = type_alignment(parameter->type);
+            if (size == 0U) size = 1U;
+            frame = align_up(frame, alignment < 8U ? 8U : alignment);
+            if (frame > SIZE_MAX - size) {
                 lower_error(context, 3002U, NULL, "parameter frame overflow");
                 break;
             }
-            frame += 8U;
+            frame += size;
             parameter->offset = frame;
             parameter->has_frame_offset = true;
         } else {
-            parameter->offset = 16U + (index - 6U) * 8U;
+            /* A stack argument is already where the caller put it, and C lets
+               a function modify its own parameter, so the parameter is read
+               from the incoming area directly. The offset is measured from the
+               frame pointer, which sits above the return address. */
+            parameter->offset = 16U + slot->stack_offset;
             parameter->has_frame_offset = true;
         }
     }
     /* Frame offsets are positive while collecting and become negative below. */
     assign_frame_nodes(context, body == NULL ? NULL : body->a, &frame, 0U);
-    size_t parameter_index = 0U;
+    count = 0U;
     for (Symbol *parameter = function->type->parameters; parameter != NULL;
-         parameter = parameter->next, ++parameter_index) {
-        if (parameter_index < 6U && parameter->offset > 0U) {
+         parameter = parameter->next, ++count) {
+        if (slots[count].in_register) {
             parameter->offset = -parameter->offset;
         }
     }
@@ -302,12 +340,41 @@ static void assign_frame(LowerContext *context, Symbol *function, AstNode *body)
     function_ir->frame_size = frame;
     function_ir->va_area_offset = va_area == 0U ? 0 : -(int64_t)va_area;
     function_ir->next = NULL;
+    /* Storage for the results of calls that return an aggregate is handed out
+       while the body is lowered, which happens after this pass, so the area
+       starts here and the frame grows once the body has said how much of it it
+       used. */
+    context->temp_base = frame;
     if (context->program->functions == NULL) {
         context->program->functions = function_ir;
     } else {
         context->program->function_tail->next = function_ir;
     }
     context->program->function_tail = function_ir;
+}
+
+/* Storage for one aggregate that a call returns. Two such results can be live
+   at once, as in a call with an aggregate-returning argument, so each use gets
+   its own space rather than sharing one. */
+static int64_t lower_temp(LowerContext *context, const Type *type)
+{
+    size_t size = type_size(type);
+    size_t alignment = type_alignment(type);
+    if (size == 0U) size = 1U;
+    if (alignment < 8U) alignment = 8U;
+    size_t base = context->temp_base + context->temp_used;
+    size_t mask = alignment - 1U;
+    if (base > SIZE_MAX - mask) {
+        context->failed = true;
+        return 0;
+    }
+    size_t start = (base + mask) & ~mask;
+    if (start > SIZE_MAX - size) {
+        context->failed = true;
+        return 0;
+    }
+    context->temp_used = start + size - context->temp_base;
+    return -(int64_t)start;
 }
 
 static void collect_static_symbols(LowerContext *context, AstNode *node)
@@ -379,12 +446,34 @@ static IrInst *lower_call(LowerContext *context, AstNode *node)
         else tail->next = value;
         tail = value;
     }
+    /* A call that returns an aggregate leaves the result in registers, so the
+       encoder needs somewhere in the frame to put it; the call's value is the
+       address of that space. */
+    if (node->type != NULL && (node->type->kind == TYPE_STRUCT ||
+                               node->type->kind == TYPE_UNION)) {
+        inst->offset = lower_temp(context, node->type);
+    }
     return inst;
 }
 
 static IrInst *lower_expr(LowerContext *context, AstNode *node)
 {
     if (node == NULL) return NULL;
+    /* An expression whose type is a struct or a union is represented by the
+       address of the object, because an object of that type has no single
+       machine register and every use of it is a memory use. The forms below
+       that build an object themselves are the exception and are handled where
+       they appear. */
+    if (node->type != NULL && (node->type->kind == TYPE_STRUCT ||
+                               node->type->kind == TYPE_UNION) &&
+        node->kind != NODE_ASSIGNMENT && node->kind != NODE_CALL &&
+        node->kind != NODE_CONDITIONAL && node->kind != NODE_COMMA &&
+        node->kind != NODE_INITIALIZER && node->kind != NODE_STRING) {
+        IrInst *address = lower_address(context, node);
+        IrInst *inst = ir_new(context, IR_AGGREGATE, node->type, node);
+        if (inst != NULL) inst->a = address;
+        return inst;
+    }
     switch (node->kind) {
     case NODE_INTEGER: {
         IrInst *inst = ir_new(context, IR_CONST, node->type, node);
@@ -851,8 +940,9 @@ static void lower_init_at(LowerContext *context, Symbol *symbol,
 {
     if (symbol == NULL || type == NULL || value == NULL) return;
     if (value->kind == NODE_INITIALIZER && value->a == NULL) return;
-    while (value != NULL && value->kind == NODE_INITIALIZER && value->a != NULL &&
-           type_is_scalar(type)) value = value->a;
+    /* An initializer that is one expression, rather than a braced list, is the
+       value itself. */
+    if (value->kind == NODE_INITIALIZER && !value->braced) value = value->a;
     if (value == NULL) return;
     if (type->kind == TYPE_ARRAY) {
         if (value->kind == NODE_STRING) {
@@ -871,7 +961,34 @@ static void lower_init_at(LowerContext *context, Symbol *symbol,
         return;
     }
     if (type->kind == TYPE_STRUCT || type->kind == TYPE_UNION) {
-        if (value->kind != NODE_INITIALIZER) return;
+        if (value->kind != NODE_INITIALIZER) {
+            /* An object of aggregate type initialised from one expression of
+               the same type is a copy of the whole object, not a member at a
+               time, and the space is already zeroed. */
+            if (value->type != NULL && type_compatible(type, value->type)) {
+                IrInst *address = ir_new(context, IR_ADDR,
+                                         type_pointer(context->arena, type, 0U), value);
+                IrInst *copy = ir_new(context, IR_COPY, type, value);
+                if (address != NULL) address->symbol = symbol;
+                if (copy != NULL) {
+                    if (offset != 0U) {
+                        IrInst *constant = ir_new(context, IR_CONST,
+                                                   type_basic(context->arena, TYPE_LONG), value);
+                        IrInst *add = ir_new(context, IR_ADD,
+                                             type_basic(context->arena, TYPE_LONG), value);
+                        if (constant != NULL) constant->value.immediate = offset;
+                        if (add != NULL) { add->a = address; add->b = constant; }
+                        copy->a = add;
+                    } else {
+                        copy->a = address;
+                    }
+                    copy->b = lower_expr(context, value);
+                    copy->value.immediate = type_size(type);
+                }
+                ir_append(head, tail, copy);
+            }
+            return;
+        }
         Member *member = type->members;
         for (AstNode *item = value->a; item != NULL && member != NULL;
              item = item->next, member = member->next) {
@@ -1081,7 +1198,28 @@ static void lower_one_statement(LowerContext *context, AstNode *node,
     }
     case NODE_BREAK: { IrInst *inst = ir_new(context, IR_JUMP, NULL, node); if (inst != NULL) inst->id = context->break_label; ir_append(head, tail, inst); break; }
     case NODE_CONTINUE: { IrInst *inst = ir_new(context, IR_JUMP, NULL, node); if (inst != NULL) inst->id = context->continue_label; ir_append(head, tail, inst); break; }
-    case NODE_RETURN: { IrInst *value = lower_expr(context, node->a); IrInst *inst = ir_new(context, IR_RETURN, context->function == NULL ? NULL : context->function->type->return_type, node); if (inst != NULL) inst->a = value; ir_append(head, tail, inst); break; }
+    case NODE_RETURN: {
+        /* A returned expression is converted to the type the function
+           promises, the same as any other assignment: without the conversion a
+           narrower value would reach a wider return register unchanged. */
+        IrInst *value = lower_expr(context, node->a);
+        Type *declared = context->function == NULL ? NULL
+                                                      : context->function->type->return_type;
+        if (value != NULL && node->a != NULL && declared != NULL &&
+            type_is_scalar(declared) && type_is_scalar(node->a->type) &&
+            type_size(declared) != type_size(node->a->type)) {
+            IrInst *cast = ir_new(context, IR_CAST, declared, node);
+            if (cast != NULL) {
+                cast->a = value;
+                cast->width = (uint32_t)type_size(declared);
+                value = cast;
+            }
+        }
+        IrInst *inst = ir_new(context, IR_RETURN, declared, node);
+        if (inst != NULL) inst->a = value;
+        ir_append(head, tail, inst);
+        break;
+    }
     case NODE_LABEL: { LabelEntry *entry = find_label(context, node->text, true); IrInst *inst = ir_new(context, IR_LABEL, NULL, node); if (inst != NULL) inst->id = entry->id; ir_append(head, tail, inst); break; }
     case NODE_GOTO: { LabelEntry *entry = find_label(context, node->text, true); IrInst *inst = ir_new(context, IR_JUMP, NULL, node); if (inst != NULL) inst->id = entry->id; ir_append(head, tail, inst); break; }
     default: {
@@ -1120,7 +1258,7 @@ bool lower_declaration(Arena *arena, Arena *ir, const TranslationUnit *unit,
     if (program->globals == NULL) program->globals = unit->globals;
     LowerContext context = {
         arena, ir, diagnostics, unit, program, NULL, 0U, 0U, 0U, 0U,
-        NULL, NULL, NULL, 0U, false
+        NULL, NULL, NULL, 0U, 0U, 0U, false
     };
     if (declaration->kind == NODE_FUNCTION_DEFINITION) {
         context.function = declaration->symbol;
@@ -1134,7 +1272,16 @@ bool lower_declaration(Arena *arena, Arena *ir, const TranslationUnit *unit,
         IrInst *head = NULL;
         IrInst *tail = NULL;
         lower_statement_list(&context, declaration->a->a, &head, &tail);
-        if (function != NULL) function->body = head;
+        if (function != NULL) {
+            function->body = head;
+            /* The results of aggregate-returning calls took space past the
+               frame the layout pass measured, so the frame is as large as the
+               body actually needed. */
+            if (context.temp_base + context.temp_used > function->frame_size) {
+                function->frame_size = align_up(context.temp_base +
+                                                context.temp_used, 16U);
+            }
+        }
         return !context.failed;
     }
     if (declaration->kind == NODE_DECLARATION && declaration->symbol != NULL &&

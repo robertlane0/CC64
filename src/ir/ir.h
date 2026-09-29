@@ -26,6 +26,11 @@ typedef enum IrOp {
     IR_BIT_XOR,
     IR_CAST,
     IR_MEMBER,
+    /* An expression of struct or union type. The machine has no register wide
+       enough to hold one, so the value of such an expression is the address of
+       the object, and this instruction carries the object type so that a
+       caller can pass it under the ABI without consulting the syntax tree. */
+    IR_AGGREGATE,
     IR_NEG,
     IR_BIT_NOT,
     IR_LOGICAL_NOT,

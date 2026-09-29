@@ -58,12 +58,11 @@ The following produce stable semantic diagnostics in version 1: variable
 length arrays, bit-fields, `_Atomic`, `_Alignas`, generic selection, complex
 and imaginary types, `long double`, thread-local storage, compound literals,
 anonymous aggregates, flexible aggregate members, and dynamic libraries.
-Aggregate assignment and basic binary32/binary64 arithmetic are implemented
-for the version 1 integer ABI. Variadic calls are implemented for integer and
-pointer arguments, as recorded in the ABI document. Full floating-point
-conversions, floating variadic arguments, and aggregate-by-value parameter
-passing remain deferred and are diagnosed or kept outside the first target
-gate.
+Aggregate assignment, aggregate passing and return by value, and basic
+binary32/binary64 arithmetic are implemented for the version 1 ABI. Variadic
+calls are implemented for integer and pointer arguments, as recorded in the ABI
+document. Full floating-point conversions and floating variadic arguments
+remain deferred and are diagnosed or kept outside the first target gate.
 
 Each deferred construct has its own diagnostic identifier, so a program that
 uses one is told which construct is out of contract instead of receiving a

@@ -643,8 +643,10 @@ static bool parse_parameter_list(Parser *parser, Symbol **parameters,
                 type = type_pointer(parser->arena, type->base, type->qualifiers);
             }
         }
-        if (type == NULL || type->kind == TYPE_VOID ||
-            type->kind == TYPE_STRUCT || type->kind == TYPE_UNION) {
+        /* A struct or union is a valid parameter: it arrives in registers, and
+           the ABI revision documents how its eightbytes are classified. Only
+           `void` and a type that is not yet known are rejected here. */
+        if (type == NULL || type->kind == TYPE_VOID || type->incomplete) {
             semantic_error(parser, 2027U, peek(parser), "invalid parameter type");
             return false;
         }
@@ -1784,6 +1786,7 @@ static AstNode *parse_initializer(Parser *parser, Type *type)
     const Token *token = peek(parser);
     if (accept(parser, "{")) {
         AstNode *initializer = node_new(parser, NODE_INITIALIZER, type, token);
+        if (initializer != NULL) initializer->braced = true;
         AstNode *tail = NULL;
         if (!token_text(peek(parser), "}")) {
             for (;;) {

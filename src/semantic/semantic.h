@@ -222,6 +222,11 @@ struct AstNode {
     Type *type_operand;
     Symbol *literal_symbol;
     unsigned label_id;
+    /* An initializer written with braces is a list, and an initializer written
+       as one expression is a single value. The two take different paths, so the
+       node records which it is rather than leaving a later phase to guess from
+       the shape. */
+    bool braced;
 };
 
 typedef struct TranslationUnit {
