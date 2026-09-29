@@ -270,7 +270,19 @@ static void assign_frame(LowerContext *context, Symbol *function, AstNode *body)
          parameter = parameter->next) {
         types[count++] = parameter->type;
     }
-    (void)abi_assign_arguments(types, count, slots);
+    /* A result that does not fit in registers is written through a pointer the
+       caller passes in the first general register, so the frame keeps that
+       pointer for the return to use. */
+    AggClass return_pieces[2];
+    bool returns_memory = false;
+    if (function->type->return_type != NULL &&
+        (function->type->return_type->kind == TYPE_STRUCT ||
+         function->type->return_type->kind == TYPE_UNION) &&
+        abi_aggregate_pieces(function->type->return_type, return_pieces,
+                             &returns_memory) == 0U && returns_memory) {
+        frame += 8U;
+    }
+    (void)abi_assign_arguments(types, count, returns_memory, slots);
     count = 0U;
     for (Symbol *parameter = function->type->parameters; parameter != NULL;
          parameter = parameter->next, ++count) {
@@ -295,10 +307,10 @@ static void assign_frame(LowerContext *context, Symbol *function, AstNode *body)
             parameter->offset = frame;
             parameter->has_frame_offset = true;
         } else {
-            /* A stack argument is already where the caller put it, and C lets
-               a function modify its own parameter, so the parameter is read
-               from the incoming area directly. The offset is measured from the
-               frame pointer, which sits above the return address. */
+            /* An argument in the incoming area is already where the caller put
+               it, and C lets a function modify its own parameter, so the
+               parameter is read from there directly. The offset is measured
+               from the frame pointer, which sits above the return address. */
             parameter->offset = 16U + slot->stack_offset;
             parameter->has_frame_offset = true;
         }
@@ -339,6 +351,7 @@ static void assign_frame(LowerContext *context, Symbol *function, AstNode *body)
     function_ir->symbol = function;
     function_ir->frame_size = frame;
     function_ir->va_area_offset = va_area == 0U ? 0 : -(int64_t)va_area;
+    function_ir->return_pointer_offset = returns_memory ? -8 : 0;
     function_ir->next = NULL;
     /* Storage for the results of calls that return an aggregate is handed out
        while the body is lowered, which happens after this pass, so the area
@@ -355,7 +368,8 @@ static void assign_frame(LowerContext *context, Symbol *function, AstNode *body)
 
 /* Storage for one aggregate that a call returns. Two such results can be live
    at once, as in a call with an aggregate-returning argument, so each use gets
-   its own space rather than sharing one. */
+   its own space rather than sharing one. The frame grows downwards, so a slot
+   is named by its far edge from the frame pointer, the same way a local is. */
 static int64_t lower_temp(LowerContext *context, const Type *type)
 {
     size_t size = type_size(type);
@@ -374,7 +388,7 @@ static int64_t lower_temp(LowerContext *context, const Type *type)
         return 0;
     }
     context->temp_used = start + size - context->temp_base;
-    return -(int64_t)start;
+    return -(int64_t)(start + size);
 }
 
 static void collect_static_symbols(LowerContext *context, AstNode *node)
@@ -429,6 +443,12 @@ static IrInst *lower_address(LowerContext *context, AstNode *node)
         IrInst *member = ir_new(context, IR_MEMBER, node->type, node);
         if (member != NULL) { member->a = base; member->offset = node->field == NULL ? 0 : (int64_t)node->field->offset; }
         return member;
+    }
+    /* The result of a call is not a name and not reached through one, so it has
+       no address of its own; the lowering gives it storage and its value is
+       that storage, which is what a member of it is read from. */
+    if (node->kind == NODE_CALL) {
+        return lower_expr(context, node);
     }
     lower_error(context, 3004U, node, "address expression is unsupported");
     return NULL;
@@ -580,7 +600,10 @@ static IrInst *lower_expr(LowerContext *context, AstNode *node)
                                    node->type->kind == TYPE_UNION) &&
             node->b != NULL) {
             IrInst *address = lower_address(context, node->a);
-            IrInst *source = lower_address(context, node->b);
+            /* The right-hand side is a value, not a name, so it is lowered as
+               an expression; for an aggregate of that type the value is the
+               address of the object, which is what the copy reads. */
+            IrInst *source = lower_expr(context, node->b);
             IrInst *inst = ir_new(context, IR_COPY, node->type, node);
             if (inst != NULL) {
                 inst->a = address;

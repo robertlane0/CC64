@@ -1708,7 +1708,12 @@ static AstNode *parse_conditional(Parser *parser)
     no = decay_value(parser, no, token);
     Type *type = NULL;
     if (yes != NULL && no != NULL) {
-        if (type_is_arithmetic(yes->type) && type_is_arithmetic(no->type)) type = type_usual_arithmetic(parser->arena, type_unqualified(yes->type), type_unqualified(no->type));
+        if (type_is_void(yes->type) && type_is_void(no->type)) {
+            /* Both branches do nothing. The form is how a statement macro that
+               has to work without a statement of its own is written, so the
+               conditional is void rather than an error. */
+            type = type_basic(parser->arena, TYPE_VOID);
+        } else if (type_is_arithmetic(yes->type) && type_is_arithmetic(no->type)) type = type_usual_arithmetic(parser->arena, type_unqualified(yes->type), type_unqualified(no->type));
         else if (type_is_pointer(yes->type) && type_is_pointer(no->type)) type = yes->type;
         else if (type_is_pointer(yes->type)) type = yes->type;
         else if (type_is_pointer(no->type)) type = no->type;

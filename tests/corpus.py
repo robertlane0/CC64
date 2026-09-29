@@ -672,6 +672,45 @@ NARROW_REGISTER_PROGRAM = (
     "}\n"
 )
 
+# An aggregate too large for the return registers is written through a pointer
+# the caller supplies in the first general register, so the named arguments
+# start at the second. The same rule carries a parameter of that size in the
+# outgoing argument area rather than in a register.
+MEMORY_AGGREGATE_PROGRAM = (
+    "int cc64_write(int, const void *, unsigned long);\n"
+    "typedef struct { long a; long b; long c; long d; long e; } Big;\n"
+    "typedef struct { long x; long y; } Pair;\n"
+    "static Big make(long v) {\n"
+    "    Big r;\n"
+    "    r.a = v; r.b = v + 1; r.c = v + 2; r.d = v + 3; r.e = v + 4;\n"
+    "    return r;\n"
+    "}\n"
+    "static long total(Big b) { return b.a + b.b + b.c + b.d + b.e; }\n"
+    "static long mix(int first, Big b, long last) {\n"
+    "    return (long)first + total(b) + last;\n"
+    "}\n"
+    "static Pair pair(long v) { Pair p; p.x = v; p.y = v * 2; return p; }\n"
+    "static long mixed(long v, Pair p, long w) {\n"
+    "    return v + p.x + p.y + w;\n"
+    "}\n"
+    "int main(void) {\n"
+    "    Big v = make(10);\n"
+    "    if (total(v) != 60) return 1;\n"
+    "    if (total(make(0)) != 10) return 2;\n"
+    "    if (mix(1, make(10), 2) != 63) return 3;\n"
+    "    Big w = make(100);\n"
+    "    if (w.e != 104) return 4;\n"
+    "    Big both[2];\n"
+    "    both[0] = make(1);\n"
+    "    both[1] = make(2);\n"
+    "    if (total(both[0]) + total(both[1]) != 35) return 5;\n"
+    "    if (make(7).c != 9) return 6;\n"
+    "    if (mixed(1, pair(3), 2) != 12) return 7;\n"
+    "    cc64_write(1, \"M\", 1);\n"
+    "    return 0;\n"
+    "}\n"
+)
+
 CASES = [
 ("C64R", "int main(void) { return 7; }", "raw", 7, None),
 ("C64S", "int f(int x){int y=0; switch(x){case 7: y=9; break; default: y=3;} return y;} int main(void){return f(7);}", "raw", 9, None),
@@ -710,6 +749,7 @@ CASES = [
 ("C64Z2", AGGREGATE_PROGRAM, "raw", 0, "G"),
 ("C64R2", RETURN_CONVERSION_PROGRAM, "raw", 0, "R"),
 ("C64N2", NARROW_REGISTER_PROGRAM, "raw", 0, "N"),
+("C64M2", MEMORY_AGGREGATE_PROGRAM, "raw", 0, "M"),
 ]
 
 LIBRARY_CASE = "C64L"

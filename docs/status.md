@@ -69,9 +69,10 @@ needs a construct no case uses is not excluded by that gate.
 These are contract limits rather than open work, and each is diagnosed or
 refused rather than approximated:
 
-- An aggregate by value is carried in at most two eightbytes, as the ABI
-  document sets out. A larger one, or one whose fields cross an eightbyte
-  boundary, is diagnosed rather than passed in part.
+- An aggregate by value is carried in registers when it fits two eightbytes and
+  in memory otherwise, as the ABI document sets out. A field that crosses an
+  eightbyte boundary makes the whole object memory-class, because no register
+  can deliver such a field.
 - Floating variadic arguments are not part of the version 1 variadic contract,
   and a floating conversion is not part of the target formatter's subset.
 - The version 1 startup builds `argv` from the process control block and the

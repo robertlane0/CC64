@@ -112,6 +112,9 @@ typedef struct IrFunction {
     /* Frame offset of the variadic integer register save area. Zero when the
        function is not variadic; negative once offsets are converted. */
     int64_t va_area_offset;
+    /* Frame offset of the pointer a memory-class result is written through, or
+       zero when the result comes back in registers. */
+    int64_t return_pointer_offset;
     struct IrFunction *next;
 } IrFunction;
 

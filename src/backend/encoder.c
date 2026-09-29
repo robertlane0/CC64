@@ -482,20 +482,9 @@ static void emit_restore_xmm(IrEncoder *encoder, unsigned index, size_t width)
     if (encoder->stack_depth != 0U) --encoder->stack_depth;
 }
 
-/* The number of eight-byte slots one argument occupies in the outgoing area: a
-   scalar is one slot, and an aggregate is rounded up to whole slots. */
 static bool argument_is_aggregate(const Type *type)
 {
     return type != NULL && (type->kind == TYPE_STRUCT || type->kind == TYPE_UNION);
-}
-
-static size_t argument_area_size(const Type *type)
-{
-    if (argument_is_aggregate(type)) {
-        size_t size = type_size(type);
-        return (size + 7U) & ~(size_t)7U;
-    }
-    return 8U;
 }
 
 /* The `index`th argument of a call, counting from zero. The list is walked
@@ -532,7 +521,12 @@ static size_t call_slots(IrEncoder *encoder, const IrInst *inst, ArgSlot **resul
     for (IrInst *arg = inst->args; arg != NULL; arg = arg->next, ++index) {
         types[index] = arg->type;
     }
-    size_t area = abi_assign_arguments(types, index, slots);
+    AggClass return_pieces[2];
+    bool returns_memory = false;
+    if (inst->type != NULL && argument_is_aggregate(inst->type)) {
+        (void)abi_aggregate_pieces(inst->type, return_pieces, &returns_memory);
+    }
+    size_t area = abi_assign_arguments(types, index, returns_memory, slots);
     *result = slots;
     *types_result = types;
     return area;
@@ -547,7 +541,8 @@ static size_t call_slots(IrEncoder *encoder, const IrInst *inst, ArgSlot **resul
 static void emit_push_aggregate(IrEncoder *encoder, IrInst *arg, size_t *depth)
 {
     encode_expr(encoder, arg);
-    size_t total = argument_area_size(arg->type);
+    size_t total = type_size(arg->type);
+    total = (total + 7U) & ~(size_t)7U;
     if (total <= 8U) {
         emit_push(encoder, 0U);
         ++*depth;
@@ -611,7 +606,7 @@ static void encode_call(IrEncoder *encoder, IrInst *inst)
             free(types);
             return;
         }
-        if (!slots[i].in_register) stack_units += argument_area_size(types[i]) / 8U;
+        if (!slots[i].in_register) stack_units += slots[i].size / 8U;
     }
     bool direct = inst->a != NULL && inst->a->op == IR_ADDR && inst->a->symbol != NULL;
     /* __cc64_va_start is a compiler builtin: it yields the first unnamed
@@ -707,6 +702,17 @@ static void encode_call(IrEncoder *encoder, IrInst *inst)
             if (encoder->stack_depth != 0U) --encoder->stack_depth;
         }
     }
+    /* A result too large for the return registers is written through a
+       pointer the caller supplies, in the first general register. No named
+       argument was given that register, so naming it here cannot displace one.
+       It is named after the load-back, which is what fills the rest. */
+    if (inst->type != NULL && argument_is_aggregate(inst->type)) {
+        AggClass probe[2];
+        bool memory = false;
+        if (abi_aggregate_pieces(inst->type, probe, &memory) == 0U && memory) {
+            emit_lea_mem(encoder, 5U, argument_registers[0], inst->offset);
+        }
+    }
     /* The calling convention requires AL to report how many vector registers
        carry arguments. It is set after the argument registers are loaded and
        before the call, because AL shares RAX with the result. Version 1
@@ -748,10 +754,19 @@ static void encode_call(IrEncoder *encoder, IrInst *inst)
         /* A result that came back in registers is written to the space the
            lowering reserved, and the value of the call is that address. */
         AggClass pieces[2];
-        size_t count = abi_aggregate_pieces(inst->type, pieces);
-        if (count == 0U) {
+        bool memory = false;
+        size_t count = abi_aggregate_pieces(inst->type, pieces, &memory);
+        if (count == 0U && !memory) {
             encoder_error(encoder, 4023U, &inst->location,
                           "return value cannot be passed under this ABI");
+            free(slots);
+            free(types);
+            return;
+        }
+        if (memory) {
+            /* The result was written through the pointer the call was given,
+               and that pointer came back, so the value of the call is the
+               address of the space the lowering reserved. */
             free(slots);
             free(types);
             return;
@@ -1254,6 +1269,16 @@ static void encode_logical(IrEncoder *encoder, IrInst *inst)
     }
 }
 
+/* `rep movsb` leaves the destination register one object past the last byte it
+   wrote, so the address of the object has to be kept elsewhere. R11 is chosen
+   because the copy uses the three registers the instruction itself names and
+   because no caller of a copy has anything live in it. */
+static void emit_object_copy(IrEncoder *encoder, size_t size)
+{
+    emit_mov_reg_imm(encoder, 1U, size, 8U);
+    emit8(encoder, 0xf3U); emit8(encoder, 0xa4U);
+}
+
 static void encode_copy(IrEncoder *encoder, IrInst *inst)
 {
     if (inst->a == NULL || inst->b == NULL) return;
@@ -1264,9 +1289,9 @@ static void encode_copy(IrEncoder *encoder, IrInst *inst)
     emit_mov_reg_reg(encoder, 6U, 0U);
     emit_pop(encoder, 7U);
     if (encoder->stack_depth != 0U) --encoder->stack_depth;
-    emit_mov_reg_imm(encoder, 1U, inst->value.immediate, 8U);
-    emit8(encoder, 0xf3U); emit8(encoder, 0xa4U);
-    emit_mov_reg_reg(encoder, 0U, 7U);
+    emit_mov_reg_reg(encoder, 11U, 7U);
+    emit_object_copy(encoder, inst->value.immediate);
+    emit_mov_reg_reg(encoder, 0U, 11U);
 }
 
 static void encode_zero(IrEncoder *encoder, IrInst *inst)
@@ -1446,29 +1471,48 @@ static void encode_return(IrEncoder *encoder, IrInst *inst)
     if (inst->a != NULL) {
         encode_expr(encoder, inst->a);
         if (inst->type != NULL && argument_is_aggregate(inst->type)) {
-            /* The result is an address; the eightbytes it covers go into the
-               return registers, in piece order. The address is copied first so
-               that loading the first piece does not lose the rest. */
             AggClass pieces[2];
-            size_t count = abi_aggregate_pieces(inst->type, pieces);
-            if (count == 0U) {
+            bool memory = false;
+            size_t count = abi_aggregate_pieces(inst->type, pieces, &memory);
+            if (count == 0U && !memory) {
                 encoder_error(encoder, 4023U, &inst->location,
                               "return value cannot be passed under this ABI");
                 return;
             }
-            emit_mov_reg_reg(encoder, 11U, 0U);
-            static const unsigned char return_general[2] = {0U, 2U};
-            size_t remaining = type_size(inst->type);
-            for (size_t piece = 0U; piece < count; ++piece) {
-                size_t width = remaining >= 8U ? 8U : remaining;
-                if (pieces[piece] == AGG_SSE) {
-                    emit_load_piece_vector(encoder, (unsigned)piece, 11U,
-                                           (int64_t)piece * 8, width);
-                } else {
-                    emit_load_partial(encoder, return_general[piece], 11U,
-                                      (int64_t)piece * 8, width);
+            if (memory) {
+                /* A result too large for the return registers is copied to the
+                   space the caller named, and that address is the result. */
+                const IrFunction *function = encoder->function;
+                if (function == NULL || function->return_pointer_offset == 0) {
+                    encoder_error(encoder, 4023U, &inst->location,
+                                  "no return pointer for a memory result");
+                    return;
                 }
-                remaining -= width;
+                emit_mov_reg_reg(encoder, 6U, 0U);
+                emit_load_mem(encoder, 7U, 5U, function->return_pointer_offset,
+                              8U, false);
+                emit_mov_reg_reg(encoder, 11U, 7U);
+                emit_object_copy(encoder, type_size(inst->type));
+                emit_mov_reg_reg(encoder, 0U, 11U);
+            } else {
+                /* The result is an address; the eightbytes it covers go into
+                   the return registers, in piece order. The address is copied
+                   first so that loading the first piece does not lose the
+                   rest. */
+                emit_mov_reg_reg(encoder, 11U, 0U);
+                static const unsigned char return_general[2] = {0U, 2U};
+                size_t remaining = type_size(inst->type);
+                for (size_t piece = 0U; piece < count; ++piece) {
+                    size_t width = remaining >= 8U ? 8U : remaining;
+                    if (pieces[piece] == AGG_SSE) {
+                        emit_load_piece_vector(encoder, (unsigned)piece, 11U,
+                                               (int64_t)piece * 8, width);
+                    } else {
+                        emit_load_partial(encoder, return_general[piece], 11U,
+                                          (int64_t)piece * 8, width);
+                    }
+                    remaining -= width;
+                }
             }
         } else if (inst->type != NULL && !type_is_void(inst->type)) {
             emit_normalize(encoder, type_size(inst->type), type_is_signed(inst->type));
@@ -1523,6 +1567,13 @@ static void emit_prologue(IrEncoder *encoder, const IrFunction *function)
         emit8(encoder, 0x48U); emit8(encoder, 0x81U); emit8(encoder, 0xecU);
         emit32(encoder, (uint32_t)function->frame_size);
     }
+    /* A result too large for the return registers is written through a pointer
+       the caller passes in the first general register, which the frame keeps
+       for the return to use. */
+    if (function->return_pointer_offset != 0) {
+        emit_store_mem(encoder, argument_registers[0], 5U,
+                       function->return_pointer_offset, 8U);
+    }
     size_t count = 0U;
     for (Symbol *parameter = function->symbol->type->parameters; parameter != NULL;
          parameter = parameter->next) {
@@ -1544,7 +1595,14 @@ static void emit_prologue(IrEncoder *encoder, const IrFunction *function)
          parameter = parameter->next, ++index) {
         types[index] = parameter->type;
     }
-    (void)abi_assign_arguments(types, index, slots);
+    AggClass return_pieces[2];
+    bool returns_memory = false;
+    if (function->symbol->type->return_type != NULL &&
+        argument_is_aggregate(function->symbol->type->return_type)) {
+        (void)abi_aggregate_pieces(function->symbol->type->return_type,
+                                   return_pieces, &returns_memory);
+    }
+    (void)abi_assign_arguments(types, index, returns_memory, slots);
     index = 0U;
     for (Symbol *parameter = function->symbol->type->parameters; parameter != NULL;
          parameter = parameter->next, ++index) {

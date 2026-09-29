@@ -12,7 +12,7 @@
    rather than from a description of any other convention: a field of eight
    bytes or less that starts on an eightbyte boundary occupies exactly that
    eightbyte, and a field that would cross a boundary, or an object too large
-   for two eightbytes, is left for a case this revision does not define. */
+   for two eightbytes, is carried in memory instead. */
 
 static bool is_vector_type(const Type *type)
 {
@@ -73,10 +73,9 @@ static bool walk_members(const Type *type, size_t base, AggClass *pieces,
         if (size == 0U) {
             continue;
         }
-        /* A field that is not eightbyte-aligned within the object would have
-           to be read from two registers at once, which this revision does not
-           define. */
-        if ((offset % 8U) + size > 8U || offset + size > 16U) {
+        /* A field that does not lie inside one eightbyte cannot be read from
+           a register, so the object is carried in memory instead. */
+        if ((offset % 8U) + size > 8U) {
             return false;
         }
         mark_piece(field, offset, pieces, seen);
@@ -84,11 +83,12 @@ static bool walk_members(const Type *type, size_t base, AggClass *pieces,
     return true;
 }
 
-size_t abi_aggregate_pieces(const Type *type, AggClass *pieces)
+size_t abi_aggregate_pieces(const Type *type, AggClass *pieces, bool *memory)
 {
-    if (type == NULL || pieces == NULL) {
+    if (type == NULL || pieces == NULL || memory == NULL) {
         return 0U;
     }
+    *memory = false;
     if (type->kind != TYPE_STRUCT && type->kind != TYPE_UNION) {
         return 0U;
     }
@@ -96,11 +96,16 @@ size_t abi_aggregate_pieces(const Type *type, AggClass *pieces)
         return 0U;
     }
     size_t size = type_size(type);
-    if (size == 0U || size > 16U) {
+    if (size == 0U) {
+        return 0U;
+    }
+    if (size > 16U) {
+        *memory = true;
         return 0U;
     }
     bool seen[2] = {false, false};
     if (!walk_members(type, 0U, pieces, seen)) {
+        *memory = true;
         return 0U;
     }
     /* Bytes the members do not describe are padding. They travel in a general
@@ -146,9 +151,12 @@ static bool take_registers(const AggClass *classes, unsigned pieces,
     return true;
 }
 
-size_t abi_assign_arguments(Type *const *types, size_t count, ArgSlot *slots)
+size_t abi_assign_arguments(Type *const *types, size_t count, bool returns_memory,
+                            ArgSlot *slots)
 {
-    unsigned general = 0U;
+    /* A memory-class result takes the first general register for the pointer
+       the caller supplies, so the named arguments start after it. */
+    unsigned general = returns_memory ? 1U : 0U;
     unsigned vector = 0U;
     size_t stack = 0U;
     for (size_t i = 0U; i < count; ++i) {
@@ -161,27 +169,31 @@ size_t abi_assign_arguments(Type *const *types, size_t count, ArgSlot *slots)
             continue;
         }
         if (type->kind == TYPE_STRUCT || type->kind == TYPE_UNION) {
-            unsigned pieces = (unsigned)abi_aggregate_pieces(type, slot->classes);
-            if (pieces == 0U) {
+            unsigned pieces = (unsigned)abi_aggregate_pieces(type, slot->classes,
+                                                            &slot->memory);
+            if (pieces == 0U && !slot->memory) {
                 slot->ok = false;
                 continue;
             }
-            slot->pieces = pieces;
-            if (take_registers(slot->classes, pieces, &general, &vector,
-                               slot->registers)) {
-                slot->in_register = true;
-                continue;
-            }
-            stack = round_up(stack, 8U);
-            slot->stack_offset = stack;
-            size_t size = round_up(type_size(type), 8U);
-            if (size == SIZE_MAX) {
+            slot->size = round_up(type_size(type), 8U);
+            if (slot->size == SIZE_MAX) {
                 slot->ok = false;
                 return 0U;
             }
-            stack += size;
+            if (pieces != 0U) {
+                slot->pieces = pieces;
+                if (take_registers(slot->classes, pieces, &general, &vector,
+                                   slot->registers)) {
+                    slot->in_register = true;
+                    continue;
+                }
+            }
+            stack = round_up(stack, 8U);
+            slot->stack_offset = stack;
+            stack += slot->size;
             continue;
         }
+        slot->size = 8U;
         if (type->kind == TYPE_FLOAT || type->kind == TYPE_DOUBLE) {
             if (vector < 8U) {
                 slot->in_register = true;

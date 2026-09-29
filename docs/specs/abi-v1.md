@@ -66,9 +66,20 @@ returns an aggregate is written by the caller into its own frame, and the value
 of the call expression is the address of that space, so two such results can be
 live at once.
 
-An aggregate larger than two eightbytes, and one whose fields do not fall
-inside its eightbytes, is outside this revision. The compiler reports it with a
-backend diagnostic rather than passing a partial value.
+## Aggregates carried in memory
+
+An aggregate that does not fit the register path is carried in memory. Two
+shapes do not: an object of more than two eightbytes, and a field that does not
+both start and end inside one eightbyte, which no single register can deliver.
+
+A memory-class argument is laid out in the outgoing argument area like any
+other argument that did not find a register, and a callee reads it from the
+incoming area directly. A memory-class result is written through a pointer: the
+caller passes the address in the first general register, which the callee keeps
+in its frame for the return to use, so the named arguments begin at the second
+general register. The callee copies the object to that address and returns the
+address itself in `RAX`. Because no named argument was given the first general
+register, naming it there cannot displace one.
 
 ## Variadic calls
 
