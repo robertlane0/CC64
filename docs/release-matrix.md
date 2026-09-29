@@ -10,7 +10,7 @@ the target checkout's own checker.
 |---|---|
 | `make check` | unit, frontend, semantic, and numeric groups, the host integration group, and the repository audit |
 | `make test-target` | twenty-three compiler-produced QEMU images in both executable forms, plus two linked target-library images that exercise the freestanding library, the `v` form of the printf family, and the extension the string header declares |
-| `make test-bochs` | one raw and one `MZ64` compiler-produced image under the second emulator, through the target's own `bochsrc` template and its real serial input path |
+| `make test-bochs` | a named subset of the conformance corpus under the second emulator, in both image forms, through the target's own `bochsrc` template and its real serial input path; a named case the corpus no longer has is a failure |
 | `make self-host` | the bootstrap stage built and run twice under QEMU, with the two images compared |
 | `make selfhost-probe` | every production translation unit compiled individually with the target header profile, so the first construct the compiler cannot lower is named |
 | `make self-host-stage` | every production translation unit compiled on the target by a target-built compiler, every object compared with the bootstrap compiler's, and the relinked compiler image compared with the bootstrap image |

@@ -360,6 +360,51 @@ LIBRARY_VFORM_PROGRAM = (
     "}\n"
 )
 
+# Floating arithmetic and comparison. The `f` suffix rounds to binary32 and
+# the plain spelling is binary64, so a constant's rounding is checked by
+# comparing against a value of the other width: a binary32 constant widened
+# into a binary64 constant is the same number, and a binary32 constant that
+# lost its high half is not. Every relation is checked in both directions,
+# because a comparison that inverts still agrees with itself on equality.
+FLOAT_PROGRAM = (
+    "int cc64_write(int, const void *, unsigned long);\n"
+    # A binary32 constant narrowed and widened has to be the same number as
+    # the binary64 spelling of it, so a constant that lost its high half
+    # fails here rather than comparing equal to everything else.
+    "static int near(float a, float b)\n"
+    "{\n"
+    "    float difference = a - b;\n"
+    "    if (difference < 0.0f) difference = -difference;\n"
+    "    return difference < 0.0001f;\n"
+    "}\n"
+    "int main(void)\n"
+    "{\n"
+    "    float one = 1.0f;\n"
+    "    float two = 2.0f;\n"
+    "    double wide = 2.5;\n"
+    "    if (!(one < two)) return 1;\n"
+    "    if (!(two > one)) return 2;\n"
+    "    if (!(one <= one)) return 3;\n"
+    "    if (!(one >= one)) return 4;\n"
+    "    if (one == two) return 5;\n"
+    "    if (!(one != two)) return 6;\n"
+    "    if (two > wide) return 7;\n"
+    "    if (wide < two) return 8;\n"
+    "    if (one + two != 3.0f) return 9;\n"
+    "    if (two * one != 2.0f) return 10;\n"
+    "    if (two / one != 2.0f) return 11;\n"
+    "    if (wide / 2.0 != 1.25) return 12;\n"
+    "    if (!near(one, 1.0f)) return 13;\n"
+    "    if (!near(2.5f, 2.5f)) return 14;\n"
+    "    if (one == 0.0f) return 15;\n"
+    "    if (sizeof(float) != 4) return 16;\n"
+    "    if (sizeof(double) != 8) return 17;\n"
+    "    if (_Alignof(float) != 4) return 18;\n"
+    "    cc64_write(1, \"F\", 1);\n"
+    "    return 9;\n"
+    "}\n"
+)
+
 # A static assertion produces no code, so a case that only compiled would not
 # notice a wrong evaluation. This one checks at run time that the assertion's
 # own arithmetic, `__func__`, and `_Alignof` all agree with the ABI the
@@ -484,6 +529,7 @@ CASES = [
 ("C64Q", CONDITIONAL_PROGRAM, "raw", 9, "algayes"),
 ("C64N", INITIALIZER_PROGRAM, "raw", 9, "I"),
 ("C64E", ASSERT_PROGRAM, "raw", 9, "main"),
+("C64Y", FLOAT_PROGRAM, "raw", 9, "F"),
 ]
 
 LIBRARY_CASE = "C64L"

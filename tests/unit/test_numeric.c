@@ -131,6 +131,60 @@ static void test_float_narrowing(void)
     CHECK(cc64_double_to_float(0x0000000000000001UL) == 0x00000000U);
 }
 
+/* The binary32 rounding is project code, and the encoder narrows again when
+   it emits the constant, so widening the rounded encoding has to be exact.
+   A widening that is not exact, or a constant whose four bytes were copied
+   into an eight-byte value, makes every float constant a denormal. */
+static void test_float_widening(void)
+{
+    struct RoundCase {
+        uint32_t single;
+        uint64_t wide;
+    } cases[] = {
+        { 0x00000000U, 0x0000000000000000UL },
+        { 0x80000000U, 0x8000000000000000UL },
+        { 0x3F800000U, 0x3FF0000000000000UL },
+        { 0x40000000U, 0x4000000000000000UL },
+        { 0xC0200000U, 0xC004000000000000UL },
+        { 0x7F800000U, 0x7FF0000000000000UL },
+        { 0xFF800000U, 0xFFF0000000000000UL },
+        { 0x00000001U, 0x36A0000000000000UL },
+        { 0x007FFFFFU, 0x380FFFFFC0000000UL },
+        { 0x00800000U, 0x3810000000000000UL },
+    };
+    for (unsigned i = 0U; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        uint64_t wide = cc64_float_to_double(cases[i].single);
+        if (wide != cases[i].wide) {
+            fprintf(stderr, "FAIL widen %08x: %016llx want %016llx\n",
+                    cases[i].single, (unsigned long long)wide,
+                    (unsigned long long)cases[i].wide);
+            ++failures;
+        }
+    }
+    /* Widening then narrowing is the identity on every binary32 value, and a
+       NaN stays unordered rather than becoming a number. The subnormal range
+       is the part where an inexact widening would show, because a subnormal
+       has no implicit leading bit to shift into place. */
+    for (uint32_t bits = 0U; bits < 0x7F800000U; bits += 9973U) {
+        uint64_t wide = cc64_float_to_double(bits);
+        if (cc64_double_to_float(wide) != bits) {
+            fprintf(stderr, "FAIL round trip %08x\n", bits);
+            ++failures;
+            break;
+        }
+    }
+    for (uint32_t bits = 0U; bits < 0x00800000U; bits += 997U) {
+        uint64_t wide = cc64_float_to_double(bits);
+        if (cc64_double_to_float(wide) != bits) {
+            fprintf(stderr, "FAIL subnormal round trip %08x\n", bits);
+            ++failures;
+            break;
+        }
+    }
+    CHECK((cc64_float_to_double(0x7FC00000U) & 0x7FFFFFFFFFFFFFFFUL) >
+          0x7FEFFFFFFFFFFFFFUL);
+}
+
 static void test_signed_zero(void)
 {
     bool ok = false;
@@ -145,6 +199,7 @@ int main(void)
     test_rounding();
     test_range();
     test_float_narrowing();
+    test_float_widening();
     test_signed_zero();
     if (failures == 0) {
         printf("numeric: decimal constant conversion groups passed\n");

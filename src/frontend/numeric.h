@@ -27,4 +27,12 @@ bool cc64_decimal_to_double(const char *text, uint64_t *bits);
    and producing an infinity on overflow. */
 uint32_t cc64_double_to_float(uint64_t bits);
 
+/* Widens a binary32 encoding to the binary64 value that narrows back to it.
+   The narrowing of a decimal constant has to be rounded by project code so a
+   bootstrap build and a self-hosted build agree, but the widened value has to
+   reach the encoder as a double. Widening is exact and is done here rather
+   than by the host's float conversion, which is not available on the target
+   and would not round the same way in both builds. */
+uint64_t cc64_float_to_double(uint32_t bits);
+
 #endif

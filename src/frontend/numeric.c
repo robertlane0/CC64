@@ -365,3 +365,37 @@ uint32_t cc64_double_to_float(uint64_t bits)
     uint32_t value = ((uint32_t)(exponent + 127) << 23) | ((uint32_t)result & 0x007FFFFFU);
     return negative ? value | 0x80000000U : value;
 }
+
+uint64_t cc64_float_to_double(uint32_t bits)
+{
+    bool negative = (bits & 0x80000000U) != 0U;
+    uint32_t exponent = (bits >> 23) & 0xFFU;
+    uint32_t mantissa = bits & 0x007FFFFFU;
+    uint64_t sign = negative ? 0x8000000000000000ULL : 0ULL;
+    if (exponent == 0xFFU) {
+        /* An infinity keeps its exponent and no mantissa; a signalling or
+           quiet NaN keeps a non-zero mantissa, so the value stays unordered
+           rather than becoming a number. */
+        return sign | 0x7FF0000000000000ULL | ((uint64_t)mantissa << 29);
+    }
+    if (exponent == 0U) {
+        /* A binary32 subnormal has no implicit leading bit, so its value is
+           the fraction scaled by the smallest binary32 exponent rather than
+           by a biased exponent. It is exact as a binary64, so the leading one
+           becomes the implicit bit and the rest of the fraction follows it. */
+        if (mantissa == 0U) return sign;
+        /* The position of the leading one, counted from bit zero of the
+           twenty-three-bit fraction, so the whole fraction fits the fifty-two
+           bits of a binary64 significand. */
+        unsigned highest = 0U;
+        for (unsigned bit = 22U; bit > 0U; --bit) {
+            if ((mantissa & (1U << bit)) != 0U) { highest = bit; break; }
+        }
+        uint32_t rest = mantissa & ((1U << highest) - 1U);
+        uint64_t fraction = (uint64_t)rest << (52U - highest);
+        long biased = (long)highest - 149L + 1023L;
+        return sign | ((uint64_t)biased << 52) | fraction;
+    }
+    return sign | ((uint64_t)(uint32_t)(exponent - 127 + 1023) << 52) |
+           ((uint64_t)mantissa << 29);
+}

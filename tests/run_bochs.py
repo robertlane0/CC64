@@ -16,12 +16,26 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TARGET = ROOT.parent / "MS-DOS64"
 sys.path.insert(0, str(ROOT / "tools"))
+sys.path.insert(0, str(ROOT / "tests"))
+import corpus  # noqa: E402  (path is set above)
 import target_revision  # noqa: E402  (path is set above)
 TARGET_REVISION = target_revision.TARGET_REVISION
 VOLUME_ARGUMENTS = [
     "--vol-lba", "512", "--vol-sectors", "2880", "--sector-size", "512",
     "--kernel-lba", "16", "--kernel-sectors", "256",
 ]
+# The corpus cases this emulator runs. It is far slower than the other one,
+# so the selection is a named subset chosen for what the second emulator has
+# to agree about rather than for volume: a return value, a data-pointer image
+# in the load-biased form, a zero-filled global in both forms, an argument
+# vector, an aggregate initializer, a formatted output, and floating
+# arithmetic. Every name must exist in the corpus, so a case that is renamed
+# or dropped is a failure here rather than a silently smaller run.
+BOCHS_CASES = ("C64R", "C64P", "C64B", "C64Z", "C64H", "C64N", "C64C", "C64Y")
+# Bochs takes far longer per case than the other emulator, so the deadline is
+# generous; the run still ends as soon as the result and the next prompt
+# appear.
+BOCHS_TIMEOUT = 120.0
 
 
 def check_target() -> None:
@@ -51,7 +65,8 @@ def stop_process(process: subprocess.Popen) -> None:
 
 
 def run_bochs(bochs: str, config: pathlib.Path, serial: int,
-              console_path: pathlib.Path, command: str, expected: int) -> bytes:
+              console_path: pathlib.Path, command: str, expected: int,
+              timeout: float = BOCHS_TIMEOUT) -> bytes:
     console = console_path.open("wb")
     process = subprocess.Popen([bochs, "-q", "-f", str(config)],
                                stdin=subprocess.DEVNULL,
@@ -59,7 +74,7 @@ def run_bochs(bochs: str, config: pathlib.Path, serial: int,
                                stderr=subprocess.STDOUT)
     output = bytearray()
     sent = False
-    deadline = time.monotonic() + 45.0
+    deadline = time.monotonic() + timeout
     try:
         while time.monotonic() < deadline:
             readable, _, _ = select.select([serial], [], [], 0.1)
@@ -99,12 +114,21 @@ def main() -> int:
         work = pathlib.Path(temp)
         subprocess.run(["make", "clean", "lean"], cwd=TARGET, check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-        cases = [
-            ("BOCHR", "int main(void) { return 7; }\n", "raw", 7),
-            ("BOCHZ", "int value = 7; int *pointer = &value; "
-                      "int main(void) { return *pointer; }\n", "mz64", 7),
-        ]
-        for name, source_text, image_format, expected in cases:
+        # The milestone's exit criterion is that the conformance corpus runs
+        # on both emulators, so this gate runs the corpus itself rather than
+        # two cases of its own. Bochs is much slower than the other emulator,
+        # so a documented subset is selected by name: one case of each kind
+        # the second emulator has to agree about, in both image forms.
+        selected = [entry for entry in corpus.CASES
+                    if entry[0] in BOCHS_CASES]
+        missing = [name for name in BOCHS_CASES
+                   if not any(entry[0] == name for entry in corpus.CASES)]
+        if missing:
+            raise SystemExit(f"Bochs gate names cases the corpus lacks: {missing}")
+        for entry in selected:
+            name, source_text, image_format, expected = entry[:4]
+            expected_text = entry[4] if len(entry) > 4 else None
+            command = entry[5] if len(entry) > 5 else name
             source = work / f"{name}.c"
             obj = work / f"{name}.cc64o"
             image = work / (f"{name}.mz64" if image_format == "mz64"
@@ -113,11 +137,11 @@ def main() -> int:
             source.write_text(source_text, encoding="utf-8")
             subprocess.run([str(ROOT / "cc64"), "-c", str(source), "-o", str(obj)],
                            cwd=ROOT, check=True)
-            command = [str(ROOT / "cc64"), "--link"]
+            link = [str(ROOT / "cc64"), "--link"]
             if image_format == "mz64":
-                command += ["--format", "mz64"]
-            command += [str(obj), "-o", str(image)]
-            subprocess.run(command, cwd=ROOT, check=True)
+                link += ["--format", "mz64"]
+            link += [str(obj), "-o", str(image)]
+            subprocess.run(link, cwd=ROOT, check=True)
             shutil.copy2(TARGET / "build/dos64-lean.img", disk)
             check_volume(disk)
             subprocess.run(["python3", str(ROOT / "tests/embed_fat12.py"),
@@ -142,7 +166,8 @@ def main() -> int:
             config.write_text(template, encoding="utf-8")
             try:
                 output = run_bochs(bochs, config, master,
-                                   work / f"{name}.console.log", name, expected)
+                                   work / f"{name}.console.log", command,
+                                   expected)
             except OSError as error:
                 raise SystemExit(f"Bochs serial setup failed: {error}") from error
             finally:
@@ -152,8 +177,14 @@ def main() -> int:
             marker = f"Exit {expected}".encode("ascii")
             if marker not in output:
                 raise SystemExit(f"Bochs did not report {name} exit {expected}")
+            if expected_text is not None and \
+                    expected_text.encode("ascii") not in output:
+                raise SystemExit(
+                    f"Bochs {name} output lacked {expected_text!r}: "
+                    f"{bytes(output)[-200:].decode('utf-8', 'replace')}")
             check_volume(disk)
-    print("bochs: target returned exit 7 for raw and MZ64 cases")
+    print(f"bochs: target returned the expected exit code for "
+          f"{len(selected)} conformance cases in both image forms")
     return 0
 
 

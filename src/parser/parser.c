@@ -1096,8 +1096,18 @@ static AstNode *make_binary(Parser *parser, BinaryOperator op, AstNode *left,
             semantic_error(parser, 2051U, token, "invalid pointer arithmetic");
             type = type_basic(parser->arena, TYPE_LONG);
         }
-    } else if (op == BINARY_MULTIPLY || op == BINARY_DIVIDE || op == BINARY_REMAINDER ||
-               op == BINARY_BITWISE_AND || op == BINARY_BITWISE_XOR || op == BINARY_BITWISE_OR) {
+    } else if (op == BINARY_MULTIPLY || op == BINARY_DIVIDE) {
+        /* Multiplication and division are the arithmetic operators, so they
+           accept the floating types; the remainder and the bitwise operators
+           are defined only for integers. */
+        if (!type_is_arithmetic(left->type) || !type_is_arithmetic(right->type)) {
+            semantic_error(parser, 2052U, token, "arithmetic operator requires arithmetic operands");
+        }
+        type = type_usual_arithmetic(parser->arena, type_unqualified(left->type), type_unqualified(right->type));
+        left = make_cast(parser, type, left, token);
+        right = make_cast(parser, type, right, token);
+    } else if (op == BINARY_REMAINDER || op == BINARY_BITWISE_AND ||
+               op == BINARY_BITWISE_XOR || op == BINARY_BITWISE_OR) {
         if (!type_is_integer(left->type) || !type_is_integer(right->type)) {
             semantic_error(parser, 2052U, token, "integer operator requires integer operands");
         }
@@ -1207,8 +1217,15 @@ static AstNode *parse_number(Parser *parser, const Token *token)
         double value = 0.0;
         if (cc64_decimal_to_double(digits, &bits)) {
             if (float_suffix) {
-                uint32_t single = cc64_double_to_float(bits);
-                memcpy(&value, &single, sizeof(single));
+                /* The rounding to binary32 is project code, so a bootstrap
+                   build and a self-hosted build round the same text the same
+                   way. The rounded encoding is then widened back to the
+                   binary64 the instruction carries, because copying the four
+                   binary32 bytes into an eight-byte value left the high half
+                   of the constant zero and every float constant in a program
+                   was a denormal close to zero. */
+                uint64_t widened = cc64_float_to_double(cc64_double_to_float(bits));
+                memcpy(&value, &widened, sizeof(widened));
             } else {
                 memcpy(&value, &bits, sizeof(bits));
             }
