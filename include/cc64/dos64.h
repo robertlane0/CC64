@@ -23,4 +23,11 @@ void cc64_free(void *pointer);
 cc64_fd cc64_open(const char *name);
 int cc64_close(cc64_fd handle);
 
+/* The target's own reports about its console and its real-time clock, folded
+   into one value each so that the runtime library can use them without
+   knowing the register layout the services leave behind. */
+int cc64_console_ready(void);
+long cc64_time_fields(void);
+long cc64_date_fields(void);
+
 #endif
