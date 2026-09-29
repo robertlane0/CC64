@@ -69,13 +69,42 @@ static void test_rounding(void)
     expect_double("1.0000000000000002", 0x3FF0000000000001UL);
     expect_double("9007199254740993", 0x4340000000000000UL);
     expect_double("0.1", 0x3FB999999999999AUL);
+    /* A decimal exponent larger than any single power of ten that fits in a
+       word is applied in steps, with the significand brought back to a word
+       between them, so the whole range of the format is reachable. Each value
+       below is the correctly rounded binary64, and the two at each end of the
+       range are the smallest and the largest values the format can hold. */
+    expect_double("1e19", 0x43E158E460913D00UL);
+    expect_double("1e22", 0x4480F0CF064DD592UL);
+    expect_double("1e23", 0x44B52D02C7E14AF6UL);
+    expect_double("1e30", 0x46293E5939A08CEAUL);
+    expect_double("1e100", 0x54B249AD2594C37DUL);
+    expect_double("1e300", 0x7E37E43C8800759CUL);
+    expect_double("1.7976931348623157e308", 0x7FEFFFFFFFFFFFFFUL);
+    expect_double("6.02214076e23", 0x44DFE185CA57C517UL);
+    expect_double("9.1093837015e-31", 0x39B279DCC8B6B7EDUL);
+    expect_double("1.602176634e-19", 0x3C07A4DA290C1653UL);
+    expect_double("1e-19", 0x3BFD83C94FB6D2ACUL);
+    expect_double("1e-100", 0x2B2BFF2EE48E0530UL);
+    expect_double("1e-300", 0x01A56E1FC2F8F359UL);
+    expect_double("1e-320", 0x00000000000007E8UL);
+    expect_double("4.9406564584124654e-324", 0x0000000000000001UL);
+    expect_double("2.2250738585072014e-308", 0x0010000000000000UL);
+    /* A constant below the smallest value the format holds rounds to zero,
+       which is a value the format holds, so it is accepted rather than
+       refused. A constant above the largest has no value to hold at all and is
+       refused, because that is the case where the text is nearly always a
+       mistake. */
+    expect_double("1e-400", 0x0000000000000000UL);
+    expect_double("123456789012345678901234567890.0", 0x45F8EE90FF6C373EUL);
 }
 
 static void test_range(void)
 {
-    expect_reject("1e22");
-    expect_reject("1.7976931348623157e308");
-    expect_reject("1e-300");
+    /* A well-formed constant outside the format's range has no value to hold,
+       and the malformed ones below have no digits to read at all. */
+    expect_reject("1e400");
+    expect_reject("1e99999999999");
     expect_reject("");
     expect_reject(".");
     expect_reject("abc");

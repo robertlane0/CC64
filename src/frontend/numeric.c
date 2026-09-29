@@ -135,28 +135,32 @@ static void wide_multiply(uint64_t left, uint64_t right, Wide *product)
     product->high = (sum & 0xFFFFFFFFUL) | ((p3 >> 32) + (sum >> 32)) << 32;
 }
 
-/* Keeps the top 64 bits of a 128-bit intermediate. Every bit that falls below
-   the retained window is reported through truncated, which the final rounding
-   uses as a sticky input, and through dropped, the amount by which the binary
-   scale must grow to describe the retained value. */
-static uint64_t wide_reduce(const Wide *value, bool *truncated, unsigned *dropped)
+/* Brings a 128-bit significand back to a single word, keeping the bits at the
+   top and reporting the rest as sticky. The binary scale grows by the amount
+   dropped, so the value the significand describes is unchanged. A caller that
+   has more steps to run renormalises between them, which is what lets a
+   decimal exponent span the whole range of the format rather than one table
+   entry. */
+static void wide_normalize(Wide *value, int64_t *scale, bool *sticky)
 {
-    *dropped = 0U;
-    if (value->high == 0UL) return value->low;
+    if (value->high == 0UL) return;
     unsigned amount = bit_length(value->high);
     uint64_t low;
     if (amount < 64U) {
-        if ((value->low & ((1UL << (amount - 1U)) - 1UL)) != 0UL) *truncated = true;
+        if ((value->low & ((1UL << (amount - 1U)) - 1UL)) != 0UL) *sticky = true;
         low = (value->high << (64U - amount)) | (value->low >> amount);
     } else {
-        if ((value->high & 0x7FFFFFFFFFFFFFFFUL) != 0UL ||
-            value->low != 0UL) {
-            *truncated = true;
+        if ((value->high & 0x7FFFFFFFFFFFFFFFUL) != 0UL || value->low != 0UL) {
+            *sticky = true;
         }
         low = value->high;
     }
-    *dropped = amount;
-    return low;
+    value->high = 0UL;
+    value->low = low;
+    /* The value is significand times two to the minus scale, so discarding
+       bits below the retained window multiplies the retained part by the same
+       power of two and the scale falls by it. */
+    *scale -= (int64_t)amount;
 }
 
 /* Rounds the exact value numerator * 2^-scale (with a nonzero remainder when
@@ -274,7 +278,11 @@ bool cc64_decimal_to_double(const char *text, uint64_t *bits)
             if (value < 10000U) value = value * 10U + (unsigned)(text[index] - '0');
             ++index;
         }
-        if (value > (unsigned)CC64_DECIMAL_MAX_DIVISOR_EXPONENT * 4U) return false;
+        /* A binary64 constant's decimal exponent is bounded by the format, not
+           by the tables below, because the exponent is applied in steps. The
+           bound is generous enough to reach every value the format can hold
+           and small enough that the steps terminate. */
+        if (value > 4000U) return false;
         exponent += negative_exponent ? -(int64_t)value : (int64_t)value;
     }
     if (text[index] != '\0') return false;
@@ -282,43 +290,54 @@ bool cc64_decimal_to_double(const char *text, uint64_t *bits)
         *bits = negative ? (1UL << 63) : 0UL;
         return true;
     }
-    /* Nineteen digits always fit in 64 bits, and every product below runs in
-       128 bits, so the significand is never trimmed before conversion. */
-    uint64_t numerator = mantissa;
+    /* The value is a significand times a power of two, and the significand
+       travels in 128 bits. The decimal exponent is applied one table entry at
+       a time, with the significand brought back to one word between entries so
+       that the next product has room. An exponent therefore spans the whole
+       range of the format rather than one table entry, and the only bits ever
+       discarded are those below the working precision, which the format's 53
+       bits never reach. */
+    Wide significand;
+    wide_from_u64(mantissa, &significand);
     int64_t scale = 0;
-    unsigned dropped = 0U;
-    if (exponent > 0) {
-        if (exponent > CC64_DECIMAL_MAX_SCALE_EXPONENT) return false;
+    bool sticky = truncated;
+    while (exponent > 0) {
+        unsigned step = exponent > (int64_t)CC64_DECIMAL_MAX_SCALE_EXPONENT
+                            ? CC64_DECIMAL_MAX_SCALE_EXPONENT
+                            : (unsigned)exponent;
+        wide_normalize(&significand, &scale, &sticky);
         Wide product;
-        wide_multiply(mantissa, power_of_ten[exponent], &product);
-        numerator = wide_reduce(&product, &truncated, &dropped);
-        /* Dropping low bits of the product scales the retained value up. */
-        scale = -(int64_t)dropped;
-    } else if (exponent < 0) {
-        int64_t divisor_exponent = -exponent;
-        if (divisor_exponent > CC64_DECIMAL_MAX_DIVISOR_EXPONENT) return false;
+        wide_multiply(significand.low, power_of_ten[step], &product);
+        significand = product;
+        exponent -= (int64_t)step;
+    }
+    while (exponent < 0) {
+        unsigned step = -exponent > (int64_t)CC64_DECIMAL_MAX_DIVISOR_EXPONENT
+                            ? CC64_DECIMAL_MAX_DIVISOR_EXPONENT
+                            : (unsigned)(-exponent);
+        wide_normalize(&significand, &scale, &sticky);
         /* 10^k is 2^k times 5^k, so the value is (m / 5^k) scaled by 2^-k. The
            significand is first widened by a power of two far enough that the
            quotient still carries at least 64 bits; the division itself runs in
            128 bits so that rounding sees every bit that decides it. */
-        uint64_t divisor = power_of_five[divisor_exponent];
-        unsigned width = bit_length(mantissa);
+        uint64_t divisor = power_of_five[step];
         unsigned divisor_width = bit_length(divisor);
         if (divisor_width > 64U) return false;
+        unsigned width = bit_length(significand.low);
         unsigned widen = 63U + divisor_width - width;
         if (width + widen > 128U) return false;
-        Wide source;
         Wide scaled;
-        wide_from_u64(mantissa, &source);
-        wide_shift_left(&source, widen, &scaled);
+        wide_shift_left(&significand, widen, &scaled);
         Wide quotient;
         uint64_t remainder = 0UL;
         wide_divide(&scaled, divisor, &quotient, &remainder);
-        numerator = wide_reduce(&quotient, &truncated, &dropped);
-        if (remainder != 0UL) truncated = true;
-        scale = (int64_t)widen + (int64_t)dropped + divisor_exponent;
+        significand = quotient;
+        if (remainder != 0UL) sticky = true;
+        scale += (int64_t)widen + (int64_t)step;
+        exponent += (int64_t)step;
     }
-    return assemble_double(numerator, scale, truncated, negative, bits);
+    wide_normalize(&significand, &scale, &sticky);
+    return assemble_double(significand.low, scale, sticky, negative, bits);
 }
 
 uint32_t cc64_double_to_float(uint64_t bits)
