@@ -321,6 +321,34 @@ def main() -> int:
         if result.returncode == 0 or "CC2075" not in result.stderr:
             raise SystemExit("semantic diagnostic did not match")
 
+        # M0's exit criterion is that a clean build produces deterministic
+        # diagnostics, so the same rejection is run repeatedly and its text is
+        # compared byte for byte. A diagnostic that carried a timestamp, an
+        # address, or an iteration order would differ here.
+        # A source with several independent errors also shows that recovery
+        # reports more than the first, which is what makes one pass useful.
+        several = directory / "several.c"
+        several.write_text(
+            "int first(void) { return missing_one; }\n"
+            "int second(void) { return missing_two; }\n"
+            "int third(void) { return missing_three; }\n"
+            "int main(void) { return 0; }\n", encoding="utf-8")
+        texts = []
+        for index in range(3):
+            rejected_run = subprocess.run(
+                [str(ROOT / "cc64"), "-c", str(several),
+                 "-o", str(directory / f"several-{index}.o")],
+                cwd=ROOT, capture_output=True, text=True, check=False)
+            if rejected_run.returncode == 0:
+                raise SystemExit("compiler accepted a source with three errors")
+            if (directory / f"several-{index}.o").exists():
+                raise SystemExit("a rejected compile left an output")
+            texts.append(rejected_run.stderr)
+        if len(set(texts)) != 1:
+            raise SystemExit("diagnostics are not deterministic across runs")
+        if texts[0].count("CC2075") < 3:
+            raise SystemExit("recovery did not report every independent error")
+
     run(["python3", str(ROOT / "tests/audit.py")])
     print("integration: driver, object, and semantic groups passed")
     return 0

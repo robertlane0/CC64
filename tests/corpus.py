@@ -366,6 +366,60 @@ LIBRARY_VFORM_PROGRAM = (
 # into a binary64 constant is the same number, and a binary32 constant that
 # lost its high half is not. Every relation is checked in both directions,
 # because a comparison that inverts still agrees with itself on equality.
+# A zero-filled object is only observed to be zero if it is read before it is
+# written. A case that assigns first cannot tell a zero-initialised BSS from an
+# uninitialised one, and the loader's zeroing is what this checks.
+BSS_PROGRAM = (
+    "int cc64_write(int, const void *, unsigned long);\n"
+    "int zeroed;\n"
+    "int zeroed_tail[8];\n"
+    "char zeroed_text[16];\n"
+    "static long zeroed_static;\n"
+    "int initialised = 7;\n"
+    "int main(void)\n"
+    "{\n"
+    "    if (zeroed != 0) return 1;\n"
+    "    if (zeroed_tail[0] != 0 || zeroed_tail[7] != 0) return 2;\n"
+    "    if (zeroed_text[0] != 0 || zeroed_text[15] != 0) return 3;\n"
+    "    if (zeroed_static != 0L) return 4;\n"
+    # An initialised neighbour shows the section is present rather than the
+    # whole image having been left blank.
+    "    if (initialised != 7) return 5;\n"
+    "    long i;\n"
+    "    for (i = 0L; i < 8L; ++i) if (zeroed_tail[i] != 0) return 6;\n"
+    "    for (i = 0L; i < 16L; ++i) if (zeroed_text[i] != 0) return 7;\n"
+    "    zeroed = 9;\n"
+    "    if (zeroed != 9) return 8;\n"
+    "    cc64_write(1, \"B\", 1);\n"
+    "    return 9;\n"
+    "}\n"
+)
+
+# Recursion exercises the frame and call model at more than one depth: a
+# leaf, a self call, a mutual pair, and the deepest call the target's stack
+# allows. A frame that is not restored, or an argument that is not placed in
+# its own slot, shows up as a wrong answer at depth rather than at the first
+# call.
+RECURSION_PROGRAM = (
+    "int cc64_write(int, const void *, unsigned long);\n"
+    "static int fact(int n) { return n <= 1 ? 1 : n * fact(n - 1); }\n"
+    "static int is_even(int n);\n"
+    "static int is_odd(int n) { return n == 0 ? 0 : is_even(n - 1); }\n"
+    "static int is_even(int n) { return n == 0 ? 1 : is_odd(n - 1); }\n"
+    "static int depth_sum(int n) { return n == 0 ? 0 : n + depth_sum(n - 1); }\n"
+    "int main(void)\n"
+    "{\n"
+    "    if (fact(10) != 3628800) return 1;\n"
+    "    if (fact(0) != 1) return 2;\n"
+    "    if (is_even(100) != 1) return 3;\n"
+    "    if (is_odd(101) != 1) return 4;\n"
+    "    if (is_even(99) != 0) return 5;\n"
+    "    if (depth_sum(100) != 5050) return 6;\n"
+    "    cc64_write(1, \"R\", 1);\n"
+    "    return 9;\n"
+    "}\n"
+)
+
 FLOAT_PROGRAM = (
     "int cc64_write(int, const void *, unsigned long);\n"
     # A binary32 constant narrowed and widened has to be the same number as
@@ -530,6 +584,10 @@ CASES = [
 ("C64N", INITIALIZER_PROGRAM, "raw", 9, "I"),
 ("C64E", ASSERT_PROGRAM, "raw", 9, "main"),
 ("C64Y", FLOAT_PROGRAM, "raw", 9, "F"),
+# The same zero-initialised program in the form that has a separate BSS, so
+# the loader's zeroing is checked on the image form that actually has one.
+("C64G2", BSS_PROGRAM, "mz64", 9, "B"),
+("C64J", RECURSION_PROGRAM, "raw", 9, "R"),
 ]
 
 LIBRARY_CASE = "C64L"
