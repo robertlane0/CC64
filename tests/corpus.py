@@ -931,6 +931,94 @@ TARGET_BOUNDARY_PROGRAM = (
     "}\n"
 )
 
+# The shapes of a floating expression that a program writes but a corpus built
+# from constants alone never reaches: a negative literal, a negation of a
+# value rather than of a constant, a comparison against a value rather than
+# against a literal, an increment, and a widening that is not a no-op. Each
+# defect these reached was invisible to a case whose only floating operands were
+# constants, because a constant happens to leave its bits in the register the
+# wrong instruction form read.
+FLOAT_SHAPES_PROGRAM = (
+    "int cc64_write(int, const void *, unsigned long);\n"
+    "int main(void) {\n"
+    "  /* A negative literal is a negation of a positive one, so the sign has to\n"
+    "     be applied to the value's own form. */\n"
+    "  double a = -1.5;\n"
+    "  if (a >= 0.0) return 1;\n"
+    "  if (a + 1.5 != 0.0) return 2;\n"
+    "  float f = -1.5f;\n"
+    "  if (f >= 0.0f) return 3;\n"
+    "  if (f * 2.0f != -3.0f) return 4;\n"
+    "  /* A negation of a value, rather than of a literal, is the same operation\n"
+    "     and has to reach the value the same way. */\n"
+    "  double b = 2.5;\n"
+    "  b = -b;\n"
+    "  if (b != -2.5) return 5;\n"
+    "  double c = 1.0;\n"
+    "  c = -c;\n"
+    "  if (c != -1.0) return 6;\n"
+    "  /* A second operand that is a value rather than a constant. */\n"
+    "  double d = 10.0;\n"
+    "  double e = 4.0;\n"
+    "  if (d / e != 2.5) return 7;\n"
+    "  if (d - e != 6.0) return 8;\n"
+    "  if (d * e != 40.0) return 9;\n"
+    "  if (d + e != 14.0) return 10;\n"
+    "  d /= e;\n"
+    "  if (d != 2.5) return 11;\n"
+    "  d *= e;\n"
+    "  if (d != 10.0) return 12;\n"
+    "  d -= e;\n"
+    "  if (d != 6.0) return 13;\n"
+    "  d += e;\n"
+    "  if (d != 10.0) return 14;\n"
+    "  /* Comparisons against values, in both directions and in both widths. */\n"
+    "  if (!(d > e)) return 15;\n"
+    "  if (!(d >= e)) return 16;\n"
+    "  if (d < e) return 17;\n"
+    "  if (d <= e) return 18;\n"
+    "  if (d == e) return 19;\n"
+    "  if (!(d != e)) return 20;\n"
+    "  float g = 10.0f;\n"
+    "  float h = 4.0f;\n"
+    "  if (g / h != 2.5f) return 21;\n"
+    "  if (!(g > h)) return 22;\n"
+    "  if (g < h) return 23;\n"
+    "  if (g == h) return 24;\n"
+    "  /* An increment and a decrement, in both widths and in both positions. */\n"
+    "  double i = 1.0;\n"
+    "  if (i++ != 1.0) return 25;\n"
+    "  if (i != 2.0) return 26;\n"
+    "  if (++i != 3.0) return 27;\n"
+    "  if (i-- != 3.0) return 28;\n"
+    "  if (--i != 1.0) return 29;\n"
+    "  float j = 1.0f;\n"
+    "  j++;\n"
+    "  if (j != 2.0f) return 30;\n"
+    "  j--;\n"
+    "  if (j != 1.0f) return 31;\n"
+    "  /* A widening and a narrowing, which are not the same as a conversion to\n"
+    "     the width a value already has. */\n"
+    "  float k = 1.0f;\n"
+    "  double m = k;\n"
+    "  if (m != 1.0) return 32;\n"
+    "  m = 1.0 / 3.0;\n"
+    "  k = (float)m;\n"
+    "  /* A narrowing is a rounding, so the value read back is the narrow one\n"
+    "     rather than the wide one it came from. */\n"
+    "  if ((double)k == m) return 33;\n"
+    "  if (k != 0.33333334f) return 34;\n"
+    "  /* A negation of a zero keeps its sign, which a division can observe. */\n"
+    "  double z = 0.0;\n"
+    "  if (1.0 / -z >= 0.0) return 35;\n"
+    "  /* Truth of a floating value, which is being not zero. */\n"
+    "  if (!d) return 36;\n"
+    "  if (z) return 37;\n"
+    "  cc64_write(1, \"H\", 1);\n"
+    "  return 0;\n"
+    "}\n"
+)
+
 CASES = [
 ("C64R", "int main(void) { return 7; }", "raw", 7, None),
 ("C64S", "int f(int x){int y=0; switch(x){case 7: y=9; break; default: y=3;} return y;} int main(void){return f(7);}", "raw", 9, None),
@@ -974,6 +1062,7 @@ CASES = [
 ("C64F2", FLOAT_CONSTANT_PROGRAM, "raw", 0, "F"),
 ("C64C2", COMPOUND_LITERAL_PROGRAM, "raw", 0, "C"),
 ("C64P2", PASTE_AND_TYPEDEF_PROGRAM, "raw", 0, "P"),
+("C64H2", FLOAT_SHAPES_PROGRAM, "raw", 0, "H"),
 ]
 
 LIBRARY_CASE = "C64L"

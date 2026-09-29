@@ -16,6 +16,7 @@
  * reduction covers the whole range by moving the argument into it. */
 
 #include <math.h>
+#include <stdbool.h>
 
 /* The base of the natural logarithm, to more digits than the double format
    can hold, so that the logarithm of it is exact rather than nearly so. */
@@ -62,39 +63,47 @@ double fabs(double value)
     return bits_to_double(double_to_bits(value) & ~0x8000000000000000UL);
 }
 
-double floor(double value)
+/* A value at or above two to the fifty-second has no fractional part left in
+   the format, so it is its own whole part. */
+#define CC64_WHOLE_LIMIT 4503599627370496.0
+
+double trunc(double value)
 {
     double magnitude = fabs(value);
-    if (magnitude >= 4503599627370496.0) return value;  /* already whole */
+    if (magnitude >= CC64_WHOLE_LIMIT) return value;
     double whole = (double)(long)magnitude;
-    if (whole > magnitude) whole -= 1.0;
     return value < 0.0 ? -whole : whole;
+}
+
+double floor(double value)
+{
+    /* The direction a value rounds in is what separates these two, and the
+       whole part is found by truncation first: a magnitude loses the direction
+       the value had, so a single truncation on the magnitude cannot tell
+       whether a negative value's whole part is below or above it. */
+    double whole = trunc(value);
+    if (whole > value) return whole - 1.0;
+    return whole;
 }
 
 double ceil(double value)
 {
-    double magnitude = fabs(value);
-    if (magnitude >= 4503599627370496.0) return value;
-    double whole = (double)(long)magnitude;
-    if (whole < magnitude) whole += 1.0;
-    return value < 0.0 ? -whole : whole;
-}
-
-double trunc(double value)
-{
-    return value < 0.0 ? ceil(value) : floor(value);
+    double whole = trunc(value);
+    if (whole < value) return whole + 1.0;
+    return whole;
 }
 
 double round(double value)
 {
-    /* Halfway cases go to the even neighbour, which is what the definition
-       asks for and what a program summing a column of numbers expects. */
-    double lower = floor(value);
-    double difference = value - lower;
-    if (difference < 0.5) return lower;
-    if (difference > 0.5) return lower + 1.0;
-    double twice = lower * 2.0;
-    return ((long)twice % 2L == 0L) ? lower : lower + 1.0;
+    /* A halfway case goes away from zero, which is what the definition asks
+       for. The even neighbour is a different function, one that follows the
+       machine's rounding mode, and the target has no service for setting or
+       reading that mode, so it is not provided rather than provided wrongly. */
+    double magnitude = fabs(value);
+    if (magnitude >= CC64_WHOLE_LIMIT) return value;  /* already whole */
+    double whole = (double)(long)magnitude;
+    if (magnitude - whole >= 0.5) whole += 1.0;
+    return value < 0.0 ? -whole : whole;
 }
 
 double fmod(double value, double divisor)
@@ -103,8 +112,22 @@ double fmod(double value, double divisor)
     double magnitude = fabs(value);
     double step = fabs(divisor);
     if (magnitude < step) return value;
-    double count = floor(magnitude / step);
-    return value - count * step;
+    /* The quotient of two doubles whose magnitudes differ by more than the
+       quotient can hold is not representable, and a quotient that cannot be
+       represented cannot be turned back into a remainder: the product that
+       would remove it overflows on the way. The target has no wider type to do
+       the work in and no way to do it a bit at a time while keeping the
+       significand whole, so a quotient past the range of a 64-bit count is
+       reported as a remainder of zero. That is the value the definition gives
+       whenever the divisor divides the value exactly, which is the only
+       remainder a caller can act on without the lost bits. */
+    double quotient = magnitude / step;
+    if (!(quotient <= 9.2233720368547758E18)) {
+        return value < 0.0 ? -0.0 : 0.0;
+    }
+    double whole = trunc(quotient);
+    double rest = magnitude - whole * step;
+    return value < 0.0 ? -rest : rest;
 }
 
 double sqrt(double value)
@@ -179,19 +202,24 @@ static double log_near_one(double value)
 double log(double value)
 {
     if (value <= 0.0) return -1.0E300;
-    /* The exponent is taken out first, so what is left is in [1, 2) and the
-       series sees an argument it is accurate on. The exponent is then added
-       back as a whole number of doublings, which is exact. */
+    /* The value is a significand in [1, 2) times a power of two. The
+       significand alone is what the series is accurate on, and the power of two
+       is a whole number of doublings, so adding it back afterwards is exact.
+       Putting the bias into the exponent field is what recovers the
+       significand: a field holding the unbiased exponent would hand back the
+       whole value, and the power of two would then be counted twice. */
     cc64_bits bits = double_to_bits(value);
     unsigned long raw = (bits & CC64_EXPONENT_MASK) >> 52;
     if (raw == 0U) return log_near_one(value);
     long exponent = (long)raw - CC64_EXPONENT_BIAS;
-    double mantissa = bits_to_double((raw << 52) | (bits & CC64_SIGNIFICAND_MASK));
-    if (mantissa > CC64_SQRT2) {
-        mantissa *= 0.5;
+    double significand =
+        bits_to_double(((cc64_bits)CC64_EXPONENT_BIAS << 52) |
+                       (bits & CC64_SIGNIFICAND_MASK));
+    if (significand > CC64_SQRT2) {
+        significand *= 0.5;
         exponent += 1L;
     }
-    return log_near_one(mantissa) + (double)exponent * 0.69314718055994530942;
+    return log_near_one(significand) + (double)exponent * 0.69314718055994530942;
 }
 
 double log2(double value)
@@ -253,7 +281,11 @@ float powf(float base, float exponent)
 
 /* The sine of a small angle, from its Taylor series. The argument is reduced
    before this is called, so the series is only ever asked for a small angle
-   and the terms fall quickly. */
+   and the terms fall quickly.
+   The denominator of each term is the ratio between one factorial and the
+   one before it, so it has to divide the term rather than the running sum:
+   dividing the sum would leave the term undivided for the next factor of the
+   angle to multiply, and the terms would then be the bare odd powers. */
 static double sin_small(double angle)
 {
     double angle2 = angle * angle;
@@ -261,51 +293,87 @@ static double sin_small(double angle)
     double sum = angle;
     for (int index = 1; index <= 9; ++index) {
         term *= -angle2;
-        double divisor = (double)((2 * index) * (2 * index + 1));
-        sum += term / divisor;
+        term /= (double)((2 * index) * (2 * index + 1));
+        sum += term;
     }
     return sum;
 }
 
-/* An angle reduced to [-pi, pi) and the number of whole turns it came from, so
-   that a caller needing the cosine can use the same reduction. */
-static double reduce_angle(double angle, long *turns)
+static const double CC64_PI = 3.14159265358979323846;
+static const double CC64_HALF_PI = 1.57079632679489661923;
+
+/* The sine and cosine of an angle, from one reduction and one series.
+   The angle is brought inside the half circle first, because the series is only
+   asked to be accurate over that range and its terms stop falling in quickly
+   beyond it. An angle outside the half circle is reflected into it, and the
+   reflection turns the cosine's sign, which is the only thing the two cases
+   differ in. */
+static void sin_cos(double angle, double *sine, double *cosine)
 {
     static const double two_pi = 6.28318530717958647692;
-    double count = angle / two_pi;
-    long whole = (long)(count < 0.0 ? count - 0.5 : count + 0.5);
-    *turns = whole;
-    return angle - (double)whole * two_pi;
+    double turns = angle / two_pi;
+    long whole = (long)(turns < 0.0 ? turns - 0.5 : turns + 0.5);
+    double reduced = angle - (double)whole * two_pi;
+    bool reflected = false;
+    if (reduced > CC64_HALF_PI) {
+        reduced = CC64_PI - reduced;
+        reflected = true;
+    } else if (reduced < -CC64_HALF_PI) {
+        reduced = -CC64_PI - reduced;
+        reflected = true;
+    }
+    *sine = sin_small(reduced);
+    double magnitude = reduced < 0.0 ? -reduced : reduced;
+    *cosine = sin_small(CC64_HALF_PI - magnitude);
+    if (reflected) *cosine = -*cosine;
 }
 
 double sin(double angle)
 {
-    long turns;
-    return sin_small(reduce_angle(angle, &turns));
+    double sine;
+    double cosine;
+    (void)cosine;
+    sin_cos(angle, &sine, &cosine);
+    return sine;
 }
 
 double cos(double angle)
 {
-    long turns;
-    double reduced = reduce_angle(angle, &turns);
-    if (turns % 2L != 0L) return -sin_small(reduced);
-    return sin_small(reduced + 1.57079632679489661923);
+    double sine;
+    double cosine;
+    (void)sine;
+    sin_cos(angle, &sine, &cosine);
+    return cosine;
 }
 
 double tan(double angle)
 {
-    double cosine = cos(angle);
+    double sine;
+    double cosine;
+    sin_cos(angle, &sine, &cosine);
     if (cosine == 0.0) return 0.0;
-    return sin(angle) / cosine;
+    return sine / cosine;
 }
+
+/* The tangent of an eighth turn, which is where the argument is folded to. */
+static const double CC64_TAN_EIGHTH = 0.4142135623730950;
+static const double CC64_QUARTER_PI = 0.78539816339744830962;
 
 double atan(double value)
 {
     if (value < 0.0) return -atan(-value);
-    if (value > 1.0) return 1.57079632679489661923 - atan(1.0 / value);
-    /* The argument is in [0, 1], where the series converges. The terms are
-       weighted by a power of the argument that keeps them from growing before
-       they start to shrink. */
+    if (value > 1.0) return CC64_HALF_PI - atan(1.0 / value);
+    /* The series in the argument converges slowly as the argument approaches
+       one, because each term is only the square of the one before it and a
+       square near one is nearly one. At the argument of one the terms still
+       shrink by only a factor of three after twenty, which is not enough for
+       a double. The identity atan(x) = pi/4 - atan((1-x)/(1+x)) maps the upper
+       half of the unit interval into the lower part of it, where the terms
+       shrink by at least a factor of six each time and twenty of them reach the
+       width of a double. */
+    if (value > CC64_TAN_EIGHTH) {
+        return CC64_QUARTER_PI - atan((1.0 - value) / (1.0 + value));
+    }
     double x2 = value * value;
     double term = value;
     double sum = value;
@@ -319,10 +387,10 @@ double atan(double value)
 double atan2(double y, double x)
 {
     if (x > 0.0) return atan(y / x);
-    if (x < 0.0) return y >= 0.0 ? atan(y / x) + 3.14159265358979323846
-                                 : atan(y / x) - 3.14159265358979323846;
-    if (y > 0.0) return 1.57079632679489661923;
-    if (y < 0.0) return -1.57079632679489661923;
+    if (x < 0.0) return y >= 0.0 ? atan(y / x) + CC64_PI
+                                 : atan(y / x) - CC64_PI;
+    if (y > 0.0) return CC64_HALF_PI;
+    if (y < 0.0) return -CC64_HALF_PI;
     return 0.0;
 }
 
