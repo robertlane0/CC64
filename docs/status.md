@@ -52,7 +52,7 @@ pass. Planned code is never reported as completed.
 `tools/edit_build.py` builds a 24,461-line C program — a text editor, 111
 files — with CC64, without modifying a line of it, and places the result on a
 target volume. All 38 translation units compile and the objects link with the
-target library into a 590,353-byte load-biased image, which the target loads
+target library into a 590,033-byte load-biased image, which the target loads
 and starts: `Loaded, pid 1` from `build/dos64-lean.img` under QEMU.
 
 The program does not reach its first screen on the pinned target, and the
@@ -60,9 +60,12 @@ reason is a resource limit rather than a compiler gap. It reserves address
 space it does not commit: two scratch arenas of 512 MiB each and two
 interface arenas of 128 MiB each, about 1.25 GiB in total. The target
 identity-maps eight mebibytes in total and its heap is the six mebibytes from
-`0x200000` to `0x800000`, so the largest single reservation that succeeds is
-between four and six mebibytes, measured. The program commits only what it
-uses, so the reservations are the whole of the requirement.
+`0x200000` to `0x800000`. Measured on the target by asking its own arena
+initializer for each size in turn, a reservation succeeds up to five mebibytes
+and fails from six; the rest of the heap is taken by the image. The program
+commits only what it uses, so the reservations are the whole of the
+requirement, and the start-up path returns 1 without a message because
+`edit_scratch_init` failing is one of its two silent exits.
 
 No compiler change reaches that. A reservation is address space, and the target
 maps eight mebibytes of it. Enlarging the target's address space would be an
