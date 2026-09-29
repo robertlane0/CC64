@@ -114,6 +114,13 @@ static void skip_space(Lexer *lexer, bool *has_space, bool *at_bol)
     skip_splices(lexer);
     while (lexer->position < lexer->source->length) {
             unsigned char byte = lexer->source->bytes[lexer->position];
+            /* A splice can reveal the start of a continuation line, and the
+               indentation there is whitespace like any other. The loop asks
+               again after each splice so the space a continuation line begins
+               with is skipped rather than read as a token that is not one. */
+            if (splice_at(lexer)) {
+                continue;
+            }
             if (byte == ' ' || byte == '\t' || byte == '\f' || byte == '\v') {
                 *has_space = true;
                 advance_byte(lexer, byte);

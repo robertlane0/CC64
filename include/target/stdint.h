@@ -28,4 +28,18 @@ typedef unsigned long uintptr_t;
 #define UINT64_MAX 18446744073709551615UL
 #define SIZE_MAX UINT64_MAX
 
+/* A constant of the least type that holds the value keeps its type through
+   integer promotion on the target, where the suffix that does that is the one
+   for the width of the least 32- and 64-bit types. */
+#define INT8_C(value) value
+#define INT16_C(value) value
+#define INT32_C(value) value
+#define INT64_C(value) value##L
+#define UINT8_C(value) value
+#define UINT16_C(value) value
+#define UINT32_C(value) value##U
+#define UINT64_C(value) value##UL
+#define INTMAX_C(value) value##L
+#define UINTMAX_C(value) value##UL
+
 #endif

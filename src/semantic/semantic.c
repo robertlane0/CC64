@@ -24,6 +24,7 @@ static Type *type_alloc(Arena *arena, TypeKind kind, size_t size, size_t alignme
     type->parameter_count = 0U;
     type->variadic = false;
     type->next = NULL;
+    type->origin = type;
     return type;
 }
 
@@ -189,7 +190,16 @@ Type *type_copy(Arena *arena, Type *source, TypeQualifiers qualifiers)
     *copy = *source;
     copy->qualifiers = qualifiers;
     copy->next = NULL;
+    copy->origin = source->origin != NULL ? source->origin : source;
     return copy;
+}
+
+/* The type a type derives from, following the chain of qualified copies back
+   to the record that was first declared. A type that was never copied is its
+   own origin. */
+const Type *type_origin(const Type *type)
+{
+    return (type != NULL && type->origin != NULL) ? type->origin : type;
 }
 
 bool type_is_integer(const Type *type)
@@ -324,8 +334,12 @@ bool type_compatible(const Type *left, const Type *right)
     }
     case TYPE_STRUCT:
     case TYPE_UNION:
-        return left == right || (left->tag != NULL && right->tag != NULL &&
-                                  strcmp(left->tag, right->tag) == 0);
+        /* A qualified copy of a record is the record itself, so identity is
+           read through `origin`; otherwise two spellings of one anonymous
+           record would look like two unrelated types. */
+        return type_origin(left) == type_origin(right) ||
+               (left->tag != NULL && right->tag != NULL &&
+                strcmp(left->tag, right->tag) == 0);
     default: return true;
     }
 }

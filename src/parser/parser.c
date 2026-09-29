@@ -1792,6 +1792,10 @@ static AstNode *parse_initializer(Parser *parser, Type *type)
                 else tail->next = value;
                 tail = value;
                 if (!accept(parser, ",")) break;
+                /* A trailing comma before the closing brace ends the list. A
+                   comma separates two initializers, so the one that follows
+                   the last of them has nothing after it. */
+                if (token_text(peek(parser), "}")) break;
             }
         }
         (void)expect(parser, "}");

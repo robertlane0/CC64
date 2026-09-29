@@ -61,6 +61,11 @@ struct Type {
     size_t parameter_count;
     bool variadic;
     Type *next;
+    /* The type this one was a qualified copy of, or itself when it is the
+       original. A qualified copy is the same type with qualifiers added, so
+       record identity is read through this rather than through the pointer,
+       which differs between two copies of one anonymous record. */
+    Type *origin;
 };
 
 typedef enum SymbolClass {
@@ -248,6 +253,7 @@ bool type_is_void(const Type *type);
 bool type_is_signed(const Type *type);
 bool type_is_complete(const Type *type);
 bool type_compatible(const Type *left, const Type *right);
+const Type *type_origin(const Type *type);
 bool type_has_const(const Type *type);
 Type *type_unqualified(Type *type);
 Type *type_integer_promote(Arena *arena, Type *type);
