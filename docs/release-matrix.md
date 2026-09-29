@@ -22,6 +22,31 @@ the target checkout's own checker.
 | `make repro-check` | two path-independent clean builds compared over every generated file and the compiler-produced target artifacts |
 | `make audit` | tracked-file provenance: no external compiler reference, no generated artifact, no unexpected source type, a milestone row with a state and its evidence, and the stated limits of the self-host claim |
 
+## Image and ABI compatibility
+
+The ABI document says a later version must preserve version 1 images or say
+why it cannot, and the target contract says a driver must reject a version it
+does not know. `make compat-matrix` checks the promise in the direction a
+reader can verify: every image this compiler emits agrees with the pinned
+contract's own recorded fields, the independent reader accepts it at every
+load bias the loader may use, and a header whose size, payload size, entry,
+table placement, or reserved field differs is refused rather than read as if it
+were a version this compiler knows.
+
+| Property | Version 1 states |
+|---|---|
+| raw entry offset | 0 |
+| raw load address | a sixteen-byte-aligned process image |
+| `MZ64` magic | `MZ64` |
+| `MZ64` header size | 48 bytes |
+| ABI name | `cc64-dos64-v1` |
+| `MZ64` relocation table | adjacent to the payload, ending at the end of file |
+| image budget | 16 MiB |
+| data fixup width | eight bytes, destination and value both aligned |
+
+A change to any row is a change to a contract and belongs in the ABI document
+before it belongs in the gate.
+
 ## Interpreting the matrix
 
 A gate that cannot run reports a skip rather than a pass, and strict release

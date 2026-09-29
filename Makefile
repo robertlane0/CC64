@@ -11,7 +11,7 @@ DEPS = $(OBJECTS:.o=.d) $(TEST_OBJECTS:.o=.d)
 TEST_SOURCES = $(shell find tests/unit -name '*.c' -print | sort 2>/dev/null)
 TEST_OBJECTS = $(TEST_SOURCES:%.c=build/%.o)
 
-.PHONY: all clean check test test-unit test-target test-bochs self-host self-host-stage selfhost-probe self-host-run self-host-corpus fuzz-smoke repro-check check-release check-release-strict audit target-lib link-negative perf-measure
+.PHONY: all clean check test test-unit test-target test-bochs self-host self-host-stage selfhost-probe self-host-run self-host-corpus fuzz-smoke repro-check check-release check-release-strict audit target-lib link-negative compat-matrix perf-measure
 all: cc64
 
 cc64: $(OBJECTS)
@@ -90,6 +90,11 @@ target-lib: cc64
 link-negative: cc64
 	@python3 tests/link_negative.py
 
+# Both image forms against the pinned contract, and a version this compiler
+# does not write required to be refused.
+compat-matrix: cc64
+	@python3 tests/compat_matrix.py
+
 # Record what the compiler and the target cost, against the bounds the
 # contracts state. A measurement outside a bound fails rather than reporting.
 perf-measure: cc64
@@ -104,7 +109,7 @@ repro-check: cc64
 # The release gate treats a missing emulator as a failure rather than a skip,
 # so it cannot record that a target property was checked when nothing booted.
 check-release: export CC64_REQUIRE_EMULATORS = 1
-check-release: check test-target test-bochs self-host self-host-stage selfhost-probe self-host-run self-host-corpus target-lib link-negative perf-measure fuzz-smoke repro-check audit
+check-release: check test-target test-bochs self-host self-host-stage selfhost-probe self-host-run self-host-corpus target-lib link-negative compat-matrix perf-measure fuzz-smoke repro-check audit
 check-release-strict: export CC64_REQUIRE_CLEAN = 1
 check-release-strict: export CC64_REQUIRE_EMULATORS = 1
 check-release-strict: audit
