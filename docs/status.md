@@ -108,15 +108,52 @@ reading it:
   512 sectors reach `0x50000`.
 
 The target's own suite is now 94 pass, 1 fail with the destructive tests
-running, against 88 pass, 1 fail with six skipped before. The one failure is
-still the RTC date/time test, which fails identically on the unmodified
-reference.
+running, against 88 pass, 1 fail with six skipped before. The one failure was
+the RTC date/time test, and it is now fixed; see below.
 
 The volume move broke nine CC64 harnesses and both FAT12 tools, which each
 carried the volume's address as a constant and so wrote and read sectors the
 volume did not occupy (D-134). They now read the geometry from the boot sector
 the target's own stamper wrote, which follows whichever target revision is
 checked out rather than the one a constant was written against.
+
+## The clock kept a month, and the compiler could not read the date
+
+The target's suite had one failure throughout: the RTC date/time test, which
+failed identically on the unmodified reference and had therefore never passed.
+It is now fixed, and finding why turned up a second defect on this side.
+
+**The target.** `rtc_set_date64` wrote the year, then the month, then the day.
+The month write lands on whatever day the clock is still holding, so moving to
+a month with fewer days than the current day names a date that never existed —
+the 29th of a 28-day month — and the clock then has to resolve it. Measured with
+the clock holding the 29th: a request for 2001-02-28 was answered as
+**2001-03-28**, the month carried forward and the day lost. Writing the day as
+1 first makes every intermediate date real, because the 1st exists in every
+month. The suite goes from 88 pass, 1 fail, 6 skipped to **89 pass, 0 fail**,
+and from 94 pass, 1 fail to **95 pass, 0 fail** with the destructive tests
+running, on QEMU and on Bochs. Recorded as D-137.
+
+The fix is nine lines in `src/kernel/time64.asm` and the target's `edit` branch
+at `11b3cbb`. It is deliberately not reproduced by a CC64-side test: whether the
+clock's update tick lands between the guest's writes decides what an impossible
+date normalises to, so an external test of it would be testing the emulator's
+timing rather than either side. The target's own suite is the test.
+
+**The compiler.** With the target correct, a program still could not read the
+date: the runtime thunk that folds the two registers `AH=2Ah` returns shifted
+them instead of joining them, so it returned the year shifted down and the
+month shifted up and dropped the day. A program asking the target the time of
+day was told **2334-7-23**. The same shape was wrong for the time thunk, and
+the two were written identically, so both were corrected to move the register
+that already holds its fields into place (D-136). Each half is now taken 32
+bits wide, because the service leaves the rest of the register to the caller
+and the shift form was returning those bits too.
+
+`make target-rtc` pins the compiler's half: the harness sets a date with the
+target's own command and a compiler-produced program reads it back. It fails
+with the old thunk (`a program reads 2334-7-23`) and passes with the new one
+(`2001-02-28`), so the defect is reproduced and the fix is measured.
 
 ## The command tail is shorter than the link is long
 
@@ -189,9 +226,11 @@ cases on QEMU in both image forms, the four linked target-library cases, the
 target's own arithmetic suite, every function the target headers declare, the
 8 Bochs cases, the self-host image built and run twice with both runs
 identical, the self-host stage, the self-host probe, the self-host corpus, the
-response-file gate, the target-heap gate, the target library build, the linker
-rejections, the image compatibility matrix, the property gate, the performance
-measurement, the reproducible build, and the license and provenance audit.
+response-file gate, the target-heap gate, the target-clock gate, the target
+library build, the linker rejections, the image compatibility matrix, the
+property gate, the performance measurement, the reproducible build, and the
+license and provenance audit. The target's own suite is 95 pass, 0 fail with
+its destructive tests running.
 
 What the build needed from the compiler is recorded in the ledger: the 128-bit
 unsigned integer type, compound literals, aggregate passing and return by value,

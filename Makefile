@@ -119,10 +119,17 @@ response-files: cc64
 target-heap: cc64
 	@python3 tests/target_heap.py
 
+# The clock a program reads back is the clock that was set. The target's own
+# suite covers the setter; this covers the compiler's half of reading it, which
+# fails by name when the runtime thunk does not join the two registers the
+# service returns in the order the fields are wanted.
+target-rtc: cc64
+	@python3 tests/target_rtc.py
+
 # The release gate treats a missing emulator as a failure rather than a skip,
 # so it cannot record that a target property was checked when nothing booted.
 check-release: export CC64_REQUIRE_EMULATORS = 1
-check-release: check test-target test-bochs self-host self-host-stage selfhost-probe self-host-run self-host-corpus target-lib link-negative compat-matrix perf-measure fuzz-smoke repro-check response-files target-heap audit
+check-release: check test-target test-bochs self-host self-host-stage selfhost-probe self-host-run self-host-corpus target-lib link-negative compat-matrix perf-measure fuzz-smoke repro-check response-files target-heap target-rtc audit
 check-release-strict: export CC64_REQUIRE_CLEAN = 1
 check-release-strict: export CC64_REQUIRE_EMULATORS = 1
 check-release-strict: audit

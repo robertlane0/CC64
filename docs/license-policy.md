@@ -60,6 +60,14 @@ The changes CC64 depends on are made on that repository's `edit` branch and are
 recorded with their reason and observable effect in
 `docs/provenance-ledger.md`.
 
+Two more target changes are made on that branch and are recorded the same way.
+D-135 at `b850bbf` doubles the kernel slot to 512 sectors, which moves the
+target's volume from LBA 512 to 1024. D-137 at `11b3cbb` fixes the target's
+date setter, which wrote the month while still holding a day the new month
+could not have; the target's own suite goes from 94 passed and 1 failed to 95
+passed and none. Neither is required to make the compiler operational on its
+own, and neither is derived from CC64.
+
 The one CC64 depends on for self-hosting is the heap extension, recorded as
 D-132: the target's `edit` branch at `d9a4379`, over the pinned reference
 `13c3ced`, provides a twelve-mebibyte heap where the reference provides six.

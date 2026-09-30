@@ -2630,28 +2630,43 @@ static void emit_runtime_body(IrEncoder *encoder, RuntimeFunction function)
         break;
     case RUNTIME_TIME_FIELDS:
         /* cc64_time_fields(void): AH=2Ch leaves RCX=(hour<<8)|minute and
-           RDX=(second<<8). Folding the two halves of each into one byte
-           gives a single value whose three fields are the time of day. */
+           RDX=second, and the value returned is the three fields at byte 2,
+           byte 1 and byte 0. RCX already holds hour and minute in the order
+           wanted, so it is lifted one byte to make room for the seconds, not
+           shifted down and rejoined. Each half is taken 32 bits wide because
+           the service leaves the rest of the register to the caller, so the
+           bits above the fields are not the clock's. */
         emit_mov_reg_imm(encoder, 0U, 0x2c00U, 4U);
         emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
-        emit8(encoder, 0x31U); emit8(encoder, 0xc0U);
-        emit8(encoder, 0x48U); emit8(encoder, 0xc1U); emit8(encoder, 0xe1U);
-        emit8(encoder, 0x10U);
-        emit8(encoder, 0x48U); emit8(encoder, 0x09U); emit8(encoder, 0xc8U);
-        emit8(encoder, 0x48U); emit8(encoder, 0xc1U); emit8(encoder, 0xeaU);
-        emit8(encoder, 0x08U);
-        emit8(encoder, 0x48U); emit8(encoder, 0x09U); emit8(encoder, 0xd0U);
+        emit8(encoder, 0x31U); emit8(encoder, 0xc0U);   /* xor eax, eax */
+        emit8(encoder, 0x89U); emit8(encoder, 0xc8U);   /* mov eax, ecx */
+        emit8(encoder, 0x48U); emit8(encoder, 0xc1U);
+        emit8(encoder, 0xe0U); emit8(encoder, 0x08U); /* shl rax, SHIFT */
+        emit8(encoder, 0x8bU); emit8(encoder, 0xfaU);   /* mov edi, edx */
+        emit8(encoder, 0xc1U); emit8(encoder, 0xefU);
+        emit8(encoder, 0x10U);                          /* shr edi, 16 */
+        emit8(encoder, 0x48U); emit8(encoder, 0x09U);
+        emit8(encoder, 0xf8U);                          /* or rax, rdi */
         break;
     case RUNTIME_DATE_FIELDS:
-        /* cc64_date_fields(void): AH=2Ah leaves CX=year and RDX=(month<<8)|day,
-           which is already the packing this uses. */
+        /* cc64_date_fields(void): AH=2Ah leaves RCX=year and
+           RDX=(month<<8)|day, and the value returned is the three fields at
+           byte 2, byte 1 and byte 0. RDX already holds month and day in the
+           order wanted, so the year is lifted two bytes above it rather than
+           the halves being shifted together. Each half is taken 32 bits wide
+           because the service leaves the rest of the register to the caller,
+           so the bits above the fields are not the clock's. */
         emit_mov_reg_imm(encoder, 0U, 0x2a00U, 4U);
         emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
-        emit8(encoder, 0x31U); emit8(encoder, 0xc0U);
-        emit8(encoder, 0x48U); emit8(encoder, 0xc1U); emit8(encoder, 0xe1U);
-        emit8(encoder, 0x10U);
-        emit8(encoder, 0x48U); emit8(encoder, 0x09U); emit8(encoder, 0xc8U);
-        emit8(encoder, 0x48U); emit8(encoder, 0x09U); emit8(encoder, 0xd0U);
+        emit8(encoder, 0x31U); emit8(encoder, 0xc0U);   /* xor eax, eax */
+        emit8(encoder, 0x89U); emit8(encoder, 0xc8U);   /* mov eax, ecx */
+        emit8(encoder, 0x48U); emit8(encoder, 0xc1U);
+        emit8(encoder, 0xe0U); emit8(encoder, 0x10U); /* shl rax, SHIFT */
+        emit8(encoder, 0x8bU); emit8(encoder, 0xfaU);   /* mov edi, edx */
+        emit8(encoder, 0xc1U); emit8(encoder, 0xefU);
+        emit8(encoder, 0x10U);                          /* shr edi, 16 */
+        emit8(encoder, 0x48U); emit8(encoder, 0x09U);
+        emit8(encoder, 0xf8U);                          /* or rax, rdi */
         break;
     case RUNTIME_START:
         return;
