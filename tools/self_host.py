@@ -14,10 +14,6 @@ TARGET = ROOT.parent / "MS-DOS64"
 sys.path.insert(0, str(ROOT / "tools"))
 import target_revision  # noqa: E402  (path is set above)
 TARGET_REVISION = target_revision.TARGET_REVISION
-VOLUME_ARGUMENTS = [
-    "--vol-lba", "512", "--vol-sectors", "2880", "--sector-size", "512",
-    "--kernel-lba", "16", "--kernel-sectors", "256",
-]
 
 
 def check_target() -> None:
@@ -27,7 +23,7 @@ def check_target() -> None:
 def check_volume(image: pathlib.Path) -> None:
     result = subprocess.run(
         ["python3", str(TARGET / "tools/check_volume_clean.py"),
-         *VOLUME_ARGUMENTS, str(image)],
+         *target_revision.volume_arguments(image, TARGET), str(image)],
         cwd=TARGET, capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:

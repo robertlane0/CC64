@@ -15,8 +15,9 @@ import struct
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import embed_fat12  # noqa: E402  (path is set above)
 from embed_fat12 import (  # noqa: E402  (path is set above)
-    DATA_LBA, FAT_COUNT, FAT_SECTORS, ROOT_ENTRIES, ROOT_LBA, SECTOR, fat_get,
+    FAT_COUNT, ROOT_ENTRIES, SECTOR, fat_get, locate, volume_geometry,
 )
 
 MAXIMUM_CLUSTERS = 4096
@@ -25,7 +26,7 @@ MAXIMUM_CLUSTERS = 4096
 def directory(image: bytes) -> list[tuple[str, int, int]]:
     """Return (name, first cluster, size) for every root directory entry."""
     entries: list[tuple[str, int, int]] = []
-    root = ROOT_LBA * SECTOR
+    root = embed_fat12.ROOT_LBA * SECTOR
     for index in range(ROOT_ENTRIES):
         record = image[root + index * 32: root + index * 32 + 32]
         if len(record) < 32 or record[0] in (0x00, 0xE5):
@@ -51,7 +52,7 @@ def read_file(image: bytes, name: str) -> bytes:
         out = bytearray()
         seen = 0
         while 2 <= cluster < 0xFF0 and seen <= MAXIMUM_CLUSTERS:
-            start = (DATA_LBA + cluster - 2) * SECTOR
+            start = (embed_fat12.DATA_LBA + cluster - 2) * SECTOR
             out += image[start:start + SECTOR]
             cluster = fat_get(bytearray(image), cluster)
             seen += 1
@@ -69,10 +70,16 @@ def main() -> int:
                         help="number of file allocation tables (sanity check)")
     arguments = parser.parse_args()
     image = pathlib.Path(arguments.image).read_bytes()
-    fat_start = (512 + 1) * SECTOR
-    if arguments.expect_fat != FAT_COUNT:
+    # The volume's address is read from the image rather than assumed, so this
+    # tool follows a target that moved its volume.
+    try:
+        volume, fats, _, _, _ = volume_geometry(image)
+    except ValueError as error:
+        raise SystemExit(f"extract: {error}") from None
+    locate(image)
+    if arguments.expect_fat != FAT_COUNT or fats != FAT_COUNT:
         raise SystemExit("extract: unexpected volume geometry")
-    if len(image) < fat_start + SECTOR:
+    if len(image) < (volume + 1) * SECTOR:
         raise SystemExit("extract: image is smaller than the volume header")
     if arguments.name is None:
         for entry, cluster, size in directory(image):

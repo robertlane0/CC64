@@ -20,10 +20,6 @@ sys.path.insert(0, str(ROOT / "tests"))
 import corpus  # noqa: E402  (path is set above)
 import target_revision  # noqa: E402  (path is set above)
 TARGET_REVISION = target_revision.TARGET_REVISION
-VOLUME_ARGUMENTS = [
-    "--vol-lba", "512", "--vol-sectors", "2880", "--sector-size", "512",
-    "--kernel-lba", "16", "--kernel-sectors", "256",
-]
 # The corpus cases this emulator runs. It is far slower than the other one,
 # so the selection is a named subset chosen for what the second emulator has
 # to agree about rather than for volume: a return value, a data-pointer image
@@ -45,7 +41,7 @@ def check_target() -> None:
 def check_volume(image: pathlib.Path) -> None:
     result = subprocess.run(
         ["python3", str(TARGET / "tools/check_volume_clean.py"),
-         *VOLUME_ARGUMENTS, str(image)],
+         *target_revision.volume_arguments(image, TARGET), str(image)],
         cwd=TARGET, capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:

@@ -20,10 +20,6 @@ import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TARGET = ROOT.parent / "MS-DOS64"
-VOLUME_ARGUMENTS = [
-    "--vol-lba", "512", "--vol-sectors", "2880", "--sector-size", "512",
-    "--kernel-lba", "16", "--kernel-sectors", "256",
-]
 
 
 def main() -> int:

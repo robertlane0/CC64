@@ -18,10 +18,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 TARGET = ROOT.parent / "MS-DOS64"
 RUNTIME = ROOT / "src" / "runtime"
 INCLUDE_PATHS = [ROOT / "include" / "target", ROOT / "include" / "cc64", ROOT / "src"]
-VOLUME_ARGUMENTS = [
-    "--vol-lba", "512", "--vol-sectors", "2880", "--sector-size", "512",
-    "--kernel-lba", "16", "--kernel-sectors", "256",
-]
 
 
 def run(command: list[str], cwd: pathlib.Path, timeout: int = 600) -> None:

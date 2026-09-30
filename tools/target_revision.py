@@ -15,6 +15,7 @@ that booted nothing.
 from __future__ import annotations
 
 import os
+import re
 import pathlib
 import shutil
 import subprocess
@@ -29,6 +30,48 @@ TARGET_EDIT_BRANCH = "edit"
 def required() -> bool:
     """Whether a release is being prepared, so a missing emulator is a failure."""
     return os.environ.get("CC64_REQUIRE_EMULATORS") == "1"
+
+
+def kernel_sectors(target: pathlib.Path) -> int:
+    """The kernel extent the checked-out target's layout block declares.
+
+    Read from the target's Makefile rather than repeated here, so a target that
+    grows its kernel slot is followed instead of contradicted. The layout block
+    is the single source the target's own layout check reads.
+    """
+    block = (target / "Makefile").read_text(encoding="utf-8", errors="replace")
+    match = re.search(r"^KERNEL_SECTORS\s*:=\s*(\d+)\s*$", block, re.MULTILINE)
+    if match is None:
+        raise SystemExit(f"{target}/Makefile does not declare KERNEL_SECTORS")
+    return int(match.group(1))
+
+
+def volume_arguments(image: pathlib.Path, target: pathlib.Path) -> list[str]:
+    """The target's own volume arguments, read from the image rather than assumed.
+
+    The target decides where its volume sits, and a target revision may decide
+    differently from the one before it, so a harness that hardcoded the address
+    checked the wrong sectors and reported on a volume that was not there. The
+    geometry is read from the boot sector the target's own stamper wrote, which
+    is identified by its OEM name and signature, and the kernel extent comes
+    from the target's layout block. An image with no recognisable volume is
+    reported rather than guessed at.
+    """
+    sector_size = 512
+    data = image.read_bytes()
+    for lba in range(1, len(data) // sector_size):
+        sector = data[lba * sector_size: lba * sector_size + sector_size]
+        if sector[3:11] != b"MSDOS64 " or sector[510:512] != b"\x55\xaa":
+            continue
+        byts = sector[11] | (int(sector[12]) << 8)
+        if byts != sector_size:
+            continue
+        total = sector[19] | (int(sector[20]) << 8)
+        return ["--vol-lba", str(lba), "--vol-sectors", str(total),
+                "--sector-size", str(sector_size),
+                "--kernel-lba", "16",
+                "--kernel-sectors", str(kernel_sectors(target))]
+    raise SystemExit(f"no target volume found in {image}")
 
 
 def require_emulator(name: str, message: str) -> bool:

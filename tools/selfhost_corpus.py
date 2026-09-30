@@ -43,10 +43,6 @@ TIMEOUT = 900.0
 # The command tail is bounded to 143 bytes on the target, so a compile names
 # one source and one object and nothing else.
 COMMAND_BUDGET = 143
-VOLUME_ARGUMENTS = [
-    "--vol-lba", "512", "--vol-sectors", "2880", "--sector-size", "512",
-    "--kernel-lba", "16", "--kernel-sectors", "256",
-]
 INCLUDE_PATHS = ["-I", "include/target", "-I", "include/cc64", "-I", "src"]
 
 
@@ -124,7 +120,7 @@ def build_image(work: pathlib.Path) -> tuple[pathlib.Path, list[pathlib.Path]]:
 def check_volume(image: pathlib.Path, label: str) -> None:
     result = subprocess.run(
         ["python3", str(TARGET / "tools/check_volume_clean.py"),
-         *VOLUME_ARGUMENTS, str(image)],
+         *target_revision.volume_arguments(image, TARGET), str(image)],
         cwd=TARGET, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         detail = (result.stdout + result.stderr).strip()

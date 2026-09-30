@@ -33,10 +33,6 @@ import target_revision  # noqa: E402  (path is set above)
 
 IMAGE_NAME = "CC64S.COM"
 TIMEOUT = 900.0
-VOLUME_ARGUMENTS = [
-    "--vol-lba", "512", "--vol-sectors", "2880", "--sector-size", "512",
-    "--kernel-lba", "16", "--kernel-sectors", "256",
-]
 
 
 production_sources = runtime_sources.production_sources
@@ -101,7 +97,7 @@ def build_stage1(work: pathlib.Path) -> tuple[pathlib.Path, dict[str, pathlib.Pa
 def check_volume(image: pathlib.Path) -> None:
     result = subprocess.run(
         ["python3", str(TARGET / "tools/check_volume_clean.py"),
-         *VOLUME_ARGUMENTS, str(image)],
+         *target_revision.volume_arguments(image, TARGET), str(image)],
         cwd=TARGET, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         detail = (result.stdout + result.stderr).strip()

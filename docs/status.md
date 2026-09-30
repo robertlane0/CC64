@@ -85,12 +85,38 @@ unchanged: 88 pass, 1 fails, 6 skip. The one failure is the RTC date/time
 test, which fails identically on the unmodified reference and is not related to
 the heap.
 
-One target change is outstanding and is not CC64's to make. `make full` does
-not build on the `edit` branch: the two shell commits that precede this one grew
-the kernel to 131,104 bytes, one sector past the 256 the disk layout allows. It
-is unrelated to the heap — the heap change adds no bytes to the kernel — and the
-fix is the one the target's own error message names, a larger `KERNEL_SECTORS`
-and the matching constant in the target's layout test.
+One target change followed from that. `make full` did not build on the `edit`
+branch: the two shell commits that precede the heap change grew the kernel to
+131,104 bytes, one sector past the 256 the disk layout allowed. It was unrelated
+to the heap, which adds no bytes to the kernel. The kernel slot is now 512
+sectors, which is the slot doubled (D-135), and `make full` builds again at
+131,136 bytes. Doubling the slot is not one line, and the two consequences are
+worth naming because both were found by running the target rather than by
+reading it:
+
+- The kernel extent `[16, 528)` covered the volume at LBA 512 and the scratch
+  block at 500..511, so the volume moved to 1024 and scratch to 600 and
+  700..711, into the band the move freed. The ordering the layout relies on —
+  boot, then kernel, then ATA scratch, then FS scratch, then volume — still
+  holds, and `check-layout` and the target's own layout test both pass.
+- The loader stages the whole kernel in real mode before copying it to 1 MiB,
+  and its buffer sat at `0x70000` under the BIOS INT 13h stack at `0x90000` and
+  the VGA window. That capped the slot at 256 sectors, so raising the slot
+  without moving the buffer copied a quarter-mebibyte of scratch and volume
+  into the kernel image: five unrelated selftests failed at once, which is what
+  a truncated kernel image looks like. The buffer is now at `0x10000`, where
+  512 sectors reach `0x50000`.
+
+The target's own suite is now 94 pass, 1 fail with the destructive tests
+running, against 88 pass, 1 fail with six skipped before. The one failure is
+still the RTC date/time test, which fails identically on the unmodified
+reference.
+
+The volume move broke nine CC64 harnesses and both FAT12 tools, which each
+carried the volume's address as a constant and so wrote and read sectors the
+volume did not occupy (D-134). They now read the geometry from the boot sector
+the target's own stamper wrote, which follows whichever target revision is
+checked out rather than the one a constant was written against.
 
 ## The command tail is shorter than the link is long
 
@@ -113,6 +139,51 @@ arguments may be mixed with plain ones, and that a missing file, a file that
 names itself, and two files that name each other are each reported rather than
 followed.
 
+## A large program compiled with this compiler
+
+`tools/edit_build.py` builds a 24,461-line C program — a text editor, 111
+files — with CC64, without modifying a line of it, and places the result on a
+target volume. All 38 translation units compile and the objects link with the
+target library into a 590,241-byte load-biased image, which the target loads
+and starts: `Loaded, pid 1` from `build/dos64-lean.img` under QEMU.
+
+The program used to exit 1 with no message. Its arena and gap buffers reserve
+address space they do not commit — two scratch arenas of 512 MiB each, two
+interface arenas of 128 MiB each, and a 4 GiB document buffer, about 5.25 GiB in
+total — and a reservation the target cannot honour is fatal, so
+`edit_scratch_init` failed and the start-up path returned 1 silently.
+
+With permission to change c-edit's architecture, on the branch `ms-dos64`, the
+fix is 36 lines in three files and changes no behaviour on a host. A capacity is
+a ceiling, not a promise, so `edit_arena_init` now falls back to a fixed
+`EDIT_ARENA_TARGET_BYTES` when the platform cannot reserve the capacity asked
+for, and `edit_gap_init` does the same with `GAP_TARGET_RESERVE`. Both are one
+mebibyte. The figure is fixed rather than "whatever is left" on purpose: a
+halving fallback was tried first and it is wrong, because the first arena to
+ask takes the whole heap — measured, an 8 MiB reservation — and every later
+allocation is starved, so the editor failed a step later instead of starting. A
+host with the address space reserves the full cap and is unaffected, which is
+why c-edit's own suite is unchanged: `make test`, `make release-test` and
+`make asan` all pass.
+
+The editor now starts, initialises every subsystem, and draws its first screen
+on the target: a menubar reading `(F) (E) (V) Close Editor(H)`, a ruler, a
+sidebar, and a status line reporting `[LF] [UTF-8] 1:1 [Untitled-1.txt]`.
+`python3 tools/edit_build.py --run` reproduces the whole claim in one command:
+it compiles the 38 units, links the image, boots it, and reports
+`Loaded, pid 1` and `first screen drawn`, failing if either is absent.
+
+Interactive input does not reach it, and the reason is in the target rather
+than in the program or the compiler. The target's console-input-status service
+(`INT 21h` `AH=0Bh`) checks the PS/2 keyboard buffer and the kernel keyboard
+queue, and both emulators deliver a test's keystrokes over the serial line,
+which that service does not inspect. Measured with a program that polls
+`cc64_console_ready()` 200 times while a byte is waiting: the byte is visible
+at the shell prompt behind it, and the service never reports it ready. The
+editor therefore blocks in `edit_tty_read` after its first frame. Making that
+service see the serial line is a target change, and it is not required to make
+the compiler operational, so it is reported here rather than made.
+
 What passes: every unit group, the host integration group, the 35 conformance
 cases on QEMU in both image forms, the four linked target-library cases, the
 target's own arithmetic suite, every function the target headers declare, the
@@ -121,32 +192,6 @@ identical, the self-host stage, the self-host probe, the self-host corpus, the
 response-file gate, the target-heap gate, the target library build, the linker
 rejections, the image compatibility matrix, the property gate, the performance
 measurement, the reproducible build, and the license and provenance audit.
-
-## A large program compiled with this compiler
-
-`tools/edit_build.py` builds a 24,461-line C program — a text editor, 111
-files — with CC64, without modifying a line of it, and places the result on a
-target volume. All 38 translation units compile and the objects link with the
-target library into a 590,033-byte load-biased image, which the target loads
-and starts: `Loaded, pid 1` from `build/dos64-lean.img` under QEMU.
-
-The program does not reach its first screen on the pinned target, and the
-reason is a resource limit rather than a compiler gap. It reserves address
-space it does not commit: two scratch arenas of 512 MiB each and two
-interface arenas of 128 MiB each, about 1.25 GiB in total. The target
-identity-maps eight mebibytes in total and its heap is the six mebibytes from
-`0x200000` to `0x800000`. Measured on the target by asking its own arena
-initializer for each size in turn, a reservation succeeds up to five mebibytes
-and fails from six; the rest of the heap is taken by the image. The program
-commits only what it uses, so the reservations are the whole of the
-requirement, and the start-up path returns 1 without a message because
-`edit_scratch_init` failing is one of its two silent exits.
-
-No compiler change reaches that. A reservation is address space, and the target
-maps eight mebibytes of it. Enlarging the target's address space would be an
-operating-system feature rather than a defect the target contract requires be
-fixed, so it is out of scope under the repository's own rule that a target edit
-exists to make the compiler operational.
 
 What the build needed from the compiler is recorded in the ledger: the 128-bit
 unsigned integer type, compound literals, aggregate passing and return by value,

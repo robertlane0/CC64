@@ -19,11 +19,55 @@ FAT_COUNT = 2
 FAT_SECTORS = 9
 ROOT_ENTRIES = 224
 ROOT_SECTORS = (ROOT_ENTRIES * 32 + SECTOR - 1) // SECTOR
-VOLUME_LBA = 512
+# The volume's address is a property of the target image, not of this tool: the
+# target chooses where its volume sits and may move it, so the address is found
+# in the image rather than assumed here. `volume_geometry` reads the boot sector
+# the target stamped, which carries the OEM name and the sector size, and the
+# fields below are the rest of the geometry the target documents.
+DEFAULT_VOLUME_LBA = 512
+VOLUME_LBA = DEFAULT_VOLUME_LBA
 DATA_LBA = VOLUME_LBA + RESERVED + FAT_COUNT * FAT_SECTORS + ROOT_SECTORS
 FAT_LBA = VOLUME_LBA + RESERVED
 ROOT_LBA = FAT_LBA + FAT_COUNT * FAT_SECTORS
 TOTAL_CLUSTERS = 2880
+
+
+def volume_geometry(image: bytes) -> tuple[int, int, int, int, int]:
+    """Return (volume LBA, FAT count, FAT sectors, root sectors, total sectors).
+
+    The boot sector the target's own stamper wrote is identified by its OEM
+    name and signature, so the only sector that can be mistaken for it is one
+    the target also wrote. A volume is required to be found: an image with no
+    recognisable volume is reported rather than written at a guessed address.
+    """
+    for lba in range(1, len(image) // SECTOR):
+        sector = image[lba * SECTOR: lba * SECTOR + SECTOR]
+        if sector[3:11] != b"MSDOS64 " or sector[510:512] != b"\x55\xaa":
+            continue
+        byts = sector[11] | (int(sector[12]) << 8)
+        if byts != SECTOR:
+            continue
+        fats = sector[16]
+        fat_sectors = sector[22] | (int(sector[23]) << 8)
+        total = sector[19] | (int(sector[20]) << 8)
+        root_sectors = (ROOT_ENTRIES * 32 + SECTOR - 1) // SECTOR
+        return lba, fats, fat_sectors, root_sectors, total
+    raise ValueError("no target volume found in the image")
+
+
+def locate(image: bytes) -> None:
+    """Point the geometry constants at the volume this image actually has."""
+    global VOLUME_LBA, DATA_LBA, FAT_LBA, ROOT_LBA, FAT_SECTORS
+    global ROOT_SECTORS, TOTAL_CLUSTERS, FAT_COUNT
+    volume, fats, fat_sectors, roots, total = volume_geometry(image)
+    VOLUME_LBA = volume
+    FAT_COUNT = fats
+    FAT_SECTORS = fat_sectors
+    ROOT_SECTORS = roots
+    TOTAL_CLUSTERS = total
+    DATA_LBA = volume + RESERVED + fats * fat_sectors + roots
+    FAT_LBA = volume + RESERVED
+    ROOT_LBA = FAT_LBA + fats * fat_sectors
 
 
 def fat_get(image: bytearray, cluster: int) -> int:
@@ -138,6 +182,7 @@ def main() -> int:
     if args.manifest is not None and (args.program is not None or args.name is not None):
         parser.error("--manifest cannot be combined with a program and name")
     image = bytearray(args.image.read_bytes())
+    locate(bytes(image))
     if args.manifest is not None:
         entries = read_manifest(args.manifest)
         for name, path in entries:

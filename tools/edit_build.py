@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import re
+import shutil
 import subprocess
 import sys
 
@@ -81,6 +83,10 @@ def main() -> int:
                         help="executable form to link")
     parser.add_argument("--volume", default=None,
                         help="target volume image to place the program on")
+    parser.add_argument("--run", action="store_true",
+                        help="boot the image on the target and report what it did")
+    parser.add_argument("--run-for", type=float, default=30.0,
+                        help="seconds to let the program run before stopping it")
     arguments = parser.parse_args()
     chosen = units()
     if arguments.only:
@@ -124,6 +130,67 @@ def main() -> int:
             print("  volume: " + (detail[-1] if detail else "(no diagnostic)"))
             return 1
         print(f"placed on {disk}")
+    if arguments.run:
+        return boot(arguments.image, arguments.run_for)
+    return 0
+
+
+def boot(image: str, seconds: float) -> int:
+    """Run the image on the target and report what it did.
+
+    The claim this exists for is that the program starts and draws, not that it
+    merely loads, so the report looks for the first screen the editor draws and
+    prints the exit status either way. Interactive input is not exercised: the
+    target's console-input-status service reports the PS/2 keyboard only, and
+    both emulators deliver a test's keystrokes over the serial line.
+    """
+    if shutil.which("qemu-system-x86_64") is None:
+        print("target run: skipped (QEMU unavailable)")
+        return 0
+    work = OUTPUT
+    work.mkdir(parents=True, exist_ok=True)
+    disk = work / "edit-run.img"
+    shutil.copy2(DOS64 / "build" / "dos64-lean.img", disk)
+    subprocess.run([sys.executable, str(ROOT / "tests/embed_fat12.py"),
+                    str(disk), str(OUTPUT / image), pathlib.Path(image).stem],
+                   check=True, stdout=subprocess.DEVNULL)
+    transcript = work / "edit-run.log"
+    with transcript.open("w", encoding="utf-8") as stream:
+        process = subprocess.Popen(
+            ["qemu-system-x86_64", "-drive", f"file={disk},format=raw",
+             "-serial", "stdio", "-display", "none"],
+            stdin=subprocess.PIPE, stdout=stream, stderr=subprocess.STDOUT,
+            text=True)
+        process.stdin.write(pathlib.Path(image).stem + "\n")
+        process.stdin.close()
+        try:
+            process.wait(timeout=seconds)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+    text = transcript.read_text(encoding="utf-8", errors="replace")
+    marker = [line for line in text.splitlines() if "Loaded, pid" in line]
+    exit_line = re.findall(r"^Exit (\d+)\s*$", text, re.MULTILINE)
+    # The editor draws a styled screen, so a menu letter and its key hint are
+    # separated by colour codes. Strip the sequences before looking for text:
+    # a substring that never appears in the raw bytes still names a drawn
+    # screen, and a check that only ever matched raw bytes would report "not
+    # seen" for a screen that was.
+    plain = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", text)
+    plain = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", "", plain)
+    drew = "(F)" in plain and "Untitled" in plain
+    print(f"target run: {marker[-1] if marker else 'did not report a load'}"
+          f"{', exit ' + exit_line[-1] if exit_line else ''}")
+    print(f"target run: first screen {'drawn' if drew else 'not seen'}")
+    if not marker:
+        print("  the target did not start the image")
+        return 1
+    if not drew:
+        print("  the image loaded but no screen was found in its output")
+        return 1
     return 0
 
 

@@ -63,8 +63,21 @@ recorded with their reason and observable effect in
 The one CC64 depends on for self-hosting is the heap extension, recorded as
 D-132: the target's `edit` branch at `d9a4379`, over the pinned reference
 `13c3ced`, provides a twelve-mebibyte heap where the reference provides six.
-`make target-heap` measures the difference with a compiler-produced program and
-requires at least eleven mebibytes, so the pinned reference fails that gate by
-name rather than the dependency being implicit. The pinned reference revision
-stays in the checkout, so a CC64 build can always be compared against the
-unmodified target.
+The kernel slot was then doubled to 512 sectors as D-135, at `b850bbf`, which
+moved the target's volume from LBA 512 to 1024. `make target-heap` measures the
+heap difference with a compiler-produced program and requires at least eleven
+mebibytes, so the pinned reference fails that gate by name rather than the
+dependency being implicit. The pinned reference revision stays in the checkout,
+so a CC64 build can always be compared against the unmodified target.
+
+The volume's address is read from the image rather than written into CC64's
+harnesses (D-134), so a target that moves it is followed instead of
+contradicted. `tools/target_revision.py` owns that read.
+
+c-edit, the large program CC64 compiles, is an external repository and not a
+CC64 build input. Its `ms-dos64` branch carries one change of its own, made
+with permission and confined to the memory layer: an arena or gap buffer whose
+reservation the platform cannot honour falls back to a fixed small one (36
+lines in three files, no behaviour change on a host). That change is c-edit's
+and is not copied into CC64; CC64 records the observation in
+`docs/provenance-ledger.md` and `docs/status.md`.
