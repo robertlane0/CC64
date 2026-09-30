@@ -18,6 +18,7 @@ int cc64_read(int handle, void *data, unsigned long size);
 int cc64_write(int handle, const void *data, unsigned long size);
 int cc64_close(int handle);
 int cc64_delete(const void *fcb);
+const char *cc64_file_name(const char *path);
 int cc64_lseek(int handle, long offset, int origin);
 int cc64_putc(int character);
 
@@ -44,8 +45,15 @@ int errno;
 
 FILE *fopen(const char *path, const char *mode)
 {
+    /* The same resolution the file calls use, so a path a program composed
+       from the working directory names the same file whichever call it makes. */
+    const char *name = cc64_file_name(path);
+    if (name == NULL) {
+        errno = 2;
+        return NULL;
+    }
     int writable = mode[0] == 'w' || mode[0] == 'a';
-    int handle = writable ? cc64_create(path, 0) : cc64_open(path);
+    int handle = writable ? cc64_create(name, 0) : cc64_open(name);
     if (handle < 0) {
         errno = 2;
         return NULL;

@@ -57,11 +57,29 @@ int close(int handle)
     return 0;
 }
 
+/* The console's other input source. Kept out of the header because a program
+   that includes it would then be depending on the console's composition, which
+   is a property of the target rather than an interface a caller should name. */
+extern int cc64_console_take(void);
+
 ssize_t read(int handle, void *data, size_t size)
 {
     if (size == 0U) return 0;
     int moved = cc64_read(handle, data, (unsigned long)size);
     if (moved < 0) return fail(errno != 0 ? errno : EIO);
+    if (moved == 0 && handle >= 0 && handle <= 2) {
+        /* The target's console read covers the PS/2 keyboard and reports
+           nothing there as end of file. The console also carries a line, which
+           is where a terminal program's keystrokes arrive, so an empty keyboard
+           is not an empty console: take from the line before answering. The
+           keyboard is asked first so that the order a program sees is the one
+           the target's own shell reads in. */
+        int taken = cc64_console_take();
+        if (taken >= 0) {
+            ((unsigned char *)data)[0] = (unsigned char)taken;
+            return 1;
+        }
+    }
     return (ssize_t)moved;
 }
 
@@ -113,23 +131,53 @@ static int wanted_mode(int flags)
     return 0;
 }
 
+/* The name the target's file services are given, or NULL when the path names
+   no file here. The target has one directory and its name is the root, so a
+   path that starts at the root names a file exactly as the bare name does:
+   "/NOTES.TXT" and "NOTES.TXT" are one file, and a caller that composed the
+   first is not asking for a different one. A path that names any other
+   directory is refused rather than reduced to its last component: there is no
+   such directory here, and opening some other file under that name would be
+   worse than saying the path cannot be reached. No copy is made, because
+   dropping a leading separator is advancing a pointer. */
+const char *cc64_file_name(const char *path)
+{
+    if (path == NULL) {
+        return NULL;
+    }
+    while (*path == '/' || *path == '\\') {
+        ++path;
+    }
+    if (*path == '\0') {
+        return NULL;
+    }
+    for (const char *at = path; *at != '\0'; ++at) {
+        if (*at == '/' || *at == '\\' || *at == ':') {
+            return NULL;
+        }
+    }
+    return path;
+}
+
 int open(const char *path, int flags, ...)
 {
     int mode = wanted_mode(flags);
-    int handle = cc64_open(path);
+    const char *name = cc64_file_name(path);
+    if (name == NULL) return fail(ENOENT);
+    int handle = cc64_open(name);
     if (handle >= 0) {
         if (mode == 2) {
             /* A request to read and write needs a handle opened for both, and
                the target cannot widen one that is already open, so the read
                handle is replaced by a read-and-write one. */
             cc64_close(handle);
-            handle = cc64_create(path, 2);
+            handle = cc64_create(name, 2);
         } else if (mode == 1 || (flags & O_TRUNC) != 0 || (flags & O_CREAT) != 0) {
             cc64_close(handle);
-            handle = cc64_create(path, mode);
+            handle = cc64_create(name, mode);
         }
     } else if ((flags & O_CREAT) != 0) {
-        handle = cc64_create(path, mode);
+        handle = cc64_create(name, mode);
     }
     if (handle < 0) return fail((flags & O_CREAT) != 0 ? ENOENT : EACCES);
     return handle;
@@ -179,7 +227,9 @@ int unlink(const char *path)
 int access(const char *path, int mode)
 {
     (void)mode;
-    int handle = cc64_open(path);
+    const char *name = cc64_file_name(path);
+    if (name == NULL) return fail(ENOENT);
+    int handle = cc64_open(name);
     if (handle < 0) return fail(ENOENT);
     cc64_close(handle);
     return 0;
@@ -187,7 +237,9 @@ int access(const char *path, int mode)
 
 int truncate(const char *path, off_t length)
 {
-    int handle = cc64_create(path, 1);
+    const char *name = cc64_file_name(path);
+    if (name == NULL) return fail(ENOENT);
+    int handle = cc64_create(name, 1);
     if (handle < 0) return fail(ENOENT);
     long moved = (long)cc64_lseek(handle, (long)length, 0 /* SEEK_SET */);
     cc64_close(handle);

@@ -2294,6 +2294,7 @@ typedef enum RuntimeFunction {
     RUNTIME_EXIT,
     RUNTIME_START,
     RUNTIME_CONSOLE_READY,
+    RUNTIME_CONSOLE_LINE,
     RUNTIME_TIME_FIELDS,
     RUNTIME_DATE_FIELDS
 } RuntimeFunction;
@@ -2314,6 +2315,7 @@ static bool runtime_function_info(const char *name, RuntimeFunction *function)
     else if (strcmp(name, "cc64_exit") == 0) *function = RUNTIME_EXIT;
     else if (strcmp(name, "cc64_start") == 0) *function = RUNTIME_START;
     else if (strcmp(name, "cc64_console_ready") == 0) *function = RUNTIME_CONSOLE_READY;
+    else if (strcmp(name, "cc64_console_line") == 0) *function = RUNTIME_CONSOLE_LINE;
     else if (strcmp(name, "cc64_time_fields") == 0) *function = RUNTIME_TIME_FIELDS;
     else if (strcmp(name, "cc64_date_fields") == 0) *function = RUNTIME_DATE_FIELDS;
     else return false;
@@ -2628,6 +2630,24 @@ static void emit_runtime_body(IrEncoder *encoder, RuntimeFunction function)
         emit8(encoder, 0x0fU); emit8(encoder, 0x95U); emit8(encoder, 0xc0U);
         emit8(encoder, 0x0fU); emit8(encoder, 0xb6U); emit8(encoder, 0xc0U);
         break;
+    case RUNTIME_CONSOLE_LINE:
+        /* cc64_console_line(void): AH=03h reads the console's own line, and is
+           the service the target's shell uses to get a character from it. The
+           carry says whether one arrived, so the branch below turns the pair
+           into a value: the character when the carry is clear, and -1 when it
+           is set, which is a character no encoding produces. The read cannot be
+           blocking, so a caller that asks with nothing waiting is told so
+           rather than left waiting. */
+        emit_mov_reg_imm(encoder, 0U, 0x0300U, 4U);
+        emit8(encoder, 0xcdU); emit8(encoder, 0x21U);
+        emit8(encoder, 0x72U); emit8(encoder, 0x04U);   /* jb .line_empty */
+        emit8(encoder, 0x0fU); emit8(encoder, 0xb6U);
+        emit8(encoder, 0xc0U);                          /* movzx eax, al */
+        emit8(encoder, 0xc3U);                          /* ret */
+        emit8(encoder, 0xb8U); emit8(encoder, 0xffU);   /* .line_empty: */
+        emit8(encoder, 0xffU); emit8(encoder, 0xffU);
+        emit8(encoder, 0xffU);                          /* mov eax, -1 */
+        break;
     case RUNTIME_TIME_FIELDS:
         /* cc64_time_fields(void): AH=2Ch leaves RCX=(hour<<8)|minute and
            RDX=second, and the value returned is the three fields at byte 2,
@@ -2680,7 +2700,8 @@ static bool append_runtime_functions(IrEncoder *encoder)
         "cc64_putc", "cc64_write", "cc64_read", "cc64_alloc",
         "cc64_free", "cc64_open", "cc64_create", "cc64_lseek",
         "cc64_close", "cc64_delete", "cc64_exit", "cc64_start",
-        "cc64_console_ready", "cc64_time_fields", "cc64_date_fields"
+        "cc64_console_ready", "cc64_console_line",
+        "cc64_time_fields", "cc64_date_fields"
     };
     for (size_t i = 0U; i < sizeof(names) / sizeof(names[0]); ++i) {
         size_t symbol_index = UINT32_MAX;

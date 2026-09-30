@@ -211,23 +211,47 @@ sidebar, and a status line reporting `[LF] [UTF-8] 1:1 [Untitled-1.txt]`.
 it compiles the 38 units, links the image, boots it, and reports
 `Loaded, pid 1` and `first screen drawn`, failing if either is absent.
 
-Interactive input does not reach it, and the reason is in the target rather
-than in the program or the compiler. The target's console-input-status service
-(`INT 21h` `AH=0Bh`) checks the PS/2 keyboard buffer and the kernel keyboard
-queue, and both emulators deliver a test's keystrokes over the serial line,
-which that service does not inspect. Measured with a program that polls
-`cc64_console_ready()` 200 times while a byte is waiting: the byte is visible
-at the shell prompt behind it, and the service never reports it ready. The
-editor therefore blocks in `edit_tty_read` after its first frame. Making that
-service see the serial line is a target change, and it is not required to make
-the compiler operational, so it is reported here rather than made.
+It now also *works* interactively: it opens a file that is already on the
+volume, takes keystrokes, saves, quits, and leaves the terminal as it found
+it. `python3 tools/edit_build.py --run` checks the whole round trip and fails
+if any part of it does not hold — the image loads, the first screen is drawn,
+the typed text reaches the editor, the terminal is restored, the editor exits
+zero, and the bytes read back off the volume are the edit.
+
+Two things stood between the editor and that, and both were in the runtime
+rather than in the editor.
+
+**Input did not arrive at all.** The target delivers console input on the line,
+which is where its own shell reads it, and both emulators put a test's
+keystrokes there. But the two services a *user program* uses to receive input —
+the console-input-status service and a read on a console handle — consulted
+only the PS/2 keyboard, which no emulator in this matrix feeds. So a child
+polled forever and read end of file, while the bytes it had been sent sat
+unread: measurable, and it is why the editor drew a screen and then saw
+nothing. The fix uses the service the target already has for exactly this, the
+same one the shell uses, rather than changing the target. The line cannot be
+asked whether a character is waiting without taking it, so the status check
+takes one and holds it for the read that follows (D-138).
+`make target-console` sends a character to a program on the target and requires
+the poll and the read to agree on it; it fails against the runtime before the
+change and passes after.
+
+**A file could not be named.** The editor resolves the name on its command line
+to an absolute path, which is the portable way and is what its own path
+handling requires. The target has one directory and the root is its name, so
+`/NOTES.TXT` and `NOTES.TXT` are the same file — but the leading separator went
+to the target's file services unchanged and was refused, which arrived as
+"no such file". A path that starts at the root now names the file the same way
+the bare name does, and a path naming any other directory is refused rather
+than reduced to its last component, which would open a different file (D-139).
 
 What passes: every unit group, the host integration group, the 35 conformance
 cases on QEMU in both image forms, the four linked target-library cases, the
 target's own arithmetic suite, every function the target headers declare, the
 8 Bochs cases, the self-host image built and run twice with both runs
 identical, the self-host stage, the self-host probe, the self-host corpus, the
-response-file gate, the target-heap gate, the target-clock gate, the target
+response-file gate, the target-heap gate, the target-console gate, the
+target-clock gate, the target
 library build, the linker rejections, the image compatibility matrix, the
 property gate, the performance measurement, the reproducible build, and the
 license and provenance audit. The target's own suite is 95 pass, 0 fail with
