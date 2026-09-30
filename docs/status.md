@@ -6,11 +6,11 @@ conformance cases in both image forms, all fifteen production units compiled
 on the target to byte-identical objects, the relinked compiler image
 byte-identical, the 35 conformance cases compiled, linked, and run by a
 compiler the target built, the target heap measured at eleven mebibytes, the
-date a compiler-produced program reads back from the target, the response-file
-gate, the seven unit groups, the linker-rejection and
+date a compiler-produced program reads back from the target, a character sent
+to a program on the target and read back by it, the response-file gate, the seven unit groups, the linker-rejection and
 image-compatibility gates, the property gate, the license and provenance
 audit, and a reproducible clean build over 53 files with digest
-`4ef239cf9ae034bf59b79bb97b5da6df437da0ffcab5e8260e45202b49930ac7`.
+`e3333efa3406f18b8136eaa79459c7cf46621f6ba9da480787a5d23613dcecfc`.
 
 Bootstrap audit record: GCC 16.2.1, GNU Make 4.4.1, Python 3.14.7,
 QEMU 11.1.1, Bochs 3.1, Git 2.55.0. `make clean && make check` and

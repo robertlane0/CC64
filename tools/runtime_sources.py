@@ -10,10 +10,13 @@ memory-mapping, dynamic-loading, and arithmetic units exist for a program the
 compiler builds, not for the compiler.
 
 The compiler image is built from the smaller set because the target's heap is
-six mebibytes in total, and an image carrying a terminal library it never calls
-takes that heap away from the work the compiler has to do. The split is checked
-rather than trusted: the self-host stage links the compiler image from this set
-and an unresolved symbol names any unit that belongs in it and is not listed.
+twelve mebibytes in total and the compiler itself has to fit in it, and an
+image carrying a terminal library it never calls takes that heap away from the
+work the compiler has to do.
+
+The split is checked rather than trusted: the self-host stage links the compiler
+image from this set, and an unresolved symbol names any unit that belongs in it
+and is not listed. A unit another listed unit depends on belongs in it too.
 """
 
 from __future__ import annotations
