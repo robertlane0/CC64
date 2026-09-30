@@ -27,54 +27,14 @@
 #include <termios.h>
 #include <time.h>
 
-int cc64_console_ready(void);
-int cc64_console_line(void);
+/* Whether a character is waiting on the console, from either the keyboard or
+   the line, and taking one. Both live with the file calls because a read on
+   a console handle is what consumes a character, and the terminal asks the
+   same question the read has to answer. */
+bool cc64_console_input_ready(void);
+int cc64_console_take(void);
 long cc64_time_fields(void);
 long cc64_date_fields(void);
-
-/* The target's console has two input sources, and a program has to see both.
-   The keyboard-status service answers for the PS/2 keyboard alone, while the
-   line the target's own shell reads -- and the line both emulators deliver a
-   test's keystrokes on -- is read by the line service, which cannot be asked
-   whether a character is waiting without taking it. A status check therefore
-   has to keep what it took, so one character is held here, and a program that
-   polls and then reads gets the character the poll reported rather than the
-   next one. One character is enough because a status check is always followed
-   by the read it was made for. */
-static unsigned char line_held;
-static bool line_has_held;
-
-/* Take a character from the console's line: the one a status check held, or
-   one the line service hands over now. -1 when nothing is waiting. */
-int cc64_console_take(void)
-{
-    if (line_has_held) {
-        line_has_held = false;
-        return (int)line_held;
-    }
-    return cc64_console_line();
-}
-
-/* Is a character waiting on the console, from either source? Taking from the
-   line to find out is the only way to ask, so what is taken is held for the
-   read that follows. The keyboard is asked first because that answer is free
-   and because the target's shell also takes the keyboard before the line. */
-bool cc64_console_input_ready(void)
-{
-    if (line_has_held) {
-        return true;
-    }
-    if (cc64_console_ready() != 0) {
-        return true;
-    }
-    int taken = cc64_console_line();
-    if (taken < 0) {
-        return false;
-    }
-    line_held = (unsigned char)taken;
-    line_has_held = true;
-    return true;
-}
 
 /* The character size the runtime assumes for the console. A terminal program
    needs a number before it draws anything, and the target's console is

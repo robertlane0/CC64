@@ -24,12 +24,21 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / "src" / "runtime"
 
 # The units the compiler's own code calls: the allocator, the character
-# classes, the formatted output, the file streams, the numeric conversions, and
-# the string routines. Everything else in the library answers an interface a
-# program written for a hosted system uses.
+# classes, the formatted output, the file streams, the file calls, the numeric
+# conversions, and the string routines. Everything else in the library answers an
+# interface a program written for a hosted system uses.
+#
+# The file calls belong here because the compiler opens files to read them, and
+# because the stream unit resolves a path through them: a program that opens a
+# file by an absolute path would be refused a name the target does have, and
+# the code that resolves the path is the file unit's. This is a set of units
+# rather than a set of interfaces, so a unit another listed unit depends on is
+# listed too. The self-host stage links the image from this set, and an
+# unresolved symbol is what says the list has been left behind by a change.
 COMPILER_LIBRARY = (
     "target_alloc.c",
     "target_ctype.c",
+    "target_file.c",
     "target_format.c",
     "target_stdio.c",
     "target_stdlib.c",

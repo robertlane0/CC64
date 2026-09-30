@@ -24,6 +24,15 @@ int cc64_write(int handle, const void *data, unsigned long size);
 int cc64_close(int handle);
 int cc64_lseek(int handle, long offset, int origin);
 int cc64_delete(const void *fcb);
+int cc64_console_ready(void);
+int cc64_console_line(void);
+
+/* The console's other input source, and whether any input is waiting. Both are
+   declared rather than published in a header because a program that included
+   them would be depending on how the console is made up, which is a property of
+   the target rather than an interface a caller should name. */
+bool cc64_console_input_ready(void);
+int cc64_console_take(void);
 
 /* A file control block is the target's own directory-entry descriptor: one
    byte of drive, then eleven bytes of name, then the extent fields. Only the
@@ -56,11 +65,6 @@ int close(int handle)
     if (result < 0) return fail(EBADF);
     return 0;
 }
-
-/* The console's other input source. Kept out of the header because a program
-   that includes it would then be depending on the console's composition, which
-   is a property of the target rather than an interface a caller should name. */
-extern int cc64_console_take(void);
 
 ssize_t read(int handle, void *data, size_t size)
 {
@@ -129,6 +133,50 @@ static int wanted_mode(int flags)
     if ((flags & O_ACCMODE) == O_RDWR) return 2;
     if ((flags & O_ACCMODE) == O_WRONLY) return 1;
     return 0;
+}
+
+/* The target's console has two input sources, and a program has to see both.
+   The keyboard-status service answers for the PS/2 keyboard alone, while the
+   line the target's own shell reads -- and the line both emulators deliver a
+   test's keystrokes on -- is read by the line service, which cannot be asked
+   whether a character is waiting without taking it. A status check therefore
+   has to keep what it took, so one character is held here, and a program that
+   polls and then reads gets the character the poll reported rather than the
+   next one. One character is enough because a status check is always followed
+   by the read it was made for. */
+static unsigned char line_held;
+static bool line_has_held;
+
+/* Take a character from the console's line: the one a status check held, or
+   one the line service hands over now. -1 when nothing is waiting. */
+int cc64_console_take(void)
+{
+    if (line_has_held) {
+        line_has_held = false;
+        return (int)line_held;
+    }
+    return cc64_console_line();
+}
+
+/* Is a character waiting on the console, from either source? Taking from the
+   line to find out is the only way to ask, so what is taken is held for the
+   read that follows. The keyboard is asked first because that answer is free
+   and because the target's shell also takes the keyboard before the line. */
+bool cc64_console_input_ready(void)
+{
+    if (line_has_held) {
+        return true;
+    }
+    if (cc64_console_ready() != 0) {
+        return true;
+    }
+    int taken = cc64_console_line();
+    if (taken < 0) {
+        return false;
+    }
+    line_held = (unsigned char)taken;
+    line_has_held = true;
+    return true;
 }
 
 /* The name the target's file services are given, or NULL when the path names
