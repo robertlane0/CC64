@@ -89,3 +89,13 @@ reservation the platform cannot honour falls back to a fixed small one (36
 lines in three files, no behaviour change on a host). That change is c-edit's
 and is not copied into CC64; CC64 records the observation in
 `docs/provenance-ledger.md` and `docs/status.md`.
+
+The C build of c-edit is checked with the host compiler, not with CC64, so
+CC64 does not audit it. Its own gates are recorded here because the
+`ms-dos64` branch is a change to it: `make test`, `make release-test` and
+`make asan` pass, `make cppcheck` reports nothing across 75 files,
+`make format-check` accepts every file, and all 44 of the PTY differential's
+scenarios plus its 4 file and 6 argument scenarios run clean against the C
+binary. The differential's other half needs the pinned Rust toolchain and was
+not run here, so the two binaries have not been compared byte for byte; the C
+binary's own behaviour over those scenarios is what was checked.
