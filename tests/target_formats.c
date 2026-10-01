@@ -1,11 +1,9 @@
-/* Probe: narrow down which construct the target gets wrong.
+/* Probe: the aggregate-initializer and formatter behaviour held by
+   tests/target_formats.py.
 
-   Four of the thirty test units of the program CC64 compiles fail on the target
-   and pass on a host, and each reads its result through a comparison, so the
-   question is whether the construct behind the comparison is wrong or the
-   comparison is. Every case here prints its own line with the values involved,
-   so one boot says which of them is at fault rather than which symptom appears.
-*/
+   Each case prints its own line with the values involved, so one boot says
+   which construct is at fault rather than which symptom appears. The
+   comment above each group says what the case is there to hold. */
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>

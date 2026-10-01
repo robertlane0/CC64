@@ -132,10 +132,24 @@ target-console: cc64
 target-rtc: cc64
 	@python3 tests/target_rtc.py
 
+# Three of the defects this holds were silent: the generated program ran and was
+# wrong, so a host test of the compiler cannot see them. They are held by
+# building a program that prints what each construct produced and running it.
+target-formats: cc64
+	@python3 tests/target_formats.py
+
+# The 24,461-line program this compiler is for keeps thirty-seven test units of
+# its own, and compiling them for the target reaches library the editor does not
+# touch. Seven ask for POSIX or GNU calls the subset does not contain and are
+# correctly refused; of the rest, all that the target can answer pass, and the
+# one it cannot is named with the reason.
+target-suite: cc64
+	@python3 tools/edit_tests.py --run
+
 # The release gate treats a missing emulator as a failure rather than a skip,
 # so it cannot record that a target property was checked when nothing booted.
 check-release: export CC64_REQUIRE_EMULATORS = 1
-check-release: check test-target test-bochs self-host self-host-stage selfhost-probe self-host-run self-host-corpus target-lib link-negative compat-matrix perf-measure fuzz-smoke repro-check response-files target-heap target-console target-rtc audit
+check-release: check test-target test-bochs self-host self-host-stage selfhost-probe self-host-run self-host-corpus target-lib link-negative compat-matrix perf-measure fuzz-smoke repro-check response-files target-heap target-console target-rtc target-formats target-suite audit
 check-release-strict: export CC64_REQUIRE_CLEAN = 1
 check-release-strict: export CC64_REQUIRE_EMULATORS = 1
 check-release-strict: audit

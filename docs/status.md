@@ -263,8 +263,15 @@ Seven of the thirty-seven are refused rather than counted: they ask for
 or GNU and not in the C17 subset, so refusing them is the correct answer. The
 other thirty compile, and **twenty-nine of them pass on the target**.
 
-One does not: `test_fuzzy` scores `STRASSE` against `straße` as no match. That
-is the last known open failure and it is recorded in the ledger as D-148.
+One does not, and cannot: `test_fuzzy` wants the sharp `s` to match `SS`, and
+c-edit reaches its Unicode tables through `dlopen`/`dlsym` for ICU, which
+MS-DOS64 has no loader for. The fold is therefore the ASCII one and leaves the
+letter alone. That is a limit of the target rather than a defect of the
+compiler — the same object code folds ASCII correctly, and the size query the
+fold is asked first agrees with it, so nothing is truncated — and adding a
+loader would be adding a feature to the operating system, which AGENTS.md §1
+puts out of scope. The gate names it with the reason and would report it as
+passing if the limit went away (D-150).
 
 What the suite found, none of which the editor alone could reach:
 
@@ -308,7 +315,8 @@ target's own arithmetic suite, every function the target headers declare, the
 8 Bochs cases, the self-host image built and run twice with both runs
 identical, the self-host stage, the self-host probe, the self-host corpus, the
 response-file gate, the target-heap gate, the target-console gate, the
-target-clock gate, the target
+target-clock gate, the target-formats gate, the twenty-nine test units of the
+editor's own suite that the target can answer, the target
 library build, the linker rejections, the image compatibility matrix, the
 property gate, the performance measurement, the reproducible build, and the
 license and provenance audit. The target's own suite is 95 pass, 0 fail with

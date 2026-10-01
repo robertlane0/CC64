@@ -101,15 +101,15 @@ static void sink_unsigned(struct cc64_sink *sink, unsigned long value,
        as padding. */
     length = (precision > (int)shown) ? (size_t)precision : shown;
     int padding = width - (int)length - sign;
-    int pad_digits = zero && precision < 0;
-    if (left) {
-        if (sign != 0) sink_put(sink, '-');
-        if (pad_digits) sink_padding(sink, padding, '0');
-    } else {
-        if (!pad_digits) sink_padding(sink, padding, ' ');
-        if (sign != 0) sink_put(sink, '-');
-        if (pad_digits) sink_padding(sink, padding, '0');
-    }
+    /* The 0 flag is ignored once - or a precision is given, so the padding is
+       either a space or, with 0 and no precision, digits before the value, and
+       with - it comes after the value instead. */
+    int pad_digits = zero && !left && precision < 0;
+    int before = left ? 0 : padding;
+    int after = left ? padding : 0;
+    if (!pad_digits) sink_padding(sink, before, ' ');
+    if (sign != 0) sink_put(sink, '-');
+    if (pad_digits) sink_padding(sink, before, '0');
     /* The digits were built least significant first, so the positions above the
        ones the value has are the leading zeros a precision asks for. */
     for (size_t at = length; at > 0U; --at) {
@@ -117,6 +117,7 @@ static void sink_unsigned(struct cc64_sink *sink, unsigned long value,
         if (position >= shown) sink_put(sink, '0');
         else sink_put(sink, (int)(unsigned char)digits_buffer[position]);
     }
+    sink_padding(sink, after, ' ');
 }
 
 static void format_into(struct cc64_sink *sink, const char *format, va_list arguments)
