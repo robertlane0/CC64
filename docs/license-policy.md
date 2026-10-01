@@ -92,10 +92,19 @@ and is not copied into CC64; CC64 records the observation in
 
 The C build of c-edit is checked with the host compiler, not with CC64, so
 CC64 does not audit it. Its own gates are recorded here because the
-`ms-dos64` branch is a change to it: `make test`, `make release-test` and
-`make asan` pass, `make cppcheck` reports nothing across 75 files,
-`make format-check` accepts every file, and all 44 of the PTY differential's
-scenarios plus its 4 file and 6 argument scenarios run clean against the C
-binary. The differential's other half needs the pinned Rust toolchain and was
-not run here, so the two binaries have not been compared byte for byte; the C
-binary's own behaviour over those scenarios is what was checked.
+`ms-dos64` branch is a change to it. With the pinned toolchain
+`nightly-2026-09-20`, the whole of its CI passes: `make`, `make test`,
+`make release-test` and `make asan`; `make cppcheck` reports nothing across 75
+files and `make format-check` accepts every file; `cargo test` passes 37 unit
+tests, 1 integration test and 3 doctests; and the PTY differential that drives
+both binaries with identical keystrokes and compares the VT bytes they emit
+reports zero failures over all 54 scenarios, with both binaries writing
+byte-identical files in the four that save one.
+
+That last one is the evidence that matters for this branch: the reservation
+fallback changes no behaviour on a host, and the differential is what shows
+that rather than assuming it. The benchmark comparison is report-only in CI and
+flags five benchmarks where the C build is slower than Rust — `simd/memset` at
+three sizes and `unicode/MeasurementConfig/goto_logical` — none of them in the
+units this branch touches, so they are the host compiler against Rust rather
+than anything here.
