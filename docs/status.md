@@ -245,6 +245,63 @@ to the target's file services unchanged and was refused, which arrived as
 the bare name does, and a path naming any other directory is refused rather
 than reduced to its last component, which would open a different file (D-139).
 
+### The editor's own test suite, compiled for the target
+
+The editor is one program and it only reads and writes text, so it exercises
+little of the library. c-edit keeps thirty-seven test units that exercise the
+rest, and compiling them for the target found more defects than anything else
+has in a while. `python3 tools/edit_tests.py --run` builds them into one image,
+boots it, and reports each result.
+
+Each test is a separate translation unit with its own `main`, so they are
+composed rather than shipped separately: a test's `main` is renamed to a
+function and one runner calls them in turn. The target's volume holds about one
+and a half megabytes and an image of this program is around six hundred
+kilobytes, so thirty of them do not fit, and a boot costs about half a minute.
+Seven of the thirty-seven are refused rather than counted: they ask for
+`mkdtemp`, `mkstemp`, `posix_openpt`, `unsetenv` or `memmem`, which are POSIX
+or GNU and not in the C17 subset, so refusing them is the correct answer. The
+other thirty compile, and **twenty-nine of them pass on the target**.
+
+One does not: `test_fuzzy` scores `STRASSE` against `straße` as no match. That
+is the last known open failure and it is recorded in the ledger as D-148.
+
+What the suite found, none of which the editor alone could reach:
+
+- **The compiler aborted on four of the units**, corrupting its own heap. The
+  buffer a `#` result is built in was sized from the unescaped length of its
+  argument while the writer emits two bytes for each quote and backslash, so it
+  overran for any argument with more than one token — which is what the common
+  `CHECK(cond)` macro is (D-141). A directive's extent was found by scanning for
+  a newline token, and where newline tokens are omitted there is none to find, so
+  the first directive of a unit swallowed the rest of it (D-142).
+- **Every command-line macro expanded to `= value`**, because a `-D` definition
+  was split by hand rather than read as the directive it stands for, leaving the
+  separator inside the body (D-148 covers the ledger entry; the predefine half is
+  D-142's neighbour). The predefined macros were defined through the same path,
+  so `#if __STDC_VERSION__ == 201710L` did not evaluate while `#ifdef __CC64__`
+  did — the latter reads the name alone.
+- **A pointer member initialized inside a braced list held a character instead of
+  an address.** The list parser passed the aggregate's own type to each element,
+  so a string literal never received the array-to-pointer conversion it receives
+  when the initializer is a whole declaration; the lowering then stored the
+  literal's first character, and reading through it returned whatever byte
+  answered at address 104 (D-146). A compound literal whose element came from an
+  expression was also missing the whole-object copy a declaration already had
+  (D-145). Between them these failed two of the test units and produced a render
+  that differed from the expected bytes in a third.
+- **`%.*s` printed the conversion instead of the text**, because the target's
+  formatter took no width or precision from the argument list even though the
+  subset it documents claims both flags and a width. It also never reached the
+  integer path at all, so a left-justified number came out right-justified
+  (D-147).
+
+Two smaller ones came out of running the editor's build: `-E` without `-o`
+wrote its output to a file called `a.o` and printed nothing, because the driver
+defaults the output path for every action (D-144), and a command could name only
+sixty-four inputs, which the editor's fifty-one came within one unit of — a
+fixed reservation, not a budget, so the list grows now and the cap is explicit.
+
 What passes: every unit group, the host integration group, the 35 conformance
 cases on QEMU in both image forms, the four linked target-library cases, the
 target's own arithmetic suite, every function the target headers declare, the

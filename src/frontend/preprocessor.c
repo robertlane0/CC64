@@ -1667,6 +1667,7 @@ Preprocessor *preprocessor_create(Arena *arena, SourceManager *sources,
     pp->include_stack_count = 0U;
     pp->line_delta = 0U;
     pp->display_path = NULL;
+    pp->rejected_definition = false;
     define_predefined(pp);
     for (size_t i = 0U; i < options->predefine_count; ++i) {
         preprocessor_define_text(pp, options->predefines[i]);
@@ -1690,21 +1691,35 @@ void preprocessor_define_text(Preprocessor *pp, const char *definition)
     if (!is_valid_macro_name(name)) {
         diagnostic_emit(pp->diagnostics, 1135U, DIAG_PREPROCESS, NULL, 0U, 0U,
                         "invalid command-line macro name");
+        pp->rejected_definition = true;
         free(name);
         free(expanded);
         return;
     }
-    char *text = cc64_xmalloc(name_length + (expanded == NULL ? 1U : strlen(expanded) + 2U));
-    const char *equals_text = "";
-    const char *expanded_text = "";
+    /* The definition is assembled as the directive a programmer would have
+       written and then read back the way a directive in a source is read. A
+       command-line definition that was split here instead would be a second
+       path with its own idea of where the name ends: the tokens are
+       `NAME`, `=`, `VALUE`, and treating the first as the name left the
+       separator inside the replacement list, so every command-line macro and
+       every predefined macro expanded to `= value`. The `=` belongs to the
+       definition, not to the body, and spelling the definition out is what
+       keeps one rule for both. */
+    const char *const prefix = "#define ";
+    size_t prefix_length = strlen(prefix);
+    size_t value_length = expanded == NULL ? 0U : strlen(expanded);
+    size_t total = prefix_length + name_length + (expanded == NULL ? 0U : 1U + value_length);
+    char *text = cc64_xmalloc(total + 1U);
+    memcpy(text, prefix, prefix_length);
+    memcpy(text + prefix_length, name, name_length);
     if (expanded != NULL) {
-        equals_text = "=";
-        expanded_text = expanded;
+        text[prefix_length + name_length] = ' ';
+        memcpy(text + prefix_length + name_length + 1U, expanded, value_length + 1U);
+    } else {
+        text[prefix_length + name_length] = '\0';
     }
-    (void)snprintf(text, name_length + (expanded == NULL ? 1U : strlen(expanded) + 2U),
-                   "%s%s%s", name, expanded == NULL ? "" : equals_text, expanded_text);
     Source *source = source_manager_add(pp->sources, "<command-line>",
-                                        (const unsigned char *)text, strlen(text));
+                                        (const unsigned char *)text, total);
     free(text);
     free(name);
     free(expanded);
@@ -1713,13 +1728,19 @@ void preprocessor_define_text(Preprocessor *pp, const char *definition)
                            pp->options.preserve_newlines)) {
         return;
     }
+    /* Past the `#` and the `define`, so the list starts at the name, which is
+       where the directive path hands over too. */
     size_t definition_count = tokens.count;
     while (definition_count != 0U &&
            tokens.items[definition_count - 1U].kind == TOKEN_EOF) {
         --definition_count;
     }
-    (void)parse_macro_definition(pp, tokens.items, definition_count,
-                                 definition_count == 0U ? NULL : &tokens.items[0]);
+    if (definition_count > 2U) {
+        (void)parse_macro_definition(pp, tokens.items + 2U, definition_count - 2U,
+                                     &tokens.items[0]);
+    } else {
+        (void)parse_macro_definition(pp, tokens.items, 0U, &tokens.items[0]);
+    }
     token_list_free(&tokens);
 }
 
@@ -1728,7 +1749,7 @@ bool preprocessor_run(Preprocessor *pp, const Source *source, TokenList *output)
     pp->include_stack = cc64_xmalloc(sizeof(*pp->include_stack));
     pp->include_stack[0] = source->path;
     pp->include_stack_count = 1U;
-    bool good = process_source(pp, source, output);
+    bool good = !pp->rejected_definition && process_source(pp, source, output);
     if (good) {
         Token eof = {0};
         eof.kind = TOKEN_EOF;

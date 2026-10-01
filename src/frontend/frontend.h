@@ -99,6 +99,11 @@ typedef struct Preprocessor {
     size_t include_stack_count;
     int64_t line_delta;
     const char *display_path;
+    /* Set when a definition supplied on the command line or built in is one the
+       preprocessor will not accept. The definitions are read before the run
+       starts, so the failure cannot be returned from where it is found; it is
+       held here and the run reports it. */
+    bool rejected_definition;
 } Preprocessor;
 
 void token_list_init(TokenList *list);

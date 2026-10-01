@@ -25,6 +25,7 @@ typedef struct Options {
     const char *input;
     const char **inputs;
     size_t input_count;
+    size_t input_capacity;
     const char *output;
     bool output_set;
     const char *target;
@@ -237,13 +238,41 @@ static void free_options(Options *options)
     free(options->inputs);
 }
 
+/* The number of inputs a command names is not bounded by anything the target
+   imposes: the tail bound is handled by response files (D-133), and the memory
+   an object file costs is the real limit, which the allocator reports. So the
+   list grows as the command names more files, and a fixed reservation was a
+   cliff rather than a budget — a project of sixty-five units could not be
+   linked at all, one unit below what its predecessor could. The cap below is
+   the explicit bound that replaces it. */
+#define CC64_MAX_INPUTS 4096U
+
+static bool append_input(Options *options, const char *argument)
+{
+    if (options->input_count >= CC64_MAX_INPUTS) {
+        return false;
+    }
+    if (options->input_count == options->input_capacity) {
+        size_t capacity = options->input_capacity == 0U
+                              ? 16U : options->input_capacity * 2U;
+        const char **grown = cc64_xrealloc((void *)options->inputs,
+                                           capacity * sizeof(*grown));
+        options->inputs = grown;
+        options->input_capacity = capacity;
+    }
+    options->inputs[options->input_count++] = argument;
+    options->input = options->inputs[0];
+    return true;
+}
+
 static bool parse_options(int argc, char **argv, Options *options,
                           DiagnosticSink *sink)
 {
     options->action = ACTION_COMPILE;
     options->input = NULL;
-    options->inputs = cc64_xmalloc(64U * sizeof(*options->inputs));
+    options->inputs = NULL;
     options->input_count = 0U;
+    options->input_capacity = 0U;
     options->output = "a.o";
     options->output_set = false;
     options->target = CC64_TARGET;
@@ -341,10 +370,7 @@ static bool parse_options(int argc, char **argv, Options *options,
             (void)snprintf(message, sizeof(message), "unknown option '%s'", arg);
             diagnostic_emit(sink, 5U, DIAG_DRIVER, NULL, 0U, 0U, message);
             return false;
-        } else if (options->input_count < 64U) {
-            options->inputs[options->input_count++] = arg;
-            options->input = options->inputs[0];
-        } else {
+        } else if (!append_input(options, arg)) {
             diagnostic_emit(sink, 6U, DIAG_DRIVER, NULL, 0U, 0U,
                             "too many input files");
             return false;

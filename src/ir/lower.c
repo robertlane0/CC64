@@ -466,6 +466,25 @@ static IrInst *lower_init_expression(LowerContext *context, Type *type,
             return result;
         }
     }
+    /* An object of aggregate type initialised from one expression of the same
+       type is a copy of the whole object, as it already is for a declaration.
+       This is reached from an array or struct whose element was written as a
+       single expression rather than as a list, and the scalar store below took
+       one register's worth of a struct instead: the rest of the object kept
+       whatever the zeroing had put there, so `(T[]){ value }` read back as
+       zeroes and said nothing about why. */
+    if ((type->kind == TYPE_STRUCT || type->kind == TYPE_UNION) &&
+        value->kind != NODE_INITIALIZER && value->type != NULL &&
+        type_compatible(type_unqualified(type), type_unqualified(value->type))) {
+        IrInst *copy_address = temp_address(context, type, offset);
+        IrInst *copy = ir_new(context, IR_COPY, type, value);
+        if (copy != NULL) {
+            copy->a = copy_address;
+            copy->b = lower_expr(context, value);
+            copy->value.immediate = type_size(type);
+        }
+        return ir_chain(context, result, copy, value);
+    }
     if (type->kind == TYPE_UINT128) {
         /* The value is wider than a register, so the initialization is a copy
            of the whole object rather than a store of a machine value. */

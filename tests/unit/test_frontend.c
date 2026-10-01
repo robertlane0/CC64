@@ -384,6 +384,89 @@ static void test_stringize(void)
     arena_destroy(arena);
 }
 
+/* A command-line definition and a predefined one are read the same way a
+   directive in a source is read, so the body of one is the body of the other:
+   the name ends where the directive says it does, and the `=` that separates
+   the name from the value is not part of the value. These cases hold both
+   halves, because a definition whose body still carried the separator expanded
+   to `= value` and every use of it became a syntax error. */
+static void test_predefines(void)
+{
+    Arena *arena = arena_create(1024U * 1024U);
+    struct { const char *definition; const char *unit; const char *want; } cases[] = {
+        /* One value: the body is that value alone. */
+        {"NUMBER=42", "NUMBER", "42"},
+        /* Several tokens: the body is the whole run after the name. */
+        {"SUM=1 + 2", "SUM", "1 + 2"},
+        /* A value that itself contains an `=`. */
+        {"PAIR=a=1", "PAIR", "a = 1"},
+        /* No value at all: the body is empty, so the name expands to nothing. */
+        {"EMPTY", "EMPTY;", ";"},
+    };
+    for (size_t c = 0U; c < sizeof cases / sizeof cases[0]; ++c) {
+        SourceManager *manager = source_manager_create(arena);
+        Source *source = add_text(manager, cases[c].unit);
+        DiagnosticSink diagnostics = {0};
+        const char *defines[1] = {cases[c].definition};
+        PreprocessorOptions options = {NULL, 0U, defines, 1U, false};
+        TokenList output;
+        token_list_init(&output);
+        CHECK(preprocess_source(arena, manager, &diagnostics, source, &options,
+                                &output));
+        CHECK(diagnostics.count == 0U);
+        char joined[256] = "";
+        for (size_t i = 0U; i < output.count; ++i) {
+            if (output.items[i].kind == TOKEN_EOF ||
+                output.items[i].kind == TOKEN_NEWLINE) continue;
+            if (joined[0] != '\0') (void)strncat(joined, " ",
+                                                 sizeof(joined) - strlen(joined) - 1U);
+            (void)strncat(joined, output.items[i].text,
+                          sizeof(joined) - strlen(joined) - 1U);
+        }
+        if (strcmp(joined, cases[c].want) != 0) {
+            fprintf(stderr, "  -D %s: got \"%s\" want \"%s\"\n",
+                    cases[c].definition, joined, cases[c].want);
+        }
+        CHECK(strcmp(joined, cases[c].want) == 0);
+        token_list_free(&output);
+        diagnostic_sink_destroy(&diagnostics);
+    }
+
+    /* The predefined macros are defined through the same path, so their values
+       are checked by using them, not only by asking whether they are defined.
+       `#ifdef` reads the name alone and would pass either way. */
+    const char *version =
+        "#if __STDC_VERSION__ == 201710L\nint good;\n#else\nint bad;\n#endif\n";
+    SourceManager *manager = source_manager_create(arena);
+    Source *source = add_text(manager, version);
+    DiagnosticSink diagnostics = {0};
+    PreprocessorOptions options = {NULL, 0U, NULL, 0U, false};
+    TokenList output;
+    token_list_init(&output);
+    CHECK(preprocess_source(arena, manager, &diagnostics, source, &options,
+                            &output));
+    CHECK(diagnostics.count == 0U);
+    CHECK(has_token(&output, "good"));
+    CHECK(!has_token(&output, "bad"));
+    token_list_free(&output);
+    diagnostic_sink_destroy(&diagnostics);
+
+    /* And a definition the preprocessor will not accept is reported rather than
+       registered, so the name is not silently usable. */
+    manager = source_manager_create(arena);
+    source = add_text(manager, "1BAD\n");
+    diagnostics = (DiagnosticSink){0};
+    const char *bad[1] = {"1BAD"};
+    PreprocessorOptions rejected = {NULL, 0U, bad, 1U, false};
+    token_list_init(&output);
+    CHECK(!preprocess_source(arena, manager, &diagnostics, source, &rejected,
+                             &output));
+    CHECK(diagnostics.count != 0U);
+    token_list_free(&output);
+    diagnostic_sink_destroy(&diagnostics);
+    arena_destroy(arena);
+}
+
 int main(void)
 {
     test_lexer();
@@ -396,6 +479,7 @@ int main(void)
     test_include_resolution();
     test_predefined_positions();
     test_stringize();
+    test_predefines();
     if (failures != 0) {
         fprintf(stderr, "%d frontend test(s) failed\n", failures);
         return 1;

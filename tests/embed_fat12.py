@@ -130,11 +130,14 @@ def free_entry(image: bytearray) -> int:
 
 
 def add_file(image: bytearray, name: str, payload: bytes) -> tuple[int, int]:
-    # A raw COM test program is small, but a self-hosted compiler image is an
-    # MZ64 payload of a few hundred kilobytes. The budget below keeps a
-    # malformed or oversized input from filling the volume, and the allocator
-    # still fails loudly when the volume is genuinely full.
-    payload_budget = 768 * 1024
+    # The guard is here to keep one payload from filling the volume, and the
+    # allocator still fails loudly when the volume is genuinely full. So the
+    # budget is a share of the volume this image actually has rather than a
+    # fixed figure sized for one known payload: a self-hosted compiler is a few
+    # hundred kilobytes and c-edit's test suite linked into a single image is a
+    # megabyte, and a fixed number refused the second while allowing the first.
+    # A tenth is held back so something placed afterwards still fits.
+    payload_budget = (TOTAL_CLUSTERS * 9 // 10) * SECTOR
     if len(payload) > payload_budget:
         raise ValueError(f"{name} exceeds the reserved volume budget")
     cluster_count = max(1, (len(payload) + SECTOR - 1) // SECTOR)

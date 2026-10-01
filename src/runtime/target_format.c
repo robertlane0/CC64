@@ -2,7 +2,10 @@
  *
  * The compiler's diagnostics and token dumps need a small, exact subset of the
  * C conversion syntax: %s, %c, %d/%i, %u, %x/%X, %o, %p, %% with the z, l and
- * ll length modifiers and the 0 and - flags plus a decimal field width. No
+ * ll length modifiers, the 0 and - flags, a decimal field width, and a
+ * precision. A width or a precision may be written as digits or taken from the
+ * argument list with `*`, which is what a caller truncating a string to a
+ * computed length needs and what the editor's own diagnostics use. No
  * floating conversion is provided, because no target call site formats one; a
  * conversion outside the subset is written as a visible marker rather than
  * being silently dropped, so an unsupported format can never be mistaken for
@@ -65,7 +68,7 @@ static void sink_padding(struct cc64_sink *sink, int count, char fill)
 
 static void sink_unsigned(struct cc64_sink *sink, unsigned long value,
                            unsigned base, int upper, int width, int zero,
-                           int negative)
+                           int left, int negative, int precision)
 {
     static const char lower_digits[] = "0123456789abcdef";
     static const char upper_digits[] = "0123456789ABCDEF";
@@ -82,14 +85,37 @@ static void sink_unsigned(struct cc64_sink *sink, unsigned long value,
         ++length;
         value = value / base;
     }
+    /* A precision is a minimum number of digits, so a value shorter than it is
+       padded to it, and the 0 flag stops zero-padding once a precision is given:
+       that is what tells a width from a precision. A precision of zero on a value
+       of zero prints no digits at all. */
+    size_t shown = length;
+    if (precision == 0 && shown == 1U && digits_buffer[0] == '0') {
+        shown = 0U;
+        length = 0U;
+    }
     int sign = negative ? 1 : 0;
+    /* The width pads the whole number, and a precision adds digits to it, so
+       the two are counted against the width separately: the digits a precision
+       asks for are emitted by the loop below and must not also be counted here
+       as padding. */
+    length = (precision > (int)shown) ? (size_t)precision : shown;
     int padding = width - (int)length - sign;
-    if (!zero) sink_padding(sink, padding, ' ');
-    if (sign != 0) sink_put(sink, '-');
-    if (zero) sink_padding(sink, padding, '0');
-    while (length > 0U) {
-        --length;
-        sink_put(sink, (int)(unsigned char)digits_buffer[length]);
+    int pad_digits = zero && precision < 0;
+    if (left) {
+        if (sign != 0) sink_put(sink, '-');
+        if (pad_digits) sink_padding(sink, padding, '0');
+    } else {
+        if (!pad_digits) sink_padding(sink, padding, ' ');
+        if (sign != 0) sink_put(sink, '-');
+        if (pad_digits) sink_padding(sink, padding, '0');
+    }
+    /* The digits were built least significant first, so the positions above the
+       ones the value has are the leading zeros a precision asks for. */
+    for (size_t at = length; at > 0U; --at) {
+        size_t position = at - 1U;
+        if (position >= shown) sink_put(sink, '0');
+        else sink_put(sink, (int)(unsigned char)digits_buffer[position]);
     }
 }
 
@@ -111,15 +137,41 @@ static void format_into(struct cc64_sink *sink, const char *format, va_list argu
         int zero = 0;
         int left = 0;
         int width = 0;
+        int precision = -1;
         for (;;) {
             if (format[index] == '0') { zero = 1; ++index; continue; }
             if (format[index] == '-') { left = 1; ++index; continue; }
-            if (format[index] >= '0' && format[index] <= '9') {
+            /* A width and a precision may both be taken from the argument list.
+               They are read where they are written, so a format that gives the
+               width as an argument and the precision as a number reads them in
+               that order. */
+            if (format[index] == '*' && precision < 0) {
+                width = va_arg(arguments, int);
+                ++index;
+                continue;
+            }
+            if (format[index] >= '0' && format[index] <= '9' && precision < 0) {
                 width = width * 10 + (int)(format[index] - '0');
                 ++index;
                 continue;
             }
             break;
+        }
+        if (format[index] == '.') {
+            ++index;
+            precision = 0;
+            if (format[index] == '*') {
+                precision = va_arg(arguments, int);
+                ++index;
+                /* A negative precision is taken as if none were given, so it is
+                   left as the value that means none. */
+                if (precision < 0) precision = -1;
+            } else {
+                while (format[index] >= '0' && format[index] <= '9') {
+                    precision = precision * 10 + (int)(format[index] - '0');
+                    ++index;
+                }
+            }
         }
         int size = 0;
         if (format[index] == 'z') {
@@ -137,6 +189,9 @@ static void format_into(struct cc64_sink *sink, const char *format, va_list argu
             const char *text = va_arg(arguments, const char *);
             const char *shown = text == NULL ? "(null)" : text;
             size_t length = text == NULL ? 6U : strlen(text);
+            /* A precision is a maximum number of characters, and one that is
+               zero prints nothing at all. */
+            if (precision >= 0 && length > (size_t)precision) length = (size_t)precision;
             int padding = width - (int)length;
             if (left) {
                 sink_text(sink, shown, length);
@@ -171,7 +226,8 @@ static void format_into(struct cc64_sink *sink, const char *format, va_list argu
             unsigned long magnitude = value < 0L
                                           ? (unsigned long)0 - (unsigned long)value
                                           : (unsigned long)value;
-            sink_unsigned(sink, magnitude, 10UL, 0, width, zero, value < 0L);
+            sink_unsigned(sink, magnitude, 10UL, 0, width, zero, left, value < 0L,
+                         precision);
             continue;
         }
         if (conversion == 'u' || conversion == 'x' || conversion == 'X' ||
@@ -191,7 +247,7 @@ static void format_into(struct cc64_sink *sink, const char *format, va_list argu
                 sink_text(sink, "0x", 2U);
                 width -= 2;
             }
-            sink_unsigned(sink, value, base, upper, width, zero, 0);
+            sink_unsigned(sink, value, base, upper, width, zero, left, 0, precision);
             continue;
         }
         /* An unsupported conversion is shown, never silently dropped. */

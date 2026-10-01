@@ -1843,6 +1843,27 @@ static AstNode *parse_expression(Parser *parser)
     return node;
 }
 
+/* The type of the element an initializer list is at, or the aggregate's own
+   type when the element's type cannot be told. Each element of a list
+   initializes one element or member of the aggregate, so the conversion that
+   element needs is decided by that element's type and not by the aggregate's.
+   Passing the aggregate's type instead left every element unconverted: a
+   string literal naming a pointer member kept the array type it was written
+   with, and the lowering stores the first character of a string as the value of
+   a character type, so `char *p` in a braced initializer held 'h' rather than
+   the address of the literal. */
+static Type *initializer_element_type(Type *type, size_t index)
+{
+    if (type == NULL) return NULL;
+    if (type->kind == TYPE_ARRAY) return type->base;
+    if (type->kind == TYPE_STRUCT || type->kind == TYPE_UNION) {
+        Member *member = type->members;
+        for (size_t at = 0U; member != NULL && at < index; ++at) member = member->next;
+        return member == NULL ? NULL : member->type;
+    }
+    return type;
+}
+
 static AstNode *parse_initializer(Parser *parser, Type *type)
 {
     const Token *token = peek(parser);
@@ -1851,8 +1872,10 @@ static AstNode *parse_initializer(Parser *parser, Type *type)
         if (initializer != NULL) initializer->braced = true;
         AstNode *tail = NULL;
         if (!token_text(peek(parser), "}")) {
-            for (;;) {
-                AstNode *value = parse_initializer(parser, type);
+            for (size_t index = 0U;; ++index) {
+                Type *element = initializer_element_type(type, index);
+                AstNode *value = parse_initializer(parser,
+                                                   element == NULL ? type : element);
                 if (tail == NULL) initializer->a = value;
                 else tail->next = value;
                 tail = value;
