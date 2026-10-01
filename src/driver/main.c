@@ -371,7 +371,12 @@ static void print_diagnostics(const DiagnosticSink *sink)
 
 static bool write_preprocessed(const Options *options, const TokenList *tokens)
 {
-    if (options->output == NULL || strcmp(options->output, "-") == 0) {
+    /* With no -o the preprocessed text goes to the standard output. The default
+       output name belongs to the compile and link actions and must not be
+       inherited here: taking it made `-E` write the text to a file called a.o
+       and print nothing at all. */
+    if (!options->output_set || options->output == NULL ||
+        strcmp(options->output, "-") == 0) {
         return write_token_list(stdout, tokens, options->line_markers);
     }
     /* Preprocessing has already succeeded, so the output file is created once

@@ -40,6 +40,18 @@ def main() -> int:
         if b"value" not in first.read_bytes() and b"add" not in first.read_bytes():
             raise SystemExit("preprocessor output lacks expanded tokens")
 
+        # Without -o the preprocessed text goes to the standard output. The
+        # default output name belongs to compiling and linking, so inheriting it
+        # here wrote the text to a file called a.o and printed nothing.
+        stdout = subprocess.run(
+            [str(ROOT / "cc64"), "-E", "-P", str(source)],
+            cwd=ROOT, check=True, capture_output=True, text=True,
+        ).stdout
+        if "add" not in stdout:
+            raise SystemExit("-E without -o wrote nothing to the standard output")
+        if (ROOT / "a.o").exists() or (directory / "a.o").exists():
+            raise SystemExit("-E without -o created a default-named output file")
+
         run([str(ROOT / "cc64"), "-c", str(source), "-o", str(object_file)])
         run([str(ROOT / "cc64"), "-c", str(source), "-o", str(object_file2)])
         if not object_file.is_file() or object_file.read_bytes() != object_file2.read_bytes():

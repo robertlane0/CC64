@@ -316,9 +316,19 @@ static bool parse_arguments(const Token *input, size_t count, size_t *position,
 
 static char *stringize_arguments(const TokenList *list)
 {
-    size_t length = 1U;
+    /* Sized by the same walk that writes below, so the two cannot disagree:
+       two of the opening and closing quotes, one separator space per
+       non-leading token that was preceded by whitespace, two bytes for each
+       quote or backslash that has to be escaped, and the terminator. */
+    size_t length = 2U;
     for (size_t i = 0U; i < list->count; ++i) {
-        length += strlen(list->items[i].text) + 1U;
+        const char *value = list->items[i].text;
+        if (i != 0U && (list->items[i].flags & TOKEN_FLAG_SPACE) != 0U) {
+            length += 1U;
+        }
+        for (size_t j = 0U; value[j] != '\0'; ++j) {
+            length += (value[j] == '"' || value[j] == '\\') ? 2U : 1U;
+        }
     }
     char *text = cc64_xmalloc(length + 1U);
     size_t used = 0U;
@@ -1148,7 +1158,13 @@ static bool process_source(Preprocessor *pp, const Source *source,
         if (((token->flags & TOKEN_FLAG_BOL) != 0U) && token_is(token, "#")) {
             size_t begin = position + 1U;
             size_t end = begin;
-            while (end < raw.count && raw.items[end].kind != TOKEN_NEWLINE) {
+            /* A directive runs to the end of its line. Where newline tokens are
+               kept the line ends at one; where they are omitted the first token
+               of the next line is the one that begins a line instead, and
+               without that second test the directive would swallow the rest of
+               the source. */
+            while (end < raw.count && raw.items[end].kind != TOKEN_NEWLINE &&
+                   (raw.items[end].flags & TOKEN_FLAG_BOL) == 0U) {
                 ++end;
             }
             if (end > begin && !is_active(conditions, condition_count) &&
@@ -1164,7 +1180,11 @@ static bool process_source(Preprocessor *pp, const Source *source,
             good = process_directive(pp, source, raw.items + begin, end - begin,
                                      token->line, &conditions, &condition_count,
                                      &condition_capacity, output);
-            position = end < raw.count ? end + 1U : end;
+            /* Step over the newline that ended the directive when there is one.
+               With newline tokens omitted the next token begins a line and is
+               not part of the directive, so it is left for the next pass. */
+            position = (end < raw.count &&
+                        raw.items[end].kind == TOKEN_NEWLINE) ? end + 1U : end;
             continue;
         }
         if (!is_active(conditions, condition_count)) {
@@ -1739,7 +1759,16 @@ bool preprocess_source(Arena *arena, SourceManager *sources,
     if (!token_list_reserve(output, source->length / 3U + 1024U)) {
         return false;
     }
-    return preprocessor_run(pp, source, output);
+    bool good = preprocessor_run(pp, source, output);
+    if (!good) {
+        /* A run that failed publishes nothing. The tokens read before the
+           failure are a prefix of a unit that was never translated, and leaving
+           them in the caller's list would let a caller that checks the return
+           value alone read a truncated unit as if it were complete. */
+        token_list_free(output);
+        token_list_init(output);
+    }
+    return good;
 }
 
 bool write_token_list(FILE *stream, const TokenList *list, bool line_markers)

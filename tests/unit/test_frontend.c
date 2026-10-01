@@ -130,13 +130,28 @@ static void test_macro_recursion(void)
     CHECK(run_preprocess(arena, "#define X X\nX\n", NULL));
     CHECK(run_preprocess(arena, "#define F(x) F(x)\nF(1)\n", NULL));
     CHECK(run_preprocess(arena, "#define A B\n#define B A\nA\n", NULL));
-    /* A chain deeper than the documented expansion bound is a diagnostic. */
-    char deep[4096];
+    /* A chain of distinct object-like macros is not recursion, and one inside
+       the documented bound expands. A chain past the bound is a diagnostic,
+       which is the limit doing its job rather than a runaway. Both halves are
+       checked because before the directive-end fix the whole unit was consumed
+       by the first directive and neither half ran at all. */
+    char chain[4096];
     size_t at = 0U;
-    for (unsigned i = 0U; i < 200U; ++i) at += (size_t)snprintf(
-        deep + at, sizeof(deep) - at, "#define M%u M%u\n", i, i + 1U);
-    (void)snprintf(deep + at, sizeof(deep) - at, "#define M200 1\nM0\n");
-    CHECK(run_preprocess(arena, deep, NULL));
+    for (unsigned i = 0U; i < CC64_PP_MAX_MACRO_DEPTH - 2U; ++i) {
+        at += (size_t)snprintf(chain + at, sizeof(chain) - at, "#define M%u M%u\n",
+                               i, i + 1U);
+    }
+    (void)snprintf(chain + at, sizeof(chain) - at, "#define M%u 1\nM0\n",
+                   CC64_PP_MAX_MACRO_DEPTH - 2U);
+    CHECK(run_preprocess(arena, chain, NULL));
+    at = 0U;
+    for (unsigned i = 0U; i < CC64_PP_MAX_MACRO_DEPTH + 4U; ++i) {
+        at += (size_t)snprintf(chain + at, sizeof(chain) - at, "#define N%u N%u\n",
+                               i, i + 1U);
+    }
+    (void)snprintf(chain + at, sizeof(chain) - at, "#define N%u 1\nN0\n",
+                   CC64_PP_MAX_MACRO_DEPTH + 4U);
+    CHECK(!run_preprocess(arena, chain, NULL));
     arena_destroy(arena);
 }
 
@@ -293,6 +308,82 @@ static void test_predefined_positions(void)
     arena_destroy(arena);
 }
 
+/* Decoding the string literal a `#` produced gives back the spelling of the
+   argument, so that identity is what the cases below state. Comparing the
+   decoded value rather than the raw token keeps the expectations readable and
+   keeps them independent of how the escapes are spelled. */
+static bool decode_c_literal(const char *text, char *out, size_t capacity)
+{
+    size_t used = 0U;
+    size_t i = 1U; /* the opening quote */
+    if (text[0] != '"' || text[i] == '\0') return false;
+    while (text[i] != '"') {
+        char value = text[i];
+        if (value == '\\' && text[i + 1] != '\0') ++i;
+        if (used + 1U >= capacity) return false;
+        out[used++] = text[i++];
+    }
+    out[used] = '\0';
+    return text[i] == '"';
+}
+
+/* The `#` operator escapes every quote and backslash it copies, and the buffer
+   it builds has to hold the escaped result plus both quotes. Sizing that buffer
+   from the unescaped lengths instead runs past its end for any argument holding
+   a quote or a backslash, so each case here states the argument, and the
+   decoded stringized result must reproduce it. */
+static void test_stringize(void)
+{
+    Arena *arena = arena_create(1024U * 1024U);
+    /* One spelling per case. It is written into the unit as the macro argument
+       and the decoded stringized result must read back as the same spelling,
+       which is the identity the operator is defined to have. */
+    struct { const char *spelling; const char *note; } cases[] = {
+        {"abc", "one token, nothing to escape"},
+        {"a+b", "several tokens, one separator space between each"},
+        {"\"q\"", "a quote inside a literal costs a second byte when escaped"},
+        {"\"a\\tb\"", "an escape that is not a quote or backslash is copied as is"},
+        {"\"a\\\\b\"", "a backslash is escaped, so it costs a second byte"},
+        {"f(\"x\\\"y\\\\z\", 2)", "a quote and a backslash in one argument"},
+    };
+    for (size_t c = 0U; c < sizeof cases / sizeof cases[0]; ++c) {
+        char unit[256];
+        int at = snprintf(unit, sizeof unit, "#define S(x) #x\nS(%s)\n",
+                          cases[c].spelling);
+        CHECK(at > 0 && (size_t)at < sizeof unit);
+        /* Newline tokens are omitted here on purpose: the directive-end rule
+           has to work without them, and a directive that swallowed the rest of
+           the unit would make every case below fail rather than pass wrongly. */
+        for (unsigned mode = 0U; mode < 2U; ++mode) {
+            SourceManager *manager = source_manager_create(arena);
+            Source *source = add_text(manager, unit);
+            DiagnosticSink diagnostics = {0};
+            PreprocessorOptions options = {NULL, 0U, NULL, 0U, mode != 0U};
+            TokenList output;
+            token_list_init(&output);
+            CHECK(preprocess_source(arena, manager, &diagnostics, source,
+                                    &options, &output));
+            CHECK(diagnostics.count == 0U);
+            bool found = false;
+            for (size_t i = 0U; i < output.count; ++i) {
+                char decoded[512];
+                if (output.items[i].kind != TOKEN_STRING) continue;
+                if (!decode_c_literal(output.items[i].text, decoded, sizeof decoded)) {
+                    CHECK(!"stringized text is not a decodable literal");
+                    continue;
+                }
+                if (strcmp(decoded, cases[c].spelling) == 0) found = true;
+                else fprintf(stderr, "  %s: got \"%s\" want \"%s\"\n",
+                             cases[c].note, decoded, cases[c].spelling);
+            }
+            CHECK(found);
+            token_list_free(&output);
+            diagnostic_sink_destroy(&diagnostics);
+        }
+    }
+    arena_destroy(arena);
+}
+
 int main(void)
 {
     test_lexer();
@@ -304,6 +395,7 @@ int main(void)
     test_no_partial_output();
     test_include_resolution();
     test_predefined_positions();
+    test_stringize();
     if (failures != 0) {
         fprintf(stderr, "%d frontend test(s) failed\n", failures);
         return 1;
